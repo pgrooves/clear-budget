@@ -1,0 +1,4103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#3C3D48">
+<title>CLEAR</title>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+<style>
+  :root {
+    --lime: #CAFF4C;
+    --gray: #C9C9C9;
+    --gray-light: #F7F7F5;
+    --terracotta: #D46E58;
+    --teal: #72C4AB;
+    --lavender: #BFB0CC;
+    --charcoal: #3C3D48;
+    --black: #000000;
+    --cobalt: #1A3A8C;
+    --danger: #CC2200;
+    --warn: #C8A400;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { background: var(--charcoal); color: var(--cobalt); -webkit-tap-highlight-color: transparent; }
+  body {
+    font-family: "Helvetica Neue", Arial, sans-serif;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+    min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+  }
+  #root {
+    max-width: 480px;
+    margin: 0 auto;
+    /* Black so overscroll/short-content bleed reads as an extension of the
+       black © CLEAR footer strip — never the off-white content card. */
+    background: var(--black);
+    min-height: 100vh;
+    /* Hard cap against a runaway descendant (chip row, wide input) blowing
+       the app column wider than the viewport on iOS Safari. */
+    overflow-x: hidden;
+    min-width: 0;
+    width: 100%;
+  }
+  /* Defensive: nothing anywhere may cause the window to scroll horizontally. */
+  html, body { background: var(--black); overflow-x: hidden; max-width: 100%; }
+  button {
+    font-family: inherit; text-transform: inherit; letter-spacing: inherit;
+    color: var(--cobalt); background: none; border: none; cursor: pointer;
+    padding: 0;
+  }
+  input, textarea, select {
+    font-family: inherit; text-transform: inherit; letter-spacing: inherit;
+    color: var(--cobalt); background: transparent; border: none; outline: none;
+    width: 100%;
+  }
+  input::placeholder, textarea::placeholder { color: var(--cobalt); opacity: 0.45; }
+
+  .screen { position: relative; padding-bottom: 128px; max-width: 100%; overflow-x: hidden; }
+  .section { padding: 32px 24px; max-width: 100%; overflow-x: hidden; }
+  .section.lime { background: var(--lime); }
+  .section.gray { background: var(--gray); }
+  .section.off-white { background: var(--gray-light); }
+  .section.terracotta { background: var(--terracotta); }
+  .section.teal { background: var(--teal); }
+  .section.lavender { background: var(--lavender); }
+  .section.charcoal { background: var(--charcoal); }
+
+  .sub-label { font-size: 13px; font-weight: 600; letter-spacing: 0.12em; }
+  .hero { font-size: 64px; font-weight: 500; line-height: 1.05; letter-spacing: 0.01em; }
+  .hero.danger { color: var(--danger); }
+  .section-label { font-size: 40px; font-weight: 500; line-height: 1.05; }
+  .section-label.med { font-size: 32px; }
+  .body { font-size: 18px; font-weight: 400; }
+  .meta { font-size: 13px; font-weight: 500; letter-spacing: 0.12em; opacity: 0.85; }
+
+  .stack-8 > * + * { margin-top: 8px; }
+  .stack-16 > * + * { margin-top: 16px; }
+  .stack-24 > * + * { margin-top: 24px; }
+  .stack-32 > * + * { margin-top: 32px; }
+
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .row-right { display: flex; align-items: center; gap: 12px; }
+
+  .gear {
+    position: absolute; top: 16px; right: 20px;
+    background: transparent; z-index: 5; min-width: 48px; min-height: 48px;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .gear svg { display: block; }
+  .settings-title-icon { display: inline-flex; align-items: center; vertical-align: -6px; margin-right: 8px; }
+  .settings-header {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  }
+  .settings-header .section-label { line-height: 1; }
+  .settings-back {
+    font-size: 14px; font-weight: 600; letter-spacing: 0.16em;
+    min-height: 48px; padding: 0 4px; white-space: nowrap;
+    color: var(--cobalt); background: transparent;
+  }
+  .back {
+    position: absolute; top: 16px; left: 20px;
+    font-size: 18px; font-weight: 600; letter-spacing: 0.12em;
+    background: transparent; z-index: 5; min-width: 48px; min-height: 48px;
+    text-align: left;
+  }
+
+  .tabbar {
+    position: fixed; bottom: 0; left: 0; right: 0;
+    background: var(--charcoal); display: flex; justify-content: center; z-index: 20;
+  }
+  .tabbar-inner { max-width: 480px; width: 100%; display: flex; }
+  .tab {
+    flex: 1; padding: 22px 0; text-align: center;
+    color: #FFFFFF; font-size: 16px; font-weight: 600; letter-spacing: 0.16em;
+    min-height: 64px;
+  }
+  .tab.active { color: var(--lime); }
+
+  .footer {
+    background: var(--black); height: 48px;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--cobalt); font-size: 20px; font-weight: 500; letter-spacing: 0.16em;
+  }
+  .footer-brand { color: var(--cobalt); font-size: 20px; }
+
+  .cta {
+    display: block; width: 100%; height: 56px;
+    background: var(--cobalt); color: var(--lime);
+    font-size: 16px; font-weight: 600; letter-spacing: 0.16em;
+    text-transform: uppercase; text-align: center;
+  }
+  .cta.big { height: 72px; font-size: 20px; }
+  .cta.ghost { background: transparent; color: var(--cobalt); border: 2px solid var(--cobalt); }
+
+  .underline {
+    display: block; width: 100%;
+    border-bottom: 2px solid var(--cobalt);
+    padding: 12px 0; font-size: 18px; background: transparent;
+    text-align: left;
+  }
+  .underline.big { font-size: 32px; font-weight: 500; }
+  .underline.mid { font-size: 22px; font-weight: 500; }
+
+  .chips {
+    display: flex; gap: 8px; overflow-x: auto; padding: 4px 0 8px; margin: 0 -4px;
+    /* Explicit box sizing so iOS Safari doesn't let the flex container grow to
+       fit its intrinsic content-width — that's what caused the txn editor to
+       blow past the app column on real phones. */
+    width: 100%; max-width: 100%; min-width: 0;
+    flex-wrap: nowrap;
+    -webkit-overflow-scrolling: touch;
+  }
+  .chips::-webkit-scrollbar { display: none; }
+  .chips { -ms-overflow-style: none; scrollbar-width: none; }
+  .chip {
+    padding: 14px 16px; background: var(--gray-light); color: var(--cobalt);
+    font-size: 12px; font-weight: 600; letter-spacing: 0.14em;
+    white-space: nowrap; min-height: 48px;
+    display: inline-flex; align-items: center;
+    flex-shrink: 0;
+  }
+  .chip.active { background: var(--cobalt); color: var(--lime); }
+  .chip.debt-chip { border-left: 4px solid var(--terracotta); }
+  .chip.bill-chip { border-left: 4px solid var(--lavender); }
+
+  .toggle-row { display: flex; gap: 24px; margin-top: 12px; flex-wrap: wrap; }
+  .toggle {
+    padding: 12px 4px 8px; color: var(--cobalt);
+    font-size: 14px; font-weight: 600; letter-spacing: 0.14em;
+    border-bottom: 3px solid transparent; min-height: 48px;
+  }
+  .toggle.active { border-bottom-color: var(--lime); }
+
+  .txn-row {
+    display: grid;
+    grid-template-columns: 44px 1fr 92px 90px;
+    align-items: center; height: 56px;
+    border-bottom: 1px solid rgba(26, 58, 140, 0.2);
+    padding: 0 4px; gap: 8px;
+    font-size: 14px; font-weight: 500; letter-spacing: 0.06em;
+  }
+  .txn-date { font-size: 12px; letter-spacing: 0.12em; }
+  .txn-note { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .txn-cat { font-size: 10px; letter-spacing: 0.12em; opacity: 0.75; text-align: right; }
+  .txn-amt { text-align: right; font-weight: 600; font-size: 15px; }
+  .txn-tag { font-size: 10px; letter-spacing: 0.14em; opacity: 0.8; display: block; margin-top: 2px; }
+  .txn-tag.needs { color: var(--danger); opacity: 1; font-weight: 600; }
+  .txn-row.needs-category { border-left: 3px solid var(--danger); padding-left: 4px; }
+  .txn-actions { display: flex; gap: 16px; padding: 8px 4px 16px; border-bottom: 1px solid rgba(26,58,140,0.2); }
+  .txn-actions button { font-size: 12px; font-weight: 600; letter-spacing: 0.14em; padding: 8px 4px; min-height: 44px; }
+  .txn-actions .del-btn { color: var(--danger); }
+  .txn-confirm { display: flex; align-items: center; gap: 12px; padding: 12px 4px; border-bottom: 1px solid rgba(26,58,140,0.2); font-size: 12px; letter-spacing: 0.14em; }
+  .txn-confirm span { flex: 1; }
+  .txn-confirm button { font-size: 12px; font-weight: 600; letter-spacing: 0.14em; padding: 8px 12px; min-height: 44px; border: 2px solid var(--cobalt); }
+  .txn-confirm .yes { background: var(--cobalt); color: var(--lime); }
+  .txn-row.expanded { background: var(--gray-light); }
+
+  .progress { height: 4px; background: rgba(26, 58, 140, 0.2); width: 100%; margin: 8px 0; }
+  .progress > span { display: block; height: 100%; background: var(--cobalt); }
+  .progress.warn > span { background: var(--warn); }
+  .progress.danger > span { background: var(--danger); }
+  .text-danger { color: var(--danger); }
+  .text-warn { color: var(--warn); }
+
+  .cat-row + .cat-row { margin-top: 16px; }
+  .cat-line { display: flex; justify-content: space-between; align-items: baseline; font-size: 16px; font-weight: 600; letter-spacing: 0.06em; gap: 8px; }
+  .cat-remaining { font-size: 12px; letter-spacing: 0.12em; opacity: 0.85; margin-top: 4px; }
+
+  .setup {
+    background: var(--lime); min-height: 100vh;
+    padding: 56px 24px 32px; display: flex; flex-direction: column;
+    max-width: 480px; margin: 0 auto;
+  }
+  .setup .setup-inner { display: flex; flex-direction: column; gap: 24px; flex: 1; }
+  .setup h1 { font-size: 32px; font-weight: 500; line-height: 1.1; letter-spacing: 0.04em; }
+  .setup h2 { font-size: 40px; font-weight: 500; line-height: 1.05; }
+  .setup .brand { font-size: 48px; font-weight: 500; letter-spacing: 0.08em; }
+  .code-display {
+    font-size: 64px; font-weight: 500; letter-spacing: 0.12em;
+    text-align: center; padding: 24px 0;
+  }
+  .link {
+    color: var(--cobalt); font-size: 14px; font-weight: 600; letter-spacing: 0.14em;
+    text-decoration: underline; background: transparent; text-align: left;
+    min-height: 48px; padding: 12px 0;
+  }
+  .link.center { text-align: center; }
+
+  .debt-card { padding: 24px; border-bottom: 1px solid rgba(26, 58, 140, 0.2); }
+  .debt-card:last-child { border-bottom: none; }
+  .debt-header {
+    display: flex; justify-content: space-between; align-items: baseline;
+    font-size: 12px; font-weight: 600; letter-spacing: 0.16em; margin-bottom: 8px;
+  }
+  .debt-label { font-size: 24px; font-weight: 500; margin-bottom: 4px; letter-spacing: 0.04em; }
+  .debt-balance { font-size: 20px; font-weight: 500; margin-bottom: 4px; }
+  .debt-meta { font-size: 11px; letter-spacing: 0.14em; opacity: 0.85; margin-top: 4px; }
+  .debt-meta + .debt-meta { margin-top: 2px; }
+  .link-tag { font-size: 11px; letter-spacing: 0.14em; opacity: 0.85; margin-top: 4px; }
+
+  .settings-group {
+    background: var(--gray-light); padding: 24px; margin-top: 16px;
+    max-width: 100%; overflow-x: hidden;
+  }
+  .settings-group h3 {
+    font-size: 12px; font-weight: 600; letter-spacing: 0.16em; margin-bottom: 16px;
+  }
+  .list-item {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto auto;
+    align-items: center; gap: 12px;
+    padding: 12px 0; border-bottom: 1px solid rgba(26,58,140,0.2);
+    font-size: 14px; letter-spacing: 0.06em;
+    max-width: 100%;
+  }
+  .list-item > * { min-width: 0; }
+  .list-item > span:first-child { overflow-wrap: anywhere; }
+  .list-item:last-child { border-bottom: none; }
+  .list-item .del { font-size: 18px; padding: 0 4px; min-height: 44px; min-width: 44px; }
+  .list-item.locked { opacity: 0.9; }
+  .locked-tag { font-size: 10px; letter-spacing: 0.14em; opacity: 0.7; }
+
+  .inline-form {
+    display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px;
+    padding: 12px 0; border-top: 2px solid var(--cobalt); margin-top: 8px;
+    max-width: 100%;
+  }
+  /* Grid + flex items default to min-width: auto which forces a child chip
+     row's total width onto the parent — breaking 375px viewports. Cascade
+     min-width: 0 through every level of the inline form so overflow-x on
+     the chip rows below actually engages. */
+  .inline-form, .inline-form > *, .inline-form .field, .inline-form .field > * { min-width: 0; max-width: 100%; }
+  .inline-form .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .inline-form label { font-size: 11px; letter-spacing: 0.16em; font-weight: 600; opacity: 0.85; }
+  .inline-form input { border-bottom: 1px solid var(--cobalt); padding: 6px 0; font-size: 16px; width: 100%; }
+  .inline-form .row-actions { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+  .inline-form .row-actions button { flex: 1 1 140px; height: 48px; font-size: 13px; letter-spacing: 0.14em; font-weight: 600; min-width: 0; }
+  .inline-form .chips { max-width: 100%; overflow-x: auto; }
+  .inline-form .toggle-row { flex-wrap: wrap; }
+
+  .overlay {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: var(--gray); overflow-y: auto; z-index: 100;
+  }
+  .overlay-inner { max-width: 480px; margin: 0 auto; padding: 48px 24px 32px; overflow-x: hidden; }
+  .overlay .rollover-row {
+    background: var(--gray-light); padding: 20px; margin-bottom: 12px;
+  }
+  .overlay .rollover-row h4 { font-size: 16px; font-weight: 600; letter-spacing: 0.08em; }
+  .overlay .rollover-row .amt { font-size: 24px; font-weight: 500; margin-top: 4px; }
+  .overlay .choice-row { display: flex; gap: 8px; margin-top: 12px; }
+  .overlay .choice-row button {
+    flex: 1; height: 56px; font-size: 13px; font-weight: 600; letter-spacing: 0.14em;
+    color: var(--cobalt); background: transparent; border: 2px solid var(--cobalt);
+  }
+  .overlay .choice-row button.active { background: var(--cobalt); color: var(--lime); }
+
+  /* Import UI */
+  .import-actions { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; margin-bottom: 16px; }
+  /* Transaction-list month navigator. Same 13px cobalt sub-label styling as
+     the prior static "THIS MONTH" title, flanked by ← / → arrow buttons in
+     the design system's five-CTA idiom. */
+  .month-nav {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; max-width: 100%;
+  }
+  .month-nav .month-label { flex: 1; text-align: center; min-width: 0; }
+  .month-arrow {
+    color: var(--cobalt); background: transparent;
+    font-size: 20px; font-weight: 500; letter-spacing: 0.08em;
+    min-width: 48px; min-height: 48px;
+    padding: 0 8px;
+  }
+  .month-arrow.inert { visibility: hidden; }
+  .overlay-title { font-size: 32px; font-weight: 500; letter-spacing: 0.04em; line-height: 1.1; }
+  .overlay-sub { font-size: 13px; font-weight: 600; letter-spacing: 0.12em; margin-top: 8px; opacity: 0.85; }
+  textarea.paste-area {
+    width: 100%; min-height: 320px;
+    background: var(--gray-light); color: var(--cobalt);
+    border: none; outline: none; padding: 16px;
+    font-family: inherit; font-size: 14px; text-transform: uppercase;
+    letter-spacing: 0.04em; line-height: 1.4;
+    resize: vertical;
+  }
+  .csv-preview { background: var(--gray-light); padding: 12px; overflow-x: auto; margin-top: 16px; }
+  .csv-preview table { border-collapse: collapse; font-size: 12px; letter-spacing: 0.06em; min-width: 100%; }
+  .csv-preview th, .csv-preview td { padding: 8px 12px; text-align: left; border-bottom: 1px solid rgba(26,58,140,0.2); white-space: nowrap; vertical-align: top; }
+  .csv-preview th { font-weight: 600; letter-spacing: 0.12em; }
+  .csv-col-btn {
+    display: block; width: 100%; padding: 6px 8px; margin: 2px 0;
+    font-size: 10px; font-weight: 600; letter-spacing: 0.14em;
+    background: transparent; color: var(--cobalt); border: 1px solid var(--cobalt);
+    min-height: 32px;
+  }
+  .csv-col-btn.picked { background: var(--cobalt); color: var(--lime); }
+  .preview-txn {
+    background: var(--gray-light); padding: 12px 16px; margin-top: 8px;
+    display: grid; grid-template-columns: 60px 1fr auto; gap: 8px;
+    font-size: 13px; letter-spacing: 0.06em;
+  }
+  .preview-txn .d { font-size: 11px; letter-spacing: 0.14em; }
+  .preview-txn .a { text-align: right; font-weight: 600; }
+  .review-row { padding: 16px 4px; border-bottom: 1px solid rgba(26,58,140,0.2); max-width: 100%; overflow: hidden; }
+  .review-row.skipped { opacity: 0.55; }
+  .review-row > * { min-width: 0; max-width: 100%; }
+  .review-row-line { display: grid; grid-template-columns: 48px minmax(0, 1fr) auto; gap: 8px; align-items: baseline; font-size: 14px; font-weight: 500; letter-spacing: 0.06em; }
+  .review-row-line > * { min-width: 0; }
+  .review-row .d { font-size: 12px; letter-spacing: 0.12em; }
+  .review-row .desc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .review-row .a { text-align: right; font-weight: 600; font-size: 15px; }
+  .review-controls { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; align-items: center; }
+  .review-controls .toggle { min-height: 40px; padding: 8px 4px; font-size: 12px; }
+  .review-controls .skip-btn { color: var(--danger); font-size: 12px; font-weight: 600; letter-spacing: 0.14em; min-height: 40px; padding: 8px 4px; }
+  .review-controls .unskip-btn { color: var(--cobalt); font-size: 12px; font-weight: 600; letter-spacing: 0.14em; min-height: 40px; padding: 8px 4px; }
+  .review-skip-reason { font-size: 11px; letter-spacing: 0.14em; margin-top: 6px; opacity: 0.85; }
+  .review-cat-chips { display: flex; gap: 6px; overflow-x: auto; padding: 4px 0; margin-top: 8px; -ms-overflow-style: none; scrollbar-width: none; }
+  .review-cat-chips::-webkit-scrollbar { display: none; }
+  .review-cat-chip {
+    padding: 8px 12px; font-size: 10px; font-weight: 600; letter-spacing: 0.14em;
+    background: var(--gray-light); color: var(--cobalt);
+    white-space: nowrap; flex-shrink: 0; min-height: 40px;
+    display: inline-flex; align-items: center;
+  }
+  .review-cat-chip.active { background: var(--cobalt); color: var(--lime); }
+  .review-cat-chip .auto { margin-left: 6px; opacity: 0.7; font-size: 9px; }
+  .review-cat-label { font-size: 11px; letter-spacing: 0.14em; font-weight: 600; margin-top: 8px; opacity: 0.7; }
+  .review-cat-label.needs { color: var(--danger); opacity: 1; }
+  .review-row.needs-category { border-left: 3px solid var(--danger); padding-left: 8px; }
+
+  .loading {
+    min-height: 100vh; background: var(--lime);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    padding: 24px; gap: 24px;
+  }
+  .loading .brand { font-size: 64px; font-weight: 500; letter-spacing: 0.08em; }
+  .loading .msg { font-size: 14px; font-weight: 600; letter-spacing: 0.16em; }
+
+  .divider-line { height: 1px; background: rgba(26,58,140,0.2); margin: 12px 0; }
+
+  .copy-btn {
+    font-size: 12px; font-weight: 600; letter-spacing: 0.14em;
+    padding: 8px 12px; border: 2px solid var(--cobalt); min-height: 44px;
+  }
+
+  .field-inline {
+    display: grid; grid-template-columns: 1fr 90px 60px auto;
+    align-items: center; gap: 8px;
+    padding: 10px 0; border-bottom: 1px solid rgba(26,58,140,0.2);
+    font-size: 13px; letter-spacing: 0.08em;
+  }
+  .field-inline input { border-bottom: 1px solid rgba(26,58,140,0.4); padding: 4px 0; font-size: 14px; }
+  .field-inline .del { min-width: 44px; min-height: 44px; font-size: 18px; }
+
+  .num-input { text-align: right; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+"use strict";
+
+// Build version. Surfaced in Settings > HOUSEHOLD so a stale cache is diagnosable.
+// Bump every round.
+const APP_VERSION = "V10";
+
+/* ============================================================
+   FIREBASE INIT
+   ============================================================ */
+const firebaseConfig = {
+  apiKey: "AIzaSyCDpGVE4RUazjzwPasC73VOcUtRnvMZwXA",
+  authDomain: "budget-app-dfc07.firebaseapp.com",
+  projectId: "budget-app-dfc07",
+  storageBucket: "budget-app-dfc07.firebasestorage.app",
+  messagingSenderId: "100349315850",
+  appId: "1:100349315850:web:a8406745705a9c682308f3"
+};
+
+let db = null;
+try {
+  firebase.initializeApp(firebaseConfig);
+  db = firebase.firestore();
+} catch (e) {
+  console.warn("firebase init failed", e);
+}
+
+/* ============================================================
+   UTIL
+   ============================================================ */
+const Util = (() => {
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, c => (
+      { "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]
+    ));
+  }
+  function fmtMoney(n, decimals) {
+    decimals = decimals || 0;
+    if (!isFinite(n)) n = 0;
+    const neg = n < 0;
+    const abs = Math.abs(n);
+    const s = abs.toLocaleString("en-US", { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+    return (neg ? "-$" : "$") + s;
+  }
+  function fmtMonthShort(ym) {
+    if (!ym) return "";
+    const [y, m] = ym.split("-").map(Number);
+    const names = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
+    return `${names[m-1]} ${y}`;
+  }
+  function fmtMonthLong(ym) {
+    if (!ym) return "";
+    const [y, m] = ym.split("-").map(Number);
+    const names = ["JANUARY","FEBRUARY","MARCH","APRIL","MAY","JUNE","JULY","AUGUST","SEPTEMBER","OCTOBER","NOVEMBER","DECEMBER"];
+    return `${names[m-1]} ${y}`;
+  }
+  function fmtDateShort(iso) {
+    if (!iso) return "";
+    const d = new Date(iso + "T00:00:00");
+    if (isNaN(d)) return iso;
+    const names = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
+    return `${names[d.getMonth()]} ${d.getDate()}`;
+  }
+  function todayISO() {
+    const d = new Date();
+    const y = d.getFullYear();
+    const m = String(d.getMonth()+1).padStart(2,"0");
+    const day = String(d.getDate()).padStart(2,"0");
+    return `${y}-${m}-${day}`;
+  }
+  function currentMonthYM() {
+    return todayISO().slice(0,7);
+  }
+  function uuid() {
+    return "id-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 9);
+  }
+  return { esc, fmtMoney, fmtMonthShort, fmtMonthLong, fmtDateShort, todayISO, currentMonthYM, uuid };
+})();
+
+/* ============================================================
+   DATA SERVICE
+   Firestore + localStorage household code
+   ============================================================ */
+const DataService = (() => {
+  const HOUSEHOLD_KEY = "clear_household_id";
+  let unsub = null;
+  let currentDoc = null;
+  let currentId = null;
+  const dataListeners = [];
+  const errorListeners = [];
+
+  function generateCode() {
+    const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    let s = "";
+    for (let i = 0; i < 6; i++) s += chars[Math.floor(Math.random() * chars.length)];
+    return s;
+  }
+  function getHouseholdId() {
+    try { return localStorage.getItem(HOUSEHOLD_KEY); } catch (e) { return null; }
+  }
+  function setHouseholdIdLocal(id) {
+    try { localStorage.setItem(HOUSEHOLD_KEY, id); } catch (e) {}
+    currentId = id;
+  }
+  function clearHouseholdId() {
+    try { localStorage.removeItem(HOUSEHOLD_KEY); } catch (e) {}
+    if (unsub) { try { unsub(); } catch (e) {} unsub = null; }
+    currentDoc = null;
+    currentId = null;
+  }
+  function onData(fn) { dataListeners.push(fn); }
+  function onError(fn) { errorListeners.push(fn); }
+  function emit(doc) { dataListeners.forEach(f => { try { f(doc); } catch (e) { console.warn(e); } }); }
+  function emitErr(e) { errorListeners.forEach(f => { try { f(e); } catch (er) { console.warn(er); } }); }
+
+  function subscribe(id) {
+    if (!db) { emitErr(new Error("firestore unavailable")); return; }
+    if (unsub) { try { unsub(); } catch (e) {} }
+    currentId = id;
+    try {
+      unsub = db.collection("households").doc(id).onSnapshot(
+        snap => {
+          currentDoc = snap && snap.exists ? snap.data() : null;
+          emit(currentDoc);
+        },
+        err => {
+          console.warn("snapshot error", err);
+          emitErr(err);
+        }
+      );
+    } catch (e) {
+      console.warn("subscribe threw", e);
+      emitErr(e);
+    }
+  }
+
+  function get() { return currentDoc; }
+  function getId() { return currentId; }
+
+  function set(data) {
+    if (!db || !currentId) return Promise.reject(new Error("no household"));
+    return db.collection("households").doc(currentId).set(data);
+  }
+  function update(patch) {
+    if (!db || !currentId) return Promise.reject(new Error("no household"));
+    return db.collection("households").doc(currentId).update(patch);
+  }
+  async function checkExists(id) {
+    if (!db) throw new Error("firestore unavailable");
+    const snap = await db.collection("households").doc(id).get();
+    return snap.exists;
+  }
+
+  return {
+    generateCode, getHouseholdId, setHouseholdIdLocal, clearHouseholdId,
+    subscribe, onData, onError, get, getId, set, update, checkExists
+  };
+})();
+
+/* ============================================================
+   BUDGET ENGINE — pure functions, no DOM
+   ============================================================ */
+const BudgetEngine = (() => {
+  const num = v => (isFinite(Number(v)) ? Number(v) : 0);
+
+  function totalIncome(s) {
+    return (s.income || []).reduce((a, i) => a + num(i.amount), 0);
+  }
+  function tithePercent(s) {
+    return num(s.settings && s.settings.tithePercent != null ? s.settings.tithePercent : 10);
+  }
+  function tithe(s) {
+    return totalIncome(s) * tithePercent(s) / 100;
+  }
+  function billsSubtotal(s) {
+    return (s.bills || []).reduce((a, b) => a + num(b.amount), 0);
+  }
+  // Sum of stored bills only. Tithe is a display-only locked line and is
+  // subtracted separately in safeToSpend / extraForDebt as the FIRST allocation from income.
+  function totalBills(s) {
+    return billsSubtotal(s);
+  }
+  function totalDebtMins(s) {
+    return (s.debts || []).reduce((a, d) => a + num(d.minimumPayment), 0);
+  }
+  function totalUnpaidCredit(s) {
+    const m = s.currentMonth;
+    return (s.transactions || [])
+      .filter(t => t.paymentType === "credit" && t.month === m)
+      .reduce((a, t) => a + num(t.amount), 0);
+  }
+  function safeToSpend(s) {
+    return totalIncome(s) - tithe(s) - totalBills(s) - totalDebtMins(s) - totalUnpaidCredit(s);
+  }
+  function spendingBudgetedTotal(s) {
+    return (s.spendingCategories || []).reduce((a, c) => a + num(c.budgeted), 0);
+  }
+  function totalBudgeted(s) {
+    return billsSubtotal(s) + tithe(s) + totalDebtMins(s) + spendingBudgetedTotal(s);
+  }
+  function extraForDebt(s) {
+    return totalIncome(s) - tithe(s) - totalBills(s) - totalDebtMins(s) - spendingBudgetedTotal(s);
+  }
+  function categorySpent(s, id) {
+    const m = s.currentMonth;
+    return (s.transactions || [])
+      .filter(t => t.categoryId === id && t.month === m)
+      .reduce((a, t) => a + num(t.amount), 0);
+  }
+  function rolloverAmount(s, id) {
+    return num(s.monthlyRollover && s.monthlyRollover[s.currentMonth] && s.monthlyRollover[s.currentMonth][id]);
+  }
+  function categoryRemaining(s, cat) {
+    return num(cat.budgeted) + rolloverAmount(s, cat.id) - categorySpent(s, cat.id);
+  }
+  function personSpent(s, person) {
+    const m = s.currentMonth;
+    return (s.transactions || [])
+      .filter(t => t.month === m && t.person === person)
+      .reduce((a, t) => a + num(t.amount), 0);
+  }
+  function totalDebt(s) {
+    return (s.debts || []).reduce((a, d) => a + num(d.balance), 0);
+  }
+  // Debt payoff order:
+  //   avalanche = interest rate DESC, tie-break smaller balance first
+  //   snowball  = balance ASC,        tie-break higher rate first
+  function debtOrder(debts, strategy) {
+    const strat = strategy === "snowball" ? "snowball" : "avalanche";
+    return (debts || []).slice().sort((a, b) => {
+      if (strat === "avalanche") {
+        const r = num(b.interestRate) - num(a.interestRate);
+        if (r !== 0) return r;
+        return num(a.balance) - num(b.balance);
+      }
+      const bal = num(a.balance) - num(b.balance);
+      if (bal !== 0) return bal;
+      return num(b.interestRate) - num(a.interestRate);
+    });
+  }
+  function debtStrategy(s) {
+    return (s && s.settings && s.settings.debtStrategy === "snowball") ? "snowball" : "avalanche";
+  }
+  function targetDebt(s) {
+    const active = debtOrder((s.debts || []).filter(d => num(d.balance) > 0), debtStrategy(s));
+    return active[0] || null;
+  }
+  // Actually paid on credit that has been "covered" (spent from cash budget). We use a simple model:
+  // cash to cover = safeToSpend + totalUnpaidCredit (i.e. what would remain if credit was paid off).
+  function unpaidCredit(s) { return totalUnpaidCredit(s); }
+  function cashToCover(s) {
+    // The safeToSpend formula already deducts unpaid credit. Total cash available to pay off credit
+    // this month = safeToSpend + unpaidCredit. If <0, we can't cover the credit.
+    return safeToSpend(s) + totalUnpaidCredit(s);
+  }
+
+  return {
+    num,
+    totalIncome, tithePercent, tithe, billsSubtotal, totalBills, totalDebtMins,
+    totalUnpaidCredit, safeToSpend, spendingBudgetedTotal, totalBudgeted, extraForDebt,
+    categorySpent, rolloverAmount, categoryRemaining, personSpent,
+    totalDebt, targetDebt, debtOrder, debtStrategy, unpaidCredit, cashToCover
+  };
+})();
+
+/* ============================================================
+   DEBT ENGINE — pure snowball simulation
+   ============================================================ */
+const DebtEngine = (() => {
+  const monthNames = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
+
+  // strategy: "avalanche" (default) or "snowball". Sort order controls both which debt
+  // receives the extra payment AND the cascade order when a debt is paid off.
+  function simulate(debtsInput, extraPerMonth, startMonth, strategy) {
+    const empty = { payoffByDebt: {}, debtFreeDate: null, months: 0, order: [] };
+    if (!debtsInput || !debtsInput.length) return empty;
+    const strat = strategy === "snowball" ? "snowball" : "avalanche";
+
+    const sim = debtsInput.map(d => ({
+      id: d.id,
+      label: d.label,
+      balance: Number(d.balance) || 0,
+      min: Number(d.minimumPayment) || 0,
+      rate: Number(d.interestRate) || 0
+    })).filter(d => d.balance > 0)
+      .sort((a, b) => {
+        if (strat === "avalanche") return (b.rate - a.rate) || (a.balance - b.balance);
+        return (a.balance - b.balance) || (b.rate - a.rate);
+      });
+
+    if (!sim.length) return empty;
+
+    const order = sim.map(d => d.id);
+    const payoff = {};
+    let [year, month] = (startMonth || Util.currentMonthYM()).split("-").map(Number);
+    let cascadedMin = 0;
+    let iter = 0;
+    const MAX = 720; // 60 years cap safety
+
+    while (sim.some(d => d.balance > 0) && iter < MAX) {
+      // 1. Minimum payments to all still-active debts
+      for (const d of sim) {
+        if (d.balance <= 0) continue;
+        d.balance -= d.min;
+        if (d.balance < 0) d.balance = 0;
+      }
+      // 2. Apply interest to all still-active debts
+      for (const d of sim) {
+        if (d.balance <= 0) continue;
+        d.balance += d.balance * (d.rate / 12 / 100);
+      }
+      // 3. Send extra + cascaded to smallest still-active, cascade overflow
+      let extra = (Number(extraPerMonth) || 0) + cascadedMin;
+      for (const d of sim) {
+        if (d.balance <= 0) continue;
+        if (extra <= 0) break;
+        const applied = Math.min(extra, d.balance);
+        d.balance -= applied;
+        extra -= applied;
+      }
+      // 4. Record any new payoffs, cascade their minimums into future extras
+      for (const d of sim) {
+        if (d.balance <= 0 && !payoff[d.id]) {
+          payoff[d.id] = `${monthNames[month - 1]} ${year}`;
+          cascadedMin += d.min;
+        }
+      }
+      iter++;
+      if (sim.every(d => d.balance <= 0)) break;
+      // Advance month
+      month++;
+      if (month > 12) { month = 1; year++; }
+    }
+
+    // Debt-free date is the latest payoff month
+    let latest = null;
+    let latestKey = -1;
+    for (const id in payoff) {
+      const [mo, yr] = payoff[id].split(" ");
+      const k = Number(yr) * 12 + monthNames.indexOf(mo);
+      if (k > latestKey) { latestKey = k; latest = payoff[id]; }
+    }
+    return { payoffByDebt: payoff, debtFreeDate: latest, months: iter, order };
+  }
+
+  return { simulate };
+})();
+
+/* ============================================================
+   DEFAULT SEED DATA
+   ============================================================ */
+function buildDefaultData(mode, names) {
+  const nowMonth = Util.currentMonthYM();
+  const uid = Util.uuid;
+  return {
+    settings: { mode, names, tithePercent: 10, debtStrategy: "avalanche" },
+    income: [
+      { id: uid(), label: "Paycheck 1", amount: 0, dueDateOfMonth: 1 },
+      { id: uid(), label: "Paycheck 2", amount: 0, dueDateOfMonth: 15 }
+    ],
+    bills: [
+      { id: uid(), label: "Rent", amount: 0, dueDateOfMonth: 10, category: "bill" },
+      { id: uid(), label: "Electric", amount: 0, dueDateOfMonth: 11, category: "bill" },
+      { id: uid(), label: "Gas + Water", amount: 0, dueDateOfMonth: 11, category: "bill" },
+      { id: uid(), label: "Internet", amount: 0, dueDateOfMonth: 29, category: "bill" },
+      { id: uid(), label: "Cell Phone", amount: 0, dueDateOfMonth: 10, category: "bill" },
+      { id: uid(), label: "Car Insurance", amount: 0, dueDateOfMonth: 7, category: "bill" },
+      { id: uid(), label: "Gym", amount: 0, dueDateOfMonth: 3, category: "bill" },
+      { id: uid(), label: "Student Loans", amount: 0, dueDateOfMonth: 10, category: "bill" },
+      { id: uid(), label: "Car Loan", amount: 0, dueDateOfMonth: 27, category: "bill" },
+      { id: uid(), label: "Emergency Fund", amount: 0, dueDateOfMonth: 1, category: "savings" },
+      { id: uid(), label: "Car Maintenance", amount: 0, dueDateOfMonth: 1, category: "savings" },
+      { id: uid(), label: "Vacation", amount: 0, dueDateOfMonth: 1, category: "savings" },
+      { id: uid(), label: "Roth IRA / Retirement", amount: 0, dueDateOfMonth: 1, category: "savings" }
+    ],
+    spendingCategories: [
+      { id: uid(), label: "Groceries & Household", budgeted: 500, type: "spending" },
+      { id: uid(), label: "Gas (Auto)", budgeted: 300, type: "spending" },
+      { id: uid(), label: "Eating Out", budgeted: 150, type: "spending" },
+      { id: uid(), label: "Date Night", budgeted: 150, type: "spending" },
+      { id: uid(), label: "His Personal", budgeted: 30, type: "spending" },
+      { id: uid(), label: "Hers Personal", budgeted: 30, type: "spending" },
+      { id: uid(), label: "Meds & Vitamins", budgeted: 120, type: "spending" },
+      { id: uid(), label: "Gifts for People", budgeted: 50, type: "spending" },
+      { id: uid(), label: "Vehicle Maintenance", budgeted: 40, type: "spending" },
+      { id: uid(), label: "Misc / All Others", budgeted: 200, type: "spending" }
+    ],
+    transactions: [],
+    debts: [],
+    creditCards: [],
+    importProfiles: [],
+    merchantMap: {},
+    balances: [],
+    monthlyRollover: {},
+    currentMonth: nowMonth
+  };
+}
+
+/* ============================================================
+   IMPORT ENGINE — pure functions, no DOM
+   CSV + line-based text parsing, fingerprints, merchant normalization,
+   two-tier duplicate detection. Shared by both input paths.
+   ============================================================ */
+const ImportEngine = (() => {
+  const MON = { JAN:1, FEB:2, MAR:3, APR:4, MAY:5, JUN:6, JUL:7, AUG:8, SEP:9, OCT:10, NOV:11, DEC:12 };
+  const pad2 = n => String(n).padStart(2, "0");
+
+  // Resolve a M/D or MON DD (no year) date. Assume current year unless the
+  // resulting date lies in the future — then roll back to the prior year.
+  function resolveNoYear(month, day, refYear, today) {
+    today = today || new Date();
+    const y = refYear || today.getFullYear();
+    let cand = new Date(y, month - 1, day);
+    // 14-day grace window. Bank statements pasted today commonly include
+    // postings dated a few days ahead (weekend clearing, pending). Only roll
+    // back to the prior year when the candidate is more than 14 days in the
+    // future — otherwise the row silently vanished into 2025-07 etc.
+    const cutoff = today.getTime() + 14 * 86400000;
+    if (cand.getTime() > cutoff) cand = new Date(y - 1, month - 1, day);
+    return `${cand.getFullYear()}-${pad2(month)}-${pad2(day)}`;
+  }
+
+  // Parse a single date string. Returns ISO YYYY-MM-DD or null.
+  function parseDate(str, refYear, today) {
+    if (!str) return null;
+    const s = String(str).trim().toUpperCase();
+    let m;
+    if ((m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/))) return `${m[1]}-${pad2(m[2])}-${pad2(m[3])}`;
+    if ((m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/))) return `${m[3]}-${pad2(m[1])}-${pad2(m[2])}`;
+    if ((m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2})$/))) return `20${m[3]}-${pad2(m[1])}-${pad2(m[2])}`;
+    if ((m = s.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/))) return `${m[3]}-${pad2(m[1])}-${pad2(m[2])}`;
+    if ((m = s.match(/^(\d{1,2})\/(\d{1,2})$/))) return resolveNoYear(Number(m[1]), Number(m[2]), refYear, today);
+    if ((m = s.match(/^([A-Z]{3})\.?\s+(\d{1,2})(?:,?\s+(\d{4}))?$/)) && MON[m[1]]) {
+      if (m[3]) return `${m[3]}-${pad2(MON[m[1]])}-${pad2(m[2])}`;
+      return resolveNoYear(MON[m[1]], Number(m[2]), refYear, today);
+    }
+    if ((m = s.match(/^(\d{1,2})\s+([A-Z]{3})\.?\s+(\d{4})$/)) && MON[m[2]]) {
+      return `${m[3]}-${pad2(MON[m[2]])}-${pad2(m[1])}`;
+    }
+    return null;
+  }
+
+  // Find the first date token in a line. Returns { iso, raw, index } or null.
+  function findDate(line, refYear, today) {
+    const patterns = [
+      /(\d{4}-\d{1,2}-\d{1,2})/,
+      /(\d{1,2}\/\d{1,2}\/\d{4})/,
+      /(\d{1,2}\/\d{1,2}\/\d{2})/,
+      /(\d{1,2}-\d{1,2}-\d{4})/,
+      /(\d{1,2}\/\d{1,2})(?!\d)/,
+      /([A-Z]{3})\.?\s+(\d{1,2})(?:,?\s+(\d{4}))?/i,
+      /(\d{1,2})\s+([A-Z]{3})\.?\s+(\d{4})/i
+    ];
+    for (const p of patterns) {
+      const m = line.match(p);
+      if (!m) continue;
+      const raw = m[0];
+      const iso = parseDate(raw, refYear, today);
+      if (iso) return { iso, raw, index: m.index };
+    }
+    return null;
+  }
+
+  // Find currency-like amount tokens. Returns [{ value, index, len, raw }].
+  // Rules (tightened after the T-1044 defect):
+  //   (a) A leading "-" counts as a negative sign ONLY when preceded by start-of-line,
+  //       whitespace, or "$". A hyphen inside a token like "T-1044" is NOT a sign.
+  //   (b) An amount token MUST carry a currency signal: a decimal point, a comma
+  //       thousands-group, a leading "$", or accounting parens. Bare integers —
+  //       signed or unsigned — never qualify in paste text (store ids like "1044"
+  //       and reference codes look like bare integers).
+  //   CSV cells that hold a lone signed integer keep their parseFloat fallback in
+  //   goToReviewFromCsv, where a cell is unambiguously an amount.
+  function findAmounts(line) {
+    const results = [];
+    const re = /(\()?(-)?(\$)?(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d{2}))?(\))?/g;
+    let m;
+    while ((m = re.exec(line)) !== null) {
+      const openParen = m[1], minus = m[2], dollar = m[3];
+      const intPart = m[4] || "", decPart = m[5], closeParen = m[6];
+      const startIdx = m.index;
+      const hasDec = !!decPart;
+      const hasComma = /,/.test(intPart);
+      const hasDollar = !!dollar;
+      const hasParen = !!openParen && !!closeParen;
+      // Boundary check for the leading minus.
+      if (minus) {
+        const before = startIdx > 0 ? line[startIdx - 1] : "";
+        const validBoundary = (startIdx === 0) || /\s/.test(before) || before === "$";
+        if (!validBoundary) {
+          // The "-" is a hyphen inside a word (e.g. "T-1044"). Skip only the minus
+          // and let the regex re-scan from the digit position — that way a genuine
+          // "$52.40" tucked inside "REF-$52.40" is still picked up.
+          re.lastIndex = startIdx + 1;
+          continue;
+        }
+      }
+      // Currency signal is mandatory. Note: minus alone is NOT a signal.
+      if (!hasDec && !hasComma && !hasDollar && !hasParen) continue;
+      let v = parseFloat(intPart.replace(/,/g, "") + (decPart ? "." + decPart : ""));
+      if (!isFinite(v)) continue;
+      if (hasParen || minus) v = -Math.abs(v);
+      const raw = m[0];
+      results.push({ value: v, index: startIdx, len: raw.length, raw });
+    }
+    return results;
+  }
+
+  // CSV parser: handles quoted fields, escaped quotes, CRLF/LF, BOM.
+  function csvParse(text) {
+    if (text == null) return { headers: [], rows: [] };
+    const t = String(text).replace(/^﻿/, "");
+    const rows = [];
+    let cur = "", row = [], inQuotes = false;
+    for (let i = 0; i < t.length; i++) {
+      const c = t[i];
+      if (inQuotes) {
+        if (c === '"') {
+          if (t[i + 1] === '"') { cur += '"'; i++; }
+          else inQuotes = false;
+        } else cur += c;
+        continue;
+      }
+      if (c === '"') { inQuotes = true; continue; }
+      if (c === ',') { row.push(cur); cur = ""; continue; }
+      if (c === '\r') {
+        if (t[i + 1] === '\n') i++;
+        row.push(cur); rows.push(row); row = []; cur = "";
+        continue;
+      }
+      if (c === '\n') { row.push(cur); rows.push(row); row = []; cur = ""; continue; }
+      cur += c;
+    }
+    if (cur !== "" || row.length) { row.push(cur); rows.push(row); }
+    while (rows.length && rows[rows.length - 1].every(c => (c == null ? "" : String(c)).trim() === "")) rows.pop();
+    if (!rows.length) return { headers: [], rows: [] };
+    const headers = rows[0].map(h => (h == null ? "" : String(h)).trim());
+    const dataRows = rows.slice(1).map(r => r.map(c => (c == null ? "" : String(c)).trim()));
+    return { headers, rows: dataRows };
+  }
+
+  // Parse pasted transaction text. Returns { items, structure }.
+  //
+  // options:
+  //   today, refYear         — clock reference for no-year dates
+  //   amountPos              — "first" | "last" override for which token in a group
+  //                            is the transaction amount
+  //   secondIsBalance        — bool: when a group has multiple amounts, discard the
+  //                            non-picked amounts as running balances (default true).
+  //                            When false, non-picked amounts stay in the description.
+  //   linesPerTxn            — 1 | 2 | 3 override; suppresses auto-grouping detection
+  //   balanceIsAmount        — legacy alias, maps to amountPos: "last"
+  //
+  // `structure` in the return always reflects the AUTO-DETECTED layout so
+  // fingerprints stay stable across override changes; `items` reflect the
+  // overrides actually applied.
+  function textParse(text, options) {
+    options = options || {};
+    const today = options.today || new Date();
+    const refYear = options.refYear || today.getFullYear();
+    const rawLines = String(text || "").split(/\r?\n/);
+    const lines = rawLines.map(l => l.replace(/\s+/g, " ").trim()).filter(l => l && /\d/.test(l));
+    const emptyStruct = { hasDates: false, hasBalance: false, linesPerTxn: 1, datePos: "start", amountPos: "first", detected: 0 };
+    if (!lines.length) return { items: [], structure: emptyStruct };
+
+    const lineData = lines.map(l => ({
+      line: l,
+      date: findDate(l, refYear, today),
+      amounts: findAmounts(l)
+    }));
+
+    const dated = lineData.filter(x => x.date).length;
+    if (dated === 0) return { items: [], structure: emptyStruct };
+
+    // --- Auto-detected structure (stable across overrides) ---
+    const rawRatio = lines.length / dated;
+    let autoLinesPerTxn = 1;
+    if (rawRatio >= 2.5) autoLinesPerTxn = 3;
+    else if (rawRatio >= 1.5) autoLinesPerTxn = 2;
+    const autoHasBalance = autoLinesPerTxn === 1 && lineData.some(x => x.amounts.length >= 2);
+    const autoAmountPos = autoLinesPerTxn === 1 ? "first" : "last";
+    let autoDatePos = "start";
+    const first = lineData.find(x => x.date && x.amounts.length);
+    if (first) autoDatePos = first.date.index <= first.amounts[0].index ? "start" : "end";
+    const structure = {
+      hasDates: true,
+      hasBalance: autoHasBalance,
+      linesPerTxn: autoLinesPerTxn,
+      datePos: autoDatePos,
+      amountPos: autoAmountPos,
+      detected: 0
+    };
+
+    // --- Apply overrides for item extraction ---
+    let effLinesPerTxn = autoLinesPerTxn;
+    if (options.linesPerTxn === 1 || options.linesPerTxn === 2 || options.linesPerTxn === 3) {
+      effLinesPerTxn = options.linesPerTxn;
+    }
+    let effAmountPos = options.amountPos === "first" || options.amountPos === "last"
+      ? options.amountPos
+      : (effLinesPerTxn === 1 ? "first" : "last");
+    if (options.balanceIsAmount) effAmountPos = "last"; // legacy
+    const effSecondIsBalance = options.secondIsBalance == null ? true : !!options.secondIsBalance;
+
+    // Build groups using effLinesPerTxn.
+    const groups = [];
+    if (effLinesPerTxn === 1) {
+      for (const ld of lineData) if (ld.date && ld.amounts.length) groups.push([ld]);
+    } else {
+      let cur = null;
+      for (const ld of lineData) {
+        if (ld.date) {
+          if (cur) groups.push(cur);
+          cur = [ld];
+        } else if (cur) cur.push(ld);
+      }
+      if (cur) groups.push(cur);
+    }
+
+    const items = [];
+    for (const g of groups) {
+      const dEntry = g.find(x => x.date);
+      if (!dEntry) continue;
+      const allAmts = [];
+      for (const l of g) l.amounts.forEach(a => allAmts.push(a));
+      if (!allAmts.length) continue;
+
+      const chosen = effAmountPos === "last" ? allAmts[allAmts.length - 1] : allAmts[0];
+      const txnAmt = chosen.value;
+
+      // Description = combined text with the date and (usually) all amount tokens stripped.
+      // If secondIsBalance is false, keep the non-chosen amount tokens in the description.
+      let desc = g.map(l => l.line).join(" ");
+      desc = desc.split(dEntry.date.raw).join(" ");
+      if (effSecondIsBalance) {
+        for (const l of g) for (const a of l.amounts) desc = desc.split(a.raw).join(" ");
+      } else {
+        desc = desc.split(chosen.raw).join(" ");
+      }
+      desc = desc.replace(/\s+/g, " ").trim();
+
+      items.push({ date: dEntry.date.iso, amount: txnAmt, description: desc });
+    }
+    structure.detected = items.length;
+    return { items, structure };
+  }
+
+  function computePasteFingerprint(structure) {
+    if (!structure) return "";
+    return `date-${structure.datePos}|amount-${structure.amountPos}|${structure.linesPerTxn}-line|balance-${structure.hasBalance ? "yes" : "no"}`;
+  }
+  function computeCsvFingerprint(headers) {
+    return (headers || []).map(h => String(h || "").trim().toLowerCase()).join(",");
+  }
+
+  // Strip noise from a merchant description and return the leading name.
+  // Identical for CSV and paste so a mapping learned via one path applies to the other.
+  function normalizeMerchantKey(desc) {
+    if (!desc) return "";
+    let s = String(desc).toUpperCase();
+    s = s.replace(/\bPENDING\b/g, " ");
+    // Drop trailing card-number tail like "*1234" that may sit inside a word.
+    s = s.replace(/[\*#][0-9]+/g, " ");
+    // Split on non-letters; take alphabetic tokens of length >= 2.
+    const tokens = s.match(/[A-Z]{2,}/g) || [];
+    // Take the first token as the merchant name. Conservative but robust:
+    // guarantees CSV "HEB #613 AUSTIN TX" and paste "HEB PENDING" normalize identically.
+    return tokens.length ? tokens[0] : "";
+  }
+
+  function normalizeDescForCompare(s) {
+    return String(s == null ? "" : s).toUpperCase().replace(/[^A-Z0-9]/g, "");
+  }
+
+  // Tier 1: same date + same amount + same normalized description (against .note).
+  function isExactDupe(cand, existing) {
+    const nd = normalizeDescForCompare(cand.description);
+    const amt = Math.round(Math.abs(Number(cand.amount) || 0) * 100);
+    for (const t of existing) {
+      if (t.date !== cand.date) continue;
+      if (Math.round(Math.abs(Number(t.amount) || 0) * 100) !== amt) continue;
+      if (normalizeDescForCompare(t.note || "") === nd) return true;
+    }
+    return false;
+  }
+
+  // Tier 2: same amount, |date delta| ≤ 3 days, only vs source:"manual".
+  function findFuzzyMatch(cand, existing) {
+    const amt = Math.round(Math.abs(Number(cand.amount) || 0) * 100);
+    const cDate = new Date(cand.date + "T00:00:00");
+    if (isNaN(cDate)) return null;
+    for (const t of existing) {
+      if ((t.source || "manual") !== "manual") continue;
+      if (Math.round(Math.abs(Number(t.amount) || 0) * 100) !== amt) continue;
+      const tDate = new Date(String(t.date || "") + "T00:00:00");
+      if (isNaN(tDate)) continue;
+      const days = Math.abs((cDate - tDate) / 86400000);
+      if (days <= 3) return t;
+    }
+    return null;
+  }
+
+  return {
+    parseDate, findDate, findAmounts,
+    csvParse, textParse,
+    computePasteFingerprint, computeCsvFingerprint,
+    normalizeMerchantKey, normalizeDescForCompare,
+    isExactDupe, findFuzzyMatch
+  };
+})();
+
+/* ============================================================
+   UI VIEWS
+   ============================================================ */
+const UI = (() => {
+  const root = document.getElementById("root");
+  let currentTab = "log";
+  let activeView = null; // "setup" | "loading" | "app" | "settings"
+  let settingsOpen = false;
+
+  // Setup wizard local state
+  const setupState = {
+    step: "who",   // who | names | code | join | joining
+    mode: null,
+    names: ["", ""],
+    generatedCode: "",
+    joinCode: "",
+    error: ""
+  };
+
+  // Log form state (persist across re-renders)
+  const logForm = {
+    amount: "",
+    categoryId: null,
+    categoryType: null, // "spending" | "bill" | "debt"
+    paymentType: "cash",
+    person: "JOINT",
+    note: "",
+    cardId: null
+  };
+
+  // Debts screen extra-payment preview
+  let extraPreview = 0; // +100, +200, +500
+
+  // Add-item inline form state
+  const addForms = {
+    income: null,   // { label, amount, day } or null
+    bill: null,
+    savings: null,
+    spending: null,
+    debt: null,
+    card: null      // { label }
+  };
+
+  // Transaction inline editor state — keyed by txn id.
+  // Shape: { form: {...editable txn fields...}, deleteConfirm: boolean }
+  const txnEdits = {};
+
+  // Reset-app-data inline confirm.
+  let resetConfirmOpen = false;
+  // Edit inline forms keyed by id
+  const editStates = {};
+
+  // Inline form errors — spec forbids modals, so validation feedback renders as text.
+  // Keys: "log", "add_<kind>", "edit_<kind>_<id>", "tithe"
+  const formErrors = {};
+
+  // Inline tithe editor state (replaces prompt() dialog)
+  const titheEdit = { open: false, value: "" };
+
+  // New Month overlay state
+  let newMonthOpen = false;
+  let newMonthChoices = {}; // { categoryId: "roll" | "reset" }
+
+  // Log-screen "IMPORT FROM BANK" inline menu
+  let importMenuOpen = false;
+
+  // Debts-screen inline "LOG PAYMENT" form state, keyed by debt id.
+  // { open, amount, paymentType, cardId, person, note, error }
+  const debtPayForms = {};
+
+  // Post-import notice — shown on the LOG screen after a batch commits.
+  // { total, offMonth, dismissed }. Renders in danger-red when offMonth > 0.
+  let postImportNotice = null;
+
+  // LOG-screen transaction-list month navigator. null = pinned to
+  // s.currentMonth. Local UI state only; never written to Firestore. Reverts to
+  // current month on reload. Everything else (Safe to Spend hero, log form,
+  // needs-category counter for imports) still keys off s.currentMonth.
+  let viewedTxnMonth = null;
+
+  // Import flow — spans paste/upload → learning → review. One state object.
+  const importFlow = {
+    open: false,
+    stage: null,        // "paste-input" | "learning" | "review" | "no-dates" | "error"
+    kind: null,         // "csv" | "paste"
+    error: "",
+    rawText: "",        // paste path
+    fileName: "",       // csv path
+    csvHeaders: [],
+    csvRows: [],
+    pasteItems: [],
+    pasteStructure: null,
+    matchedProfile: null,
+    // Learning wizard fields (used when no matchedProfile)
+    learn: {
+      dateColumn: null,        // CSV: header index
+      amountColumn: null,      // CSV: header index
+      descriptionColumn: null, // CSV: header index
+      balanceIsAmount: false,  // paste: legacy YES/NO running-balance answer (maps to amountPos)
+      hasBalancePrompt: false, // paste: show running-balance question
+      label: "",
+      paymentType: "cash",
+      negativeIsPurchase: null, // null | true | false. Paste path auto-detects when unambiguous.
+      // Re-parse override controls (revealed by × SOMETHING'S WRONG).
+      // These persist into the saved profile's lineFormat + fingerprint.
+      somethingsWrong: false,
+      override: {
+        amountPos: null,        // "first" | "last" | null (auto)
+        secondIsBalance: null,  // true | false | null (auto = true)
+        linesPerTxn: null       // 1 | 2 | 3 | null (auto)
+      }
+    },
+    reviewRows: [],
+    showOlder: false,
+    // Three-choice panel for uncategorized rows on IMPORT ALL.
+    choicePanelOpen: false,
+    autoMatchResult: null // { matched, total, remaining }
+  };
+
+  // Pinned balance edit state, keyed by profile id
+  const balanceEdits = {}; // { profileId: { open, value } }
+
+  function footer() {
+    return `<div class="footer"><span class="footer-brand">© CLEAR</span></div>`;
+  }
+
+  function tabBar() {
+    const tabs = ["log", "dashboard", "debts"];
+    return `
+      <div class="tabbar">
+        <div class="tabbar-inner">
+          ${tabs.map(t => `<button class="tab ${currentTab===t?'active':''}" data-tab="${t}">${t}</button>`).join("")}
+        </div>
+      </div>`;
+  }
+
+  // Flat single-color cobalt cogwheel; inline SVG keeps the file self-contained.
+  // 8-tooth gear with center hole. Overrides the spec's no-SVG rule for this one icon.
+  function cogSvg(size) {
+    const s = size || 22;
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="${s}" height="${s}" viewBox="0 0 24 24" fill="#1A3A8C" aria-hidden="true" focusable="false">`
+      + `<path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7zm0 2a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3z"/>`
+      + `<path d="M10.6 1.5h2.8l.5 2.6a8.4 8.4 0 0 1 2 .84l2.2-1.5 2 2-1.5 2.2c.35.62.63 1.29.84 2l2.6.5v2.8l-2.6.5c-.21.71-.49 1.38-.84 2l1.5 2.2-2 2-2.2-1.5c-.62.35-1.29.63-2 .84l-.5 2.6h-2.8l-.5-2.6a8.4 8.4 0 0 1-2-.84l-2.2 1.5-2-2 1.5-2.2a8.4 8.4 0 0 1-.84-2l-2.6-.5v-2.8l2.6-.5c.21-.71.49-1.38.84-2l-1.5-2.2 2-2 2.2 1.5c.62-.35 1.29-.63 2-.84l.5-2.6zm1.4 4a6 6 0 1 0 0 12 6 6 0 0 0 0-12z"/>`
+      + `</svg>`;
+  }
+  function gear() {
+    return `<button class="gear" data-action="open-settings" aria-label="SETTINGS">${cogSvg(24)}</button>`;
+  }
+
+  // Look up a credit card label; returns null if the card no longer exists
+  // (deleting a card leaves old transactions intact but they fall back to CREDIT).
+  function cardLabelFor(s, cardId) {
+    if (!cardId) return null;
+    const c = (s.creditCards || []).find(x => x.id === cardId);
+    return c ? c.label : null;
+  }
+
+  // Fuzzy match between two account/debt labels. Case-insensitive; treats one
+  // label containing the other as a match, plus a shared leading 3-char run.
+  // Used to prompt the "IS THIS THE SAME AS…" inline confirm.
+  function fuzzyLabelMatch(a, b) {
+    const A = String(a || "").toUpperCase().trim();
+    const B = String(b || "").toUpperCase().trim();
+    if (!A || !B) return false;
+    if (A === B) return true;
+    if (A.includes(B) || B.includes(A)) return true;
+    const at = (A.match(/[A-Z]+/g) || [])[0] || "";
+    const bt = (B.match(/[A-Z]+/g) || [])[0] || "";
+    if (at.length >= 3 && at === bt) return true;
+    return false;
+  }
+
+  // Pure: compute a new debts array given an "old" (existing) and "new" (post-edit)
+  // transaction. Restoring an old debt payment adds the amount back; applying a new
+  // debt payment subtracts it. Called for edits and deletes.
+  function applyDebtDelta(debts, oldTxn, newTxn) {
+    let next = (debts || []).map(d => ({ ...d }));
+    if (oldTxn && oldTxn.categoryType === "debt" && oldTxn.categoryId) {
+      next = next.map(d => {
+        if (d.id !== oldTxn.categoryId) return d;
+        const bal = (Number(d.balance) || 0) + (Number(oldTxn.amount) || 0);
+        const cap = Number(d.originalBalance);
+        const capped = isFinite(cap) && cap > 0 ? Math.min(bal, cap) : bal;
+        return { ...d, balance: Math.round(capped * 100) / 100 };
+      });
+    }
+    if (newTxn && newTxn.categoryType === "debt" && newTxn.categoryId) {
+      next = next.map(d => {
+        if (d.id !== newTxn.categoryId) return d;
+        const bal = Math.max(0, (Number(d.balance) || 0) - (Number(newTxn.amount) || 0));
+        return { ...d, balance: Math.round(bal * 100) / 100 };
+      });
+    }
+    return next;
+  }
+
+  /* ------------- SETUP FLOW ------------- */
+  function renderSetup() {
+    let content = "";
+    if (setupState.step === "who") {
+      content = `
+        <div class="setup-inner">
+          <div class="brand">CLEAR</div>
+          <h1>A DEBT-FREE BUDGET FOR TWO PHONES</h1>
+          <div style="flex:1"></div>
+          <h2>WHO'S USING THIS?</h2>
+          <div class="stack-16">
+            <button class="cta big" data-action="setup-mode" data-mode="solo">JUST ME</button>
+            <button class="cta big" data-action="setup-mode" data-mode="couple">MY PARTNER &amp; ME</button>
+          </div>
+          <div style="flex:1"></div>
+          <button class="link center" data-action="setup-goto-join">HAVE A HOUSEHOLD CODE? →</button>
+        </div>`;
+    } else if (setupState.step === "names") {
+      if (setupState.mode === "couple") {
+        content = `
+          <div class="setup-inner">
+            <button class="link" data-action="setup-back">← BACK</button>
+            <h2>WHAT ARE YOUR NAMES?</h2>
+            <div class="stack-24">
+              <div>
+                <div class="sub-label">PERSON 1</div>
+                <input class="underline big" id="setup-name-1" value="${Util.esc(setupState.names[0])}" placeholder="NAME" maxlength="20">
+              </div>
+              <div>
+                <div class="sub-label">PERSON 2</div>
+                <input class="underline big" id="setup-name-2" value="${Util.esc(setupState.names[1])}" placeholder="NAME" maxlength="20">
+              </div>
+            </div>
+            <div style="flex:1"></div>
+            <button class="cta big" data-action="setup-names-next">→ NEXT</button>
+          </div>`;
+      } else {
+        content = `
+          <div class="setup-inner">
+            <button class="link" data-action="setup-back">← BACK</button>
+            <h2>WHAT'S YOUR NAME?</h2>
+            <div>
+              <div class="sub-label">YOUR NAME</div>
+              <input class="underline big" id="setup-name-1" value="${Util.esc(setupState.names[0])}" placeholder="NAME" maxlength="20">
+            </div>
+            <div style="flex:1"></div>
+            <button class="cta big" data-action="setup-names-next">→ NEXT</button>
+          </div>`;
+      }
+    } else if (setupState.step === "code") {
+      content = `
+        <div class="setup-inner">
+          <button class="link" data-action="setup-back">← BACK</button>
+          <h2>YOUR HOUSEHOLD CODE</h2>
+          <div class="code-display">${Util.esc(setupState.generatedCode)}</div>
+          <div class="row" style="justify-content:center;">
+            <button class="copy-btn" data-action="copy-code" data-code="${Util.esc(setupState.generatedCode)}">COPY →</button>
+          </div>
+          <div class="meta" style="text-align:center; margin-top:16px;">YOUR PARTNER ENTERS THIS CODE ON THEIR PHONE TO SYNC</div>
+          <div style="flex:1"></div>
+          ${setupState.error ? `<div class="text-danger meta">${Util.esc(setupState.error)}</div>` : ""}
+          <button class="cta big" data-action="setup-start">→ START</button>
+        </div>`;
+    } else if (setupState.step === "join") {
+      content = `
+        <div class="setup-inner">
+          <button class="link" data-action="setup-back">← BACK</button>
+          <h2>ENTER HOUSEHOLD CODE</h2>
+          <div>
+            <div class="sub-label">6-CHARACTER CODE</div>
+            <input class="underline big" id="setup-join-code" value="${Util.esc(setupState.joinCode)}" placeholder="ABCDEF" maxlength="6" autocapitalize="characters" autocorrect="off" spellcheck="false" style="text-transform: uppercase;">
+          </div>
+          ${setupState.error ? `<div class="text-danger meta">${Util.esc(setupState.error)}</div>` : ""}
+          <div style="flex:1"></div>
+          <button class="cta big" data-action="setup-join-submit">→ JOIN HOUSEHOLD</button>
+        </div>`;
+    } else if (setupState.step === "joining") {
+      content = `<div class="setup-inner"><h2>JOINING...</h2></div>`;
+    }
+    root.innerHTML = `<div class="setup">${content}</div>`;
+    bindSetupEvents();
+  }
+
+  function bindSetupEvents() {
+    root.querySelectorAll("[data-action]").forEach(el => {
+      el.addEventListener("click", handleSetupAction);
+    });
+    const n1 = root.querySelector("#setup-name-1");
+    if (n1) n1.addEventListener("input", e => { setupState.names[0] = e.target.value; });
+    const n2 = root.querySelector("#setup-name-2");
+    if (n2) n2.addEventListener("input", e => { setupState.names[1] = e.target.value; });
+    const jc = root.querySelector("#setup-join-code");
+    if (jc) jc.addEventListener("input", e => { setupState.joinCode = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g,"").slice(0,6); e.target.value = setupState.joinCode; });
+  }
+
+  async function handleSetupAction(e) {
+    const el = e.currentTarget;
+    const action = el.dataset.action;
+    if (action === "setup-mode") {
+      setupState.mode = el.dataset.mode;
+      setupState.step = "names";
+      setupState.error = "";
+      renderSetup();
+    } else if (action === "setup-back") {
+      setupState.error = "";
+      if (setupState.step === "names") setupState.step = "who";
+      else if (setupState.step === "code") setupState.step = "names";
+      else if (setupState.step === "join") setupState.step = "who";
+      renderSetup();
+    } else if (action === "setup-names-next") {
+      const n1 = (setupState.names[0]||"").trim();
+      const n2 = (setupState.names[1]||"").trim();
+      if (!n1 || (setupState.mode === "couple" && !n2)) {
+        setupState.error = "PLEASE ENTER NAME(S)";
+        renderSetup();
+        return;
+      }
+      setupState.names[0] = n1.toUpperCase();
+      setupState.names[1] = setupState.mode === "couple" ? n2.toUpperCase() : "";
+      setupState.generatedCode = DataService.generateCode();
+      setupState.step = "code";
+      setupState.error = "";
+      renderSetup();
+    } else if (action === "setup-goto-join") {
+      setupState.step = "join";
+      setupState.error = "";
+      renderSetup();
+    } else if (action === "copy-code") {
+      const code = el.dataset.code;
+      try {
+        await navigator.clipboard.writeText(code);
+        el.textContent = "COPIED";
+        setTimeout(() => { el.textContent = "COPY →"; }, 1200);
+      } catch (err) {
+        el.textContent = "COPY FAILED";
+      }
+    } else if (action === "setup-start") {
+      try {
+        setupState.error = "";
+        const id = setupState.generatedCode;
+        const names = setupState.mode === "couple" ? [setupState.names[0], setupState.names[1]] : [setupState.names[0]];
+        const data = buildDefaultData(setupState.mode, names);
+        DataService.setHouseholdIdLocal(id);
+        await DataService.set(data);
+        DataService.subscribe(id);
+        // renderApp will happen on snapshot
+        renderLoading("SYNCING...");
+      } catch (err) {
+        console.warn(err);
+        setupState.error = "COULDN'T CREATE HOUSEHOLD; CHECK YOUR CONNECTION";
+        renderSetup();
+      }
+    } else if (action === "setup-join-submit") {
+      const code = (setupState.joinCode||"").toUpperCase().trim();
+      if (code.length !== 6) {
+        setupState.error = "CODE MUST BE 6 CHARACTERS";
+        renderSetup();
+        return;
+      }
+      setupState.step = "joining";
+      setupState.error = "";
+      renderSetup();
+      try {
+        const exists = await DataService.checkExists(code);
+        if (!exists) {
+          setupState.step = "join";
+          setupState.error = "NO HOUSEHOLD FOUND WITH THAT CODE";
+          renderSetup();
+          return;
+        }
+        DataService.setHouseholdIdLocal(code);
+        DataService.subscribe(code);
+        renderLoading("SYNCING...");
+      } catch (err) {
+        console.warn(err);
+        setupState.step = "join";
+        setupState.error = "COULDN'T CONNECT; CHECK YOUR CONNECTION";
+        renderSetup();
+      }
+    }
+  }
+
+  /* ------------- LOADING SCREEN ------------- */
+  function renderLoading(msg) {
+    activeView = "loading";
+    root.innerHTML = `
+      <div class="loading">
+        <div class="brand">CLEAR</div>
+        <div class="msg">${Util.esc(msg || "LOADING...")}</div>
+        <button class="link center" data-action="reset-household">← USE A DIFFERENT HOUSEHOLD CODE</button>
+      </div>`;
+    const btn = root.querySelector("[data-action=reset-household]");
+    if (btn) btn.addEventListener("click", () => {
+      DataService.clearHouseholdId();
+      setupState.step = "who";
+      setupState.mode = null;
+      setupState.names = ["", ""];
+      setupState.generatedCode = "";
+      setupState.joinCode = "";
+      setupState.error = "";
+      renderSetup();
+    });
+  }
+
+  /* ------------- APP SHELL RENDERERS ------------- */
+  function render() {
+    const id = DataService.getHouseholdId();
+    if (!id) { activeView = "setup"; renderSetup(); return; }
+    const s = DataService.get();
+    if (!s) { renderLoading("SYNCING..."); return; }
+    if (settingsOpen) { renderSettings(s); return; }
+    activeView = "app";
+    switch (currentTab) {
+      case "log": renderLog(s); break;
+      case "dashboard": renderDashboard(s); break;
+      case "debts": renderDebts(s); break;
+      default: renderLog(s);
+    }
+    // New Month + Import overlays are separate layers
+    if (newMonthOpen) renderNewMonthOverlay(s);
+    if (importFlow.open && importFlow.stage) renderImportOverlay(s);
+  }
+
+  /* ------------- LOG SCREEN ------------- */
+  function renderLog(s) {
+    const isCouple = s.settings && s.settings.mode === "couple";
+    const safe = BudgetEngine.safeToSpend(s);
+    const budgeted = BudgetEngine.totalBudgeted(s);
+    const credit = BudgetEngine.totalUnpaidCredit(s);
+    const heroDanger = safe < 0 ? "danger" : "";
+
+    // Build chip list: spending + bills. Debt payments live on the Debts screen
+    // (→ LOG PAYMENT per card) so users don't confuse debt chips with credit cards.
+    // The txn editor still lists debts for edit/recategorize workflows.
+    const chips = [];
+    (s.spendingCategories||[]).forEach(c => chips.push({ id: c.id, label: c.label, type: "spending" }));
+    (s.bills||[]).forEach(b => chips.push({ id: b.id, label: b.label, type: "bill" }));
+
+    // recent transactions for the VIEWED month (local UI state), most recent first.
+    // Everything else on this screen still keys off s.currentMonth.
+    const catLookup = {};
+    (s.spendingCategories||[]).forEach(c => catLookup[c.id] = c.label);
+    (s.bills||[]).forEach(b => catLookup[b.id] = b.label);
+    (s.debts||[]).forEach(d => catLookup[d.id] = d.label);
+    // Clamp the viewed month: never past currentMonth (no future browsing) and
+    // never earlier than the oldest transaction month in the doc.
+    const allTxnMonths = (s.transactions||[])
+      .map(t => (t.month || "")).filter(m => /^\d{4}-\d{2}$/.test(m));
+    const oldestTxnMonth = allTxnMonths.length ? allTxnMonths.slice().sort()[0] : s.currentMonth;
+    let activeMonth = viewedTxnMonth || s.currentMonth;
+    if (activeMonth > s.currentMonth) activeMonth = s.currentMonth;
+    if (activeMonth < oldestTxnMonth) activeMonth = oldestTxnMonth;
+    viewedTxnMonth = activeMonth === s.currentMonth ? null : activeMonth;
+    const canGoBack = activeMonth > oldestTxnMonth;
+    const canGoForward = activeMonth < s.currentMonth;
+    const monthLabel = activeMonth === s.currentMonth
+      ? `THIS MONTH · ${Util.fmtMonthLong(activeMonth)}`
+      : Util.fmtMonthLong(activeMonth);
+    const txns = (s.transactions||[]).filter(t => t.month === activeMonth)
+      .slice().sort((a, b) => (a.date < b.date ? 1 : (a.date > b.date ? -1 : 0)));
+
+    const chipsHtml = chips.map(c => {
+      const cls = "chip " + (logForm.categoryId === c.id ? "active " : "") +
+        (c.type === "debt" ? "debt-chip " : (c.type === "bill" ? "bill-chip " : ""));
+      return `<button class="${cls}" data-action="pick-cat" data-id="${Util.esc(c.id)}" data-type="${c.type}">${Util.esc(c.label)}</button>`;
+    }).join("");
+
+    const personChips = isCouple ? `
+      <div>
+        <div class="sub-label">WHO PAID</div>
+        <div class="chips">
+          ${[s.settings.names[0], s.settings.names[1], "JOINT"].map(p => {
+            const val = p.toUpperCase();
+            return `<button class="chip ${logForm.person===val?'active':''}" data-action="pick-person" data-person="${Util.esc(val)}">${Util.esc(p)}</button>`;
+          }).join("")}
+        </div>
+      </div>` : "";
+
+    // Card chip row (visible only when CREDIT is the selected payment type)
+    const cards = s.creditCards || [];
+    const cardChipsHtml = logForm.paymentType === "credit" ? `
+      <div>
+        <div class="sub-label">WHICH CARD</div>
+        ${cards.length ? `
+          <div class="chips">
+            ${cards.map(c => `<button class="chip ${logForm.cardId===c.id?'active':''}" data-action="pick-card" data-id="${Util.esc(c.id)}">${Util.esc(c.label)}</button>`).join("")}
+            ${logForm.cardId ? `<button class="chip" data-action="pick-card" data-id="">× NONE</button>` : ""}
+          </div>
+        ` : `<div class="meta">NO CARDS; ADD THEM IN SETTINGS</div>`}
+      </div>` : "";
+
+    const txnRowsHtml = txns.length ? txns.map(t => renderTxnRow(s, t, catLookup)).join("") :
+      `<div class="meta" style="padding: 12px 0;">NO TRANSACTIONS YET THIS MONTH</div>`;
+    // Counter for transactions that were imported without a category selected.
+    const needsCount = txns.filter(t => t.needsCategory || (t.source === "import" && !t.categoryId)).length;
+    const needsCounterHtml = needsCount > 0
+      ? `<div class="sub-label text-danger" style="margin-top: 12px;">${needsCount} TRANSACTION${needsCount === 1 ? "" : "S"} NEED A CATEGORY</div>`
+      : "";
+
+    root.innerHTML = `
+      <div class="screen">
+        ${gear()}
+        <section class="section lime">
+          <div class="sub-label">SAFE TO SPEND</div>
+          <div class="hero ${heroDanger}">${Util.esc(Util.fmtMoney(safe, 0))}</div>
+          <div class="sub-label" style="margin-top:8px;">${Util.esc(Util.fmtMoney(budgeted, 0))} BUDGETED · ${Util.esc(Util.fmtMoney(credit, 0))} ON CREDIT</div>
+        </section>
+
+        <section class="section gray">
+          <div class="section-label">→ LOG A PURCHASE</div>
+          <div class="stack-24" style="margin-top:24px;">
+            <div>
+              <div class="sub-label">AMOUNT</div>
+              <input class="underline big num-input" id="log-amount" inputmode="decimal" placeholder="$0.00" value="${Util.esc(logForm.amount)}">
+            </div>
+            <div>
+              <div class="sub-label">CATEGORY</div>
+              <div class="chips">${chipsHtml || `<div class="meta">NO CATEGORIES; ADD SOME IN SETTINGS</div>`}</div>
+            </div>
+            <div>
+              <div class="sub-label">PAYMENT</div>
+              <div class="toggle-row">
+                <button class="toggle ${logForm.paymentType==='cash'?'active':''}" data-action="pick-pay" data-pay="cash">CASH</button>
+                <button class="toggle ${logForm.paymentType==='credit'?'active':''}" data-action="pick-pay" data-pay="credit">CREDIT</button>
+              </div>
+            </div>
+            ${cardChipsHtml}
+            ${personChips}
+            <div>
+              <div class="sub-label">NOTE</div>
+              <input class="underline" id="log-note" placeholder="NOTE (OPTIONAL)" value="${Util.esc(logForm.note)}" maxlength="60">
+            </div>
+            ${formErrors.log ? `<div class="text-danger meta">${Util.esc(formErrors.log)}</div>` : ""}
+            <button class="cta" data-action="log-it">→ LOG IT</button>
+          </div>
+        </section>
+
+        <section class="section off-white">
+          <button class="link" data-action="import-toggle">${importMenuOpen ? "× CLOSE" : "→ IMPORT FROM BANK"}</button>
+          ${importMenuOpen ? `
+            <div class="import-actions">
+              <button class="cta ghost" data-action="import-csv-pick">→ UPLOAD CSV FILE</button>
+              <button class="cta ghost" data-action="import-paste">→ PASTE TRANSACTIONS</button>
+              <input type="file" id="csv-file-input" accept=".csv,text/csv,text/plain" style="display:none;">
+            </div>
+          ` : ""}
+          <div class="month-nav" style="margin-top: 24px;">
+            ${canGoBack ? `<button class="month-arrow" data-action="month-prev" aria-label="PREVIOUS MONTH">←</button>` : `<span class="month-arrow inert"></span>`}
+            <div class="sub-label month-label">${Util.esc(monthLabel)}</div>
+            ${canGoForward ? `<button class="month-arrow" data-action="month-next" aria-label="NEXT MONTH">→</button>` : `<span class="month-arrow inert"></span>`}
+          </div>
+          ${(postImportNotice && !postImportNotice.dismissed) ? `
+            <div class="import-notice ${postImportNotice.offMonth > 0 ? 'text-danger' : ''}" style="margin-top:12px; display:flex; justify-content:space-between; align-items:center; gap:8px;">
+              <span class="sub-label">IMPORTED ${postImportNotice.total} TRANSACTION${postImportNotice.total===1?'':'S'}${postImportNotice.offMonth > 0 ? `; ${postImportNotice.offMonth} ARE IN OTHER MONTHS AND WON'T SHOW IN THIS MONTH'S LIST` : ''}</span>
+              <button class="link" data-action="dismiss-import-notice">×</button>
+            </div>
+          ` : ""}
+          ${needsCounterHtml}
+          <div style="margin-top:16px;">${txnRowsHtml}</div>
+        </section>
+
+        ${footer()}
+      </div>
+      ${tabBar()}
+    `;
+    bindGlobalTabs();
+    bindLogEvents(s);
+  }
+
+  function bindLogEvents(s) {
+    const amt = root.querySelector("#log-amount");
+    if (amt) amt.addEventListener("input", e => { logForm.amount = e.target.value; });
+    const note = root.querySelector("#log-note");
+    if (note) note.addEventListener("input", e => { logForm.note = e.target.value; });
+
+    root.querySelectorAll("[data-action=pick-cat]").forEach(el => {
+      el.addEventListener("click", () => {
+        logForm.categoryId = el.dataset.id;
+        logForm.categoryType = el.dataset.type;
+        render();
+      });
+    });
+    root.querySelectorAll("[data-action=pick-pay]").forEach(el => {
+      el.addEventListener("click", () => {
+        logForm.paymentType = el.dataset.pay;
+        if (logForm.paymentType !== "credit") logForm.cardId = null;
+        render();
+      });
+    });
+    root.querySelectorAll("[data-action=pick-card]").forEach(el => {
+      el.addEventListener("click", () => { logForm.cardId = el.dataset.id || null; render(); });
+    });
+    root.querySelectorAll("[data-action=pick-person]").forEach(el => {
+      el.addEventListener("click", () => { logForm.person = el.dataset.person; render(); });
+    });
+    const cta = root.querySelector("[data-action=log-it]");
+    if (cta) cta.addEventListener("click", () => submitLog(s));
+
+    // Import entry point
+    root.querySelectorAll("[data-action=import-toggle]").forEach(el => {
+      el.addEventListener("click", () => { importMenuOpen = !importMenuOpen; render(); });
+    });
+    root.querySelectorAll("[data-action=dismiss-import-notice]").forEach(el => {
+      el.addEventListener("click", () => { if (postImportNotice) postImportNotice.dismissed = true; render(); });
+    });
+    // Transaction-list month navigator. Clamps happen in the render pass so the
+    // handlers just shift by one calendar month.
+    root.querySelectorAll("[data-action=month-prev]").forEach(el => {
+      el.addEventListener("click", () => {
+        const cur = viewedTxnMonth || s.currentMonth;
+        let [y, m] = cur.split("-").map(Number);
+        m--; if (m < 1) { m = 12; y--; }
+        viewedTxnMonth = `${y}-${String(m).padStart(2,"0")}`;
+        render();
+      });
+    });
+    root.querySelectorAll("[data-action=month-next]").forEach(el => {
+      el.addEventListener("click", () => {
+        const cur = viewedTxnMonth || s.currentMonth;
+        let [y, m] = cur.split("-").map(Number);
+        m++; if (m > 12) { m = 1; y++; }
+        const next = `${y}-${String(m).padStart(2,"0")}`;
+        // No future browsing: snap back to null (pinned to currentMonth).
+        viewedTxnMonth = next >= s.currentMonth ? null : next;
+        render();
+      });
+    });
+    root.querySelectorAll("[data-action=import-csv-pick]").forEach(el => {
+      el.addEventListener("click", () => {
+        const fi = root.querySelector("#csv-file-input");
+        if (fi) fi.click();
+      });
+    });
+    const fi = root.querySelector("#csv-file-input");
+    if (fi) fi.addEventListener("change", (e) => onCsvFilePicked(s, e.target.files && e.target.files[0]));
+    root.querySelectorAll("[data-action=import-paste]").forEach(el => {
+      el.addEventListener("click", () => openPasteOverlay());
+    });
+
+    bindTxnRowEvents(s);
+  }
+
+  // Render a single transaction row plus (optionally) its inline editor / delete confirm.
+  function renderTxnRow(s, t, catLookup) {
+    const catLabel = catLookup[t.categoryId] || "";
+    const needsCat = !!t.needsCategory || (t.source === "import" && !t.categoryId);
+    let tag;
+    if (needsCat) {
+      tag = "ASSIGN";
+    } else if (t.paymentType === "credit") {
+      const cl = cardLabelFor(s, t.cardId);
+      tag = cl ? cl : "CREDIT";
+    } else if (t.person && t.person !== "JOINT") {
+      tag = t.person;
+    } else {
+      tag = "CASH";
+    }
+    const edit = txnEdits[t.id];
+    const expanded = !!edit;
+    const err = formErrors["txn_" + t.id];
+    const row = `
+      <div class="txn-row ${expanded ? 'expanded' : ''} ${needsCat ? 'needs-category' : ''}" data-action="toggle-txn" data-id="${Util.esc(t.id)}">
+        <div class="txn-date">${Util.esc(Util.fmtDateShort(t.date))}</div>
+        <div class="txn-note">
+          ${Util.esc(t.note || catLabel)}
+          <span class="txn-tag ${needsCat ? 'needs' : ''}">${Util.esc(tag)}</span>
+        </div>
+        <div class="txn-cat">${Util.esc(catLabel)}</div>
+        <div class="txn-amt">-${Util.esc(Util.fmtMoney(Number(t.amount)||0, 2))}</div>
+      </div>`;
+    if (!expanded) return row;
+    return row + renderTxnEditor(s, t, edit, err);
+  }
+
+  function renderTxnEditor(s, t, edit, err) {
+    const f = edit.form;
+    const isCouple = s.settings && s.settings.mode === "couple";
+    const cards = s.creditCards || [];
+
+    // Category chips.
+    // Debts appear ONLY when editing an existing debt payment so applyDebtDelta
+    // reconciliation stays available for re-assign. For every other txn the
+    // editor's picker mirrors the log form: spending + bills only.
+    const chips = [];
+    (s.spendingCategories||[]).forEach(c => chips.push({ id: c.id, label: c.label, type: "spending" }));
+    (s.bills||[]).forEach(b => chips.push({ id: b.id, label: b.label, type: "bill" }));
+    if (t.categoryType === "debt") {
+      (s.debts||[]).forEach(d => chips.push({ id: d.id, label: d.label + " (DEBT)", type: "debt" }));
+    }
+    const chipsHtml = chips.map(c => {
+      const cls = "chip " + (f.categoryId === c.id ? "active " : "") +
+        (c.type === "debt" ? "debt-chip " : (c.type === "bill" ? "bill-chip " : ""));
+      return `<button class="${cls}" data-action="txn-edit-cat" data-txn="${Util.esc(t.id)}" data-id="${Util.esc(c.id)}" data-type="${c.type}">${Util.esc(c.label)}</button>`;
+    }).join("");
+
+    // Card row lives inside .field for the same min-width:0 cascade the CATEGORY
+    // row gets. Prior to V9 this was a plain <div> — reproduced the iOS overflow
+    // when a credit txn had 4+ cards and 10+ categories.
+    const cardChipsHtml = f.paymentType === "credit" ? `
+      <div class="field">
+        <label>WHICH CARD</label>
+        ${cards.length ? `
+          <div class="chips">
+            ${cards.map(c => `<button class="chip ${f.cardId===c.id?'active':''}" data-action="txn-edit-card" data-txn="${Util.esc(t.id)}" data-id="${Util.esc(c.id)}">${Util.esc(c.label)}</button>`).join("")}
+            ${f.cardId ? `<button class="chip" data-action="txn-edit-card" data-txn="${Util.esc(t.id)}" data-id="">× NONE</button>` : ""}
+          </div>
+        ` : `<div class="meta">NO CARDS; ADD THEM IN SETTINGS</div>`}
+      </div>` : "";
+
+    const personChips = isCouple ? `
+      <div class="field">
+        <label>WHO PAID</label>
+        <div class="chips">
+          ${[s.settings.names[0], s.settings.names[1], "JOINT"].map(p => {
+            const val = p.toUpperCase();
+            return `<button class="chip ${f.person===val?'active':''}" data-action="txn-edit-person" data-txn="${Util.esc(t.id)}" data-person="${Util.esc(val)}">${Util.esc(p)}</button>`;
+          }).join("")}
+        </div>
+      </div>` : "";
+
+    const confirmHtml = edit.deleteConfirm ? `
+      <div class="txn-confirm">
+        <span>DELETE?</span>
+        <button data-action="txn-delete-cancel" data-txn="${Util.esc(t.id)}">NO</button>
+        <button class="yes" data-action="txn-delete-yes" data-txn="${Util.esc(t.id)}">YES</button>
+      </div>` : `
+      <div class="txn-actions">
+        <button data-action="txn-close" data-txn="${Util.esc(t.id)}">× CLOSE</button>
+        <button class="del-btn" data-action="txn-delete-ask" data-txn="${Util.esc(t.id)}">× DELETE</button>
+      </div>`;
+
+    return `
+      <div class="inline-form">
+        <div class="sub-label">EDIT TRANSACTION</div>
+        <div class="field"><label>AMOUNT</label><input data-action="txn-edit-field" data-txn="${Util.esc(t.id)}" data-field="amount" value="${Util.esc(f.amount)}" inputmode="decimal"></div>
+        <div class="field"><label>CATEGORY</label><div class="chips" style="margin-top:4px;">${chipsHtml}</div></div>
+        <div class="field"><label>PAYMENT</label>
+          <div class="toggle-row">
+            <button class="toggle ${f.paymentType==='cash'?'active':''}" data-action="txn-edit-pay" data-txn="${Util.esc(t.id)}" data-pay="cash">CASH</button>
+            <button class="toggle ${f.paymentType==='credit'?'active':''}" data-action="txn-edit-pay" data-txn="${Util.esc(t.id)}" data-pay="credit">CREDIT</button>
+          </div>
+        </div>
+        ${cardChipsHtml}
+        ${personChips}
+        <div class="field"><label>NOTE</label><input data-action="txn-edit-field" data-txn="${Util.esc(t.id)}" data-field="note" value="${Util.esc(f.note)}" maxlength="60"></div>
+        ${err ? `<div class="text-danger meta">${Util.esc(err)}</div>` : ""}
+        <div class="row-actions">
+          <button class="cta ghost" data-action="txn-close" data-txn="${Util.esc(t.id)}">× CANCEL</button>
+          <button class="cta" data-action="txn-save" data-txn="${Util.esc(t.id)}">→ SAVE</button>
+        </div>
+        ${confirmHtml}
+      </div>`;
+  }
+
+  function findTxn(s, id) { return (s.transactions||[]).find(x => x.id === id); }
+
+  function openTxnEditor(s, id) {
+    const t = findTxn(s, id);
+    if (!t) return;
+    txnEdits[id] = {
+      form: {
+        amount: String(Number(t.amount) || 0),
+        categoryId: t.categoryId || null,
+        categoryType: t.categoryType || null,
+        paymentType: t.paymentType || "cash",
+        person: t.person || "JOINT",
+        note: t.note || "",
+        cardId: t.cardId || null
+      },
+      deleteConfirm: false
+    };
+    formErrors["txn_" + id] = "";
+  }
+
+  function closeTxnEditor(id) {
+    delete txnEdits[id];
+    delete formErrors["txn_" + id];
+  }
+
+  function bindTxnRowEvents(s) {
+    root.querySelectorAll("[data-action=toggle-txn]").forEach(el => {
+      el.addEventListener("click", (e) => {
+        // Ignore clicks that already targeted a button inside an expanded editor.
+        if (e.target !== el && e.target.closest("button,input")) return;
+        const id = el.dataset.id;
+        if (txnEdits[id]) closeTxnEditor(id); else openTxnEditor(s, id);
+        render();
+      });
+    });
+    root.querySelectorAll("[data-action=txn-close]").forEach(el => {
+      el.addEventListener("click", (e) => { e.stopPropagation(); closeTxnEditor(el.dataset.txn); render(); });
+    });
+    root.querySelectorAll("[data-action=txn-edit-field]").forEach(el => {
+      el.addEventListener("input", (e) => {
+        e.stopPropagation();
+        const ed = txnEdits[el.dataset.txn]; if (!ed) return;
+        ed.form[el.dataset.field] = e.target.value;
+      });
+      el.addEventListener("click", e => e.stopPropagation());
+    });
+    root.querySelectorAll("[data-action=txn-edit-cat]").forEach(el => {
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const ed = txnEdits[el.dataset.txn]; if (!ed) return;
+        ed.form.categoryId = el.dataset.id;
+        ed.form.categoryType = el.dataset.type;
+        render();
+      });
+    });
+    root.querySelectorAll("[data-action=txn-edit-pay]").forEach(el => {
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const ed = txnEdits[el.dataset.txn]; if (!ed) return;
+        ed.form.paymentType = el.dataset.pay;
+        if (ed.form.paymentType !== "credit") ed.form.cardId = null;
+        render();
+      });
+    });
+    root.querySelectorAll("[data-action=txn-edit-card]").forEach(el => {
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const ed = txnEdits[el.dataset.txn]; if (!ed) return;
+        ed.form.cardId = el.dataset.id || null;
+        render();
+      });
+    });
+    root.querySelectorAll("[data-action=txn-edit-person]").forEach(el => {
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const ed = txnEdits[el.dataset.txn]; if (!ed) return;
+        ed.form.person = el.dataset.person;
+        render();
+      });
+    });
+    root.querySelectorAll("[data-action=txn-save]").forEach(el => {
+      el.addEventListener("click", (e) => { e.stopPropagation(); saveTxnEdit(s, el.dataset.txn); });
+    });
+    root.querySelectorAll("[data-action=txn-delete-ask]").forEach(el => {
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const ed = txnEdits[el.dataset.txn]; if (!ed) return;
+        ed.deleteConfirm = true;
+        render();
+      });
+    });
+    root.querySelectorAll("[data-action=txn-delete-cancel]").forEach(el => {
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const ed = txnEdits[el.dataset.txn]; if (!ed) return;
+        ed.deleteConfirm = false;
+        render();
+      });
+    });
+    root.querySelectorAll("[data-action=txn-delete-yes]").forEach(el => {
+      el.addEventListener("click", (e) => { e.stopPropagation(); deleteTxn(s, el.dataset.txn); });
+    });
+  }
+
+  async function saveTxnEdit(s, id) {
+    const ed = txnEdits[id];
+    const old = findTxn(s, id);
+    if (!ed || !old) return;
+    formErrors["txn_" + id] = "";
+    const amount = parseFloat(ed.form.amount);
+    if (!isFinite(amount) || amount <= 0) {
+      formErrors["txn_" + id] = "ENTER A VALID AMOUNT"; render(); return;
+    }
+    if (!ed.form.categoryId) {
+      formErrors["txn_" + id] = "PICK A CATEGORY"; render(); return;
+    }
+    const isCouple = s.settings && s.settings.mode === "couple";
+    const person = isCouple ? ed.form.person : (s.settings.names[0] || "ME").toUpperCase();
+    const updated = {
+      ...old,
+      amount: Math.round(amount * 100) / 100,
+      categoryId: ed.form.categoryId,
+      categoryType: ed.form.categoryType,
+      paymentType: ed.form.paymentType,
+      person: person,
+      note: (ed.form.note || "").toUpperCase().slice(0, 60),
+      cardId: ed.form.paymentType === "credit" ? (ed.form.cardId || null) : null,
+      source: old.source || "manual"
+    };
+    // Assigning a category to a previously-import-with-no-category txn:
+    // clear the flag and also update merchantMap so future imports learn from it.
+    if (updated.categoryId) delete updated.needsCategory;
+    const patch = {
+      transactions: (s.transactions||[]).map(x => x.id === id ? updated : x),
+      debts: applyDebtDelta(s.debts, old, updated)
+    };
+    if (updated.categoryId && old.source === "import" && (old.needsCategory || !old.categoryId)) {
+      const key = old.merchantKey || ImportEngine.normalizeMerchantKey(old.note || updated.note || "");
+      if (key) patch.merchantMap = { ...(s.merchantMap || {}), [key]: updated.categoryId };
+    }
+    try {
+      await DataService.update(patch);
+      closeTxnEditor(id);
+      render();
+    } catch (err) { alert("COULDN'T SAVE; CHECK CONNECTION"); console.warn(err); }
+  }
+
+  async function deleteTxn(s, id) {
+    const old = findTxn(s, id);
+    if (!old) return;
+    const patch = {
+      transactions: (s.transactions||[]).filter(x => x.id !== id),
+      debts: applyDebtDelta(s.debts, old, null)
+    };
+    try {
+      await DataService.update(patch);
+      closeTxnEditor(id);
+      render();
+    } catch (err) { alert("COULDN'T DELETE; CHECK CONNECTION"); console.warn(err); }
+  }
+
+  async function submitLog(s) {
+    formErrors.log = "";
+    const amount = parseFloat(logForm.amount);
+    if (!isFinite(amount) || amount <= 0) {
+      formErrors.log = "ENTER A VALID AMOUNT";
+      render();
+      return;
+    }
+    if (!logForm.categoryId) {
+      formErrors.log = "PICK A CATEGORY";
+      render();
+      return;
+    }
+    const isCouple = s.settings && s.settings.mode === "couple";
+    const person = isCouple ? logForm.person : (s.settings.names[0] || "ME").toUpperCase();
+    const txn = {
+      id: Util.uuid(),
+      date: Util.todayISO(),
+      amount: Math.round(amount * 100) / 100,
+      categoryId: logForm.categoryId,
+      categoryType: logForm.categoryType,
+      note: (logForm.note || "").toUpperCase().slice(0, 60),
+      paymentType: logForm.paymentType,
+      person: person,
+      month: s.currentMonth,
+      cardId: logForm.paymentType === "credit" ? (logForm.cardId || null) : null,
+      source: "manual"
+    };
+    const patch = { transactions: [...(s.transactions||[]), txn] };
+
+    // If logging against a debt, decrement its balance
+    if (logForm.categoryType === "debt") {
+      const debts = (s.debts||[]).map(d => {
+        if (d.id !== logForm.categoryId) return d;
+        const newBal = Math.max(0, (Number(d.balance)||0) - amount);
+        return { ...d, balance: Math.round(newBal * 100) / 100 };
+      });
+      patch.debts = debts;
+    }
+
+    try {
+      await DataService.update(patch);
+      // Reset form
+      logForm.amount = "";
+      logForm.note = "";
+      // keep last-used category and payment for convenience
+      render();
+    } catch (err) {
+      console.warn(err);
+      alert("COULDN'T SAVE; CHECK CONNECTION");
+    }
+  }
+
+  /* ------------- DASHBOARD ------------- */
+  function renderDashboard(s) {
+    const safe = BudgetEngine.safeToSpend(s);
+    const income = BudgetEngine.totalIncome(s);
+    const budgeted = BudgetEngine.totalBudgeted(s);
+    const isCouple = s.settings && s.settings.mode === "couple";
+    const heroDanger = safe < 0 ? "danger" : "";
+
+    // Debt block
+    const totalDebt = BudgetEngine.totalDebt(s);
+    const mins = BudgetEngine.totalDebtMins(s);
+    const target = BudgetEngine.targetDebt(s);
+
+    // Category rows
+    const cats = (s.spendingCategories||[]);
+    const catRows = cats.map(c => {
+      const spent = BudgetEngine.categorySpent(s, c.id);
+      const roll = BudgetEngine.rolloverAmount(s, c.id);
+      const budget = BudgetEngine.num(c.budgeted) + roll;
+      const remaining = budget - spent;
+      const pct = budget > 0 ? Math.min(100, (spent / budget) * 100) : 0;
+      const barClass = pct >= 90 ? "danger" : (pct >= 75 ? "warn" : "");
+      const remainClass = remaining < 0 ? "text-danger" : "";
+      return `
+        <div class="cat-row">
+          <div class="cat-line">
+            <span>${Util.esc(c.label)}</span>
+            <span>${Util.esc(Util.fmtMoney(spent,0))} / ${Util.esc(Util.fmtMoney(budget,0))}</span>
+          </div>
+          <div class="progress ${barClass}"><span style="width:${pct}%"></span></div>
+          <div class="cat-remaining ${remainClass}">${Util.esc(Util.fmtMoney(remaining,0))} REMAINING${roll ? " · ROLLOVER " + Util.esc(Util.fmtMoney(roll,0)) : ""}</div>
+        </div>`;
+    }).join("") || `<div class="meta">NO CATEGORIES YET</div>`;
+
+    // Credit block
+    const unpaid = BudgetEngine.totalUnpaidCredit(s);
+    const cashCover = BudgetEngine.cashToCover(s);
+    const covered = cashCover >= unpaid;
+    const shortfall = unpaid - cashCover;
+
+    // Per-card breakdown of unpaid credit this month.
+    // Transactions whose card was deleted (or that never had one) fall into "CREDIT".
+    const cards = s.creditCards || [];
+    const cardTotals = new Map();
+    let untagged = 0;
+    (s.transactions || []).forEach(t => {
+      if (t.paymentType !== "credit" || t.month !== s.currentMonth) return;
+      const amt = Number(t.amount) || 0;
+      const label = cardLabelFor(s, t.cardId);
+      if (label) cardTotals.set(label, (cardTotals.get(label) || 0) + amt);
+      else untagged += amt;
+    });
+    const cardRowsHtml = (cards.length || untagged > 0) ? (() => {
+      const rows = [];
+      cards.forEach(c => {
+        const v = cardTotals.get(c.label) || 0;
+        const linkedDebt = c.debtId ? (s.debts||[]).find(d => d.id === c.debtId) : null;
+        const debtSuffix = linkedDebt ? ` (DEBT: ${Util.fmtMoney(Number(linkedDebt.balance)||0,0)})` : "";
+        rows.push(`<div class="sub-label" style="margin-top:4px;">${Util.esc(c.label)}: ${Util.esc(Util.fmtMoney(v,0))}${Util.esc(debtSuffix)}</div>`);
+      });
+      if (untagged > 0) rows.push(`<div class="sub-label" style="margin-top:4px;">CREDIT: ${Util.esc(Util.fmtMoney(untagged,0))}</div>`);
+      return rows.join("");
+    })() : "";
+
+    // Person split
+    let peopleHtml = "";
+    if (isCouple) {
+      const p1 = (s.settings.names[0]||"").toUpperCase();
+      const p2 = (s.settings.names[1]||"").toUpperCase();
+      const p1Spent = BudgetEngine.personSpent(s, p1);
+      const p2Spent = BudgetEngine.personSpent(s, p2);
+      peopleHtml = `<div class="sub-label" style="margin-top:8px;">${Util.esc(p1)}: ${Util.esc(Util.fmtMoney(p1Spent,0))} SPENT · ${Util.esc(p2)}: ${Util.esc(Util.fmtMoney(p2Spent,0))} SPENT</div>`;
+    }
+
+    root.innerHTML = `
+      <div class="screen">
+        ${gear()}
+        <section class="section lime">
+          <div class="sub-label">SAFE TO SPEND</div>
+          <div class="hero ${heroDanger}">${Util.esc(Util.fmtMoney(safe,0))}</div>
+          <div class="sub-label" style="margin-top:8px;">INCOME: ${Util.esc(Util.fmtMoney(income,0))} · BUDGETED: ${Util.esc(Util.fmtMoney(budgeted,0))}</div>
+          ${peopleHtml}
+        </section>
+
+        <section class="section terracotta">
+          <div class="section-label">→ TOTAL DEBT</div>
+          <div class="hero" style="margin-top:8px;">${Util.esc(Util.fmtMoney(totalDebt,0))}</div>
+          <div class="sub-label" style="margin-top:8px;">MINIMUMS: ${Util.esc(Util.fmtMoney(mins,0))}/MO</div>
+          <div class="sub-label" style="margin-top:4px;">${target ? `TARGETING: ${Util.esc(target.label)} · ${Util.esc(Util.fmtMoney(Number(target.balance)||0,0))} REMAINING` : "NO ACTIVE DEBTS"}</div>
+        </section>
+
+        <section class="section teal">
+          <div class="section-label">→ CATEGORIES</div>
+          <div style="margin-top:24px;">${catRows}</div>
+        </section>
+
+        <section class="section lavender">
+          <div class="section-label">→ CREDIT THIS MONTH</div>
+          <div class="sub-label" style="margin-top:12px;">UNPAID: ${Util.esc(Util.fmtMoney(unpaid,0))}</div>
+          <div class="sub-label" style="margin-top:4px;">CASH TO COVER: ${Util.esc(Util.fmtMoney(Math.max(0,cashCover),0))}</div>
+          ${cardRowsHtml ? `<div style="margin-top:12px;">${cardRowsHtml}</div>` : ""}
+          <div class="sub-label ${covered ? '' : 'text-danger'}" style="margin-top:12px;">
+            ${covered ? "→ COVERED" : "← SHORTFALL: " + Util.esc(Util.fmtMoney(shortfall,0))}
+          </div>
+        </section>
+
+        ${((s.importProfiles||[]).length && (s.balances||[]).length) ? `
+          <section class="section gray">
+            <div class="section-label">→ BALANCES</div>
+            <div style="margin-top:12px;">
+              ${(s.importProfiles||[]).map(p => {
+                const b = (s.balances||[]).find(x => x.profileId === p.id);
+                if (!b) return "";
+                return `<div class="sub-label" style="margin-top:4px;">${Util.esc(p.label)}: ${Util.esc(Util.fmtMoney(Number(b.amount)||0,0))} · UPDATED ${Util.esc(Util.fmtDateShort(b.updatedDate))}</div>`;
+              }).join("")}
+            </div>
+          </section>
+        ` : ""}
+
+        ${footer()}
+      </div>
+      ${tabBar()}
+    `;
+    bindGlobalTabs();
+  }
+
+  /* ------------- DEBTS SCREEN ------------- */
+  function renderDebts(s) {
+    const baseExtra = Math.max(0, BudgetEngine.extraForDebt(s));
+    const totalExtra = baseExtra + extraPreview;
+    const strat = BudgetEngine.debtStrategy(s);
+    const sim = DebtEngine.simulate(s.debts||[], totalExtra, s.currentMonth, strat);
+    const debtFree = sim.debtFreeDate || "NOT YET";
+
+    const debtsSorted = BudgetEngine.debtOrder(s.debts||[], strat);
+    const stratExplainer = strat === "avalanche"
+      ? "HIGHEST RATE FIRST; LESS INTEREST PAID"
+      : "SMALLEST BALANCE FIRST; QUICK WINS";
+
+    const cardsHtml = debtsSorted.map((d, i) => {
+      const bal = Number(d.balance) || 0;
+      const orig = Number(d.originalBalance) || Math.max(bal, 1);
+      const paidPct = Math.max(0, Math.min(100, (1 - bal/orig) * 100));
+      const payoff = sim.payoffByDebt[d.id] || "NOT YET";
+      const heading = i === 0 ? "#1  ATTACKING NOW" : `#${i+1}  (AFTER #${i})`;
+      const isEditing = editStates["debt_" + d.id];
+      const editHtml = isEditing ? renderEditForm("debt", d) : "";
+      const linkedCard = d.cardId ? (s.creditCards||[]).find(c => c.id === d.cardId) : null;
+      const payForm = debtPayForms[d.id];
+      const payHtml = payForm && payForm.open ? renderDebtPayForm(s, d) : "";
+      return `
+        <div class="debt-card">
+          <div class="debt-header">
+            <span>${Util.esc(heading)}</span>
+            <button class="link" data-action="edit-item" data-kind="debt" data-id="${Util.esc(d.id)}" style="padding:0;min-height:auto;">EDIT →</button>
+          </div>
+          <div class="debt-label">${Util.esc(d.label)}</div>
+          <div class="debt-balance">${Util.esc(Util.fmtMoney(bal,0))} REMAINING</div>
+          <div class="progress"><span style="width:${paidPct}%"></span></div>
+          <div class="debt-meta">${paidPct.toFixed(0)}% PAID · PAYOFF: ${Util.esc(payoff)}</div>
+          <div class="debt-meta">MIN: ${Util.esc(Util.fmtMoney(Number(d.minimumPayment)||0,0))}/MO · RATE: ${(Number(d.interestRate)||0).toFixed(1)}%</div>
+          ${linkedCard ? `<div class="debt-meta">LINKED CARD: ${Util.esc(linkedCard.label)}</div>` : ""}
+          <button class="link" data-action="debt-pay-open" data-id="${Util.esc(d.id)}" style="margin-top:8px;">${payForm && payForm.open ? "× CANCEL PAYMENT" : "→ LOG PAYMENT"}</button>
+          ${payHtml}
+          ${editHtml}
+        </div>`;
+    }).join("") || `<div class="meta" style="padding:24px;">NO DEBTS YET · ADD ONE BELOW</div>`;
+
+    const addForm = addForms.debt ? renderAddDebtForm() : "";
+
+    root.innerHTML = `
+      <div class="screen">
+        ${gear()}
+        <section class="section terracotta">
+          <div class="sub-label">DEBT-FREE DATE</div>
+          <div class="hero" style="margin-top:8px;">${Util.esc(Util.fmtMonthLong(monthYMFromShort(debtFree)) || debtFree)}</div>
+          <div class="sub-label" style="margin-top:8px;">AT CURRENT PACE</div>
+        </section>
+
+        <section class="section gray">
+          <div class="sub-label">PAYOFF ORDER</div>
+          <div class="toggle-row" style="margin-top:8px;">
+            <button class="toggle ${strat==='avalanche'?'active':''}" data-action="pick-strategy" data-strategy="avalanche">AVALANCHE</button>
+            <button class="toggle ${strat==='snowball'?'active':''}" data-action="pick-strategy" data-strategy="snowball">SNOWBALL</button>
+          </div>
+          <div class="sub-label" style="margin-top:8px; opacity:0.85;">${Util.esc(stratExplainer)}</div>
+
+          <div class="section-label" style="margin-top:32px;">→ EXTRA PAYMENT / MONTH</div>
+          <div class="sub-label" style="margin-top:12px;">AUTO: ${Util.esc(Util.fmtMoney(baseExtra,0))} (FROM LEFTOVER)</div>
+          <div class="sub-label" style="margin-top:4px; opacity:0.75;">REMAINING AFTER ALL BILLS AND MINIMUMS</div>
+          <div class="toggle-row">
+            <button class="toggle ${extraPreview===100?'active':''}" data-action="extra-preview" data-amt="100">+ $100 MORE</button>
+            <button class="toggle ${extraPreview===200?'active':''}" data-action="extra-preview" data-amt="200">+ $200 MORE</button>
+            <button class="toggle ${extraPreview===500?'active':''}" data-action="extra-preview" data-amt="500">+ $500 MORE</button>
+            ${extraPreview!==0 ? `<button class="toggle" data-action="extra-preview" data-amt="0">× CLEAR</button>` : ""}
+          </div>
+          ${extraPreview>0 ? `<div class="sub-label" style="margin-top:12px;">WITH EXTRA: ${Util.esc(Util.fmtMoney(baseExtra+extraPreview,0))}/MO</div>` : ""}
+        </section>
+
+        <section class="section off-white" style="padding:0;">
+          ${cardsHtml}
+          <div style="padding:24px;">
+            ${addForm || `<button class="link" data-action="show-add-debt">* ADD DEBT →</button>`}
+          </div>
+        </section>
+
+        ${footer()}
+      </div>
+      ${tabBar()}
+    `;
+    bindGlobalTabs();
+    bindDebtsEvents(s);
+  }
+
+  // Convert "AUG 2025" -> "2025-08" (for fmtMonthLong)
+  function monthYMFromShort(shortStr) {
+    if (!shortStr || shortStr === "NOT YET") return null;
+    const parts = shortStr.split(" ");
+    if (parts.length !== 2) return null;
+    const names = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
+    const idx = names.indexOf(parts[0]);
+    if (idx < 0) return null;
+    return `${parts[1]}-${String(idx+1).padStart(2,"0")}`;
+  }
+
+  function bindDebtsEvents(s) {
+    root.querySelectorAll("[data-action=extra-preview]").forEach(el => {
+      el.addEventListener("click", () => {
+        const v = parseInt(el.dataset.amt, 10);
+        extraPreview = (extraPreview === v ? 0 : v);
+        render();
+      });
+    });
+    root.querySelectorAll("[data-action=pick-strategy]").forEach(el => {
+      el.addEventListener("click", async () => {
+        const v = el.dataset.strategy === "snowball" ? "snowball" : "avalanche";
+        try {
+          await DataService.update({ "settings.debtStrategy": v });
+        } catch (err) { console.warn(err); alert("COULDN'T SAVE; CHECK CONNECTION"); }
+      });
+    });
+    const addBtn = root.querySelector("[data-action=show-add-debt]");
+    if (addBtn) addBtn.addEventListener("click", () => {
+      addForms.debt = { label: "", balance: "", minimumPayment: "", interestRate: "" };
+      render();
+    });
+    root.querySelectorAll("[data-action=add-form-input]").forEach(el => {
+      el.addEventListener("input", e => {
+        const kind = el.dataset.kind;
+        const field = el.dataset.field;
+        if (addForms[kind]) addForms[kind][field] = e.target.value;
+      });
+    });
+    const saveDebt = root.querySelector("[data-action=save-add-debt]");
+    if (saveDebt) saveDebt.addEventListener("click", () => saveNewDebt(s));
+    const cancelDebt = root.querySelector("[data-action=cancel-add-debt]");
+    if (cancelDebt) cancelDebt.addEventListener("click", () => { addForms.debt = null; render(); });
+    // Card ↔ Debt link confirm also fires from the Debts screen (add-debt inline form).
+    root.querySelectorAll("[data-action=link-choose]").forEach(el => {
+      el.addEventListener("click", () => {
+        const kind = el.dataset.kind;
+        const v = el.dataset.v;
+        const f = addForms[kind];
+        if (!f) return;
+        f.linkChoice = v;
+        if (kind === "debt") saveNewDebt(s);
+        else saveNewItem(kind, s);
+      });
+    });
+
+    root.querySelectorAll("[data-action=edit-item]").forEach(el => {
+      el.addEventListener("click", () => {
+        const kind = el.dataset.kind;
+        const id = el.dataset.id;
+        editStates[kind + "_" + id] = !editStates[kind + "_" + id];
+        render();
+      });
+    });
+    // → LOG PAYMENT per-debt inline form
+    root.querySelectorAll("[data-action=debt-pay-open]").forEach(el => {
+      el.addEventListener("click", () => {
+        const id = el.dataset.id;
+        if (debtPayForms[id] && debtPayForms[id].open) {
+          delete debtPayForms[id];
+        } else {
+          debtPayForms[id] = {
+            open: true,
+            amount: "",
+            paymentType: "cash",
+            cardId: null,
+            person: "JOINT",
+            note: "",
+            error: ""
+          };
+        }
+        render();
+      });
+    });
+    root.querySelectorAll("[data-action=debt-pay-input]").forEach(el => {
+      el.addEventListener("input", e => {
+        const f = debtPayForms[el.dataset.id]; if (!f) return;
+        f[el.dataset.field] = e.target.value;
+      });
+    });
+    root.querySelectorAll("[data-action=debt-pay-toggle]").forEach(el => {
+      el.addEventListener("click", () => {
+        const f = debtPayForms[el.dataset.id]; if (!f) return;
+        f.paymentType = el.dataset.v;
+        if (f.paymentType !== "credit") f.cardId = null;
+        render();
+      });
+    });
+    root.querySelectorAll("[data-action=debt-pay-card]").forEach(el => {
+      el.addEventListener("click", () => {
+        const f = debtPayForms[el.dataset.id]; if (!f) return;
+        f.cardId = el.dataset.card || null;
+        render();
+      });
+    });
+    root.querySelectorAll("[data-action=debt-pay-person]").forEach(el => {
+      el.addEventListener("click", () => {
+        const f = debtPayForms[el.dataset.id]; if (!f) return;
+        f.person = el.dataset.p;
+        render();
+      });
+    });
+    root.querySelectorAll("[data-action=debt-pay-cancel]").forEach(el => {
+      el.addEventListener("click", () => { delete debtPayForms[el.dataset.id]; render(); });
+    });
+    root.querySelectorAll("[data-action=debt-pay-save]").forEach(el => {
+      el.addEventListener("click", () => saveDebtPayment(s, el.dataset.id));
+    });
+    bindEditFormEvents(s);
+  }
+
+  // Inline LOG PAYMENT form rendered underneath a debt card. Mirrors the log
+  // form's field structure so the containment CSS applies. On save, writes a
+  // manual transaction (categoryType "debt", categoryId = debt.id) and lets
+  // applyDebtDelta reconcile the debt's balance in the same patch.
+  function renderDebtPayForm(s, d) {
+    const f = debtPayForms[d.id];
+    const isCouple = s.settings && s.settings.mode === "couple";
+    const cards = s.creditCards || [];
+    const cardChipsHtml = f.paymentType === "credit" ? `
+      <div class="field">
+        <label>WHICH CARD</label>
+        ${cards.length ? `
+          <div class="chips">
+            ${cards.map(c => `<button class="chip ${f.cardId===c.id?'active':''}" data-action="debt-pay-card" data-id="${Util.esc(d.id)}" data-card="${Util.esc(c.id)}">${Util.esc(c.label)}</button>`).join("")}
+            ${f.cardId ? `<button class="chip" data-action="debt-pay-card" data-id="${Util.esc(d.id)}" data-card="">× NONE</button>` : ""}
+          </div>
+        ` : `<div class="meta">NO CARDS; ADD THEM IN SETTINGS</div>`}
+      </div>` : "";
+    const personChips = isCouple ? `
+      <div class="field">
+        <label>WHO PAID</label>
+        <div class="chips">
+          ${[s.settings.names[0], s.settings.names[1], "JOINT"].map(p => {
+            const val = p.toUpperCase();
+            return `<button class="chip ${f.person===val?'active':''}" data-action="debt-pay-person" data-id="${Util.esc(d.id)}" data-p="${Util.esc(val)}">${Util.esc(p)}</button>`;
+          }).join("")}
+        </div>
+      </div>` : "";
+    return `
+      <div class="inline-form">
+        <div class="sub-label">LOG PAYMENT</div>
+        <div class="field"><label>AMOUNT</label><input data-action="debt-pay-input" data-id="${Util.esc(d.id)}" data-field="amount" value="${Util.esc(f.amount)}" inputmode="decimal" placeholder="0"></div>
+        <div class="field"><label>PAYMENT</label>
+          <div class="toggle-row">
+            <button class="toggle ${f.paymentType==='cash'?'active':''}" data-action="debt-pay-toggle" data-id="${Util.esc(d.id)}" data-v="cash">CASH</button>
+            <button class="toggle ${f.paymentType==='credit'?'active':''}" data-action="debt-pay-toggle" data-id="${Util.esc(d.id)}" data-v="credit">CREDIT</button>
+          </div>
+        </div>
+        ${cardChipsHtml}
+        ${personChips}
+        <div class="field"><label>NOTE</label><input data-action="debt-pay-input" data-id="${Util.esc(d.id)}" data-field="note" value="${Util.esc(f.note)}" maxlength="60" placeholder="NOTE (OPTIONAL)"></div>
+        ${f.error ? `<div class="text-danger meta">${Util.esc(f.error)}</div>` : ""}
+        <div class="row-actions">
+          <button class="cta ghost" data-action="debt-pay-cancel" data-id="${Util.esc(d.id)}">× CANCEL</button>
+          <button class="cta" data-action="debt-pay-save" data-id="${Util.esc(d.id)}">→ SAVE</button>
+        </div>
+      </div>`;
+  }
+
+  async function saveDebtPayment(s, debtId) {
+    const f = debtPayForms[debtId];
+    if (!f) return;
+    f.error = "";
+    const amount = parseFloat(f.amount);
+    if (!isFinite(amount) || amount <= 0) { f.error = "ENTER A VALID AMOUNT"; render(); return; }
+    const debt = (s.debts || []).find(d => d.id === debtId);
+    if (!debt) { f.error = "DEBT NOT FOUND"; render(); return; }
+    const isCouple = s.settings && s.settings.mode === "couple";
+    const person = isCouple ? (f.person || "JOINT") : ((s.settings.names && s.settings.names[0]) || "ME").toUpperCase();
+    const dateISO = Util.todayISO();
+    const txn = {
+      id: Util.uuid(),
+      date: dateISO,
+      amount: Math.round(amount * 100) / 100,
+      categoryId: debtId,
+      categoryType: "debt",
+      note: (f.note || "").toUpperCase().slice(0, 60),
+      paymentType: f.paymentType || "cash",
+      person: person,
+      month: dateISO.slice(0, 7),
+      cardId: f.paymentType === "credit" ? (f.cardId || null) : null,
+      source: "manual"
+    };
+    // Reuse applyDebtDelta so the debt-balance reconciliation logic is shared
+    // with the txn editor's save path — one source of truth for consistency.
+    const patch = {
+      transactions: [...(s.transactions || []), txn],
+      debts: applyDebtDelta(s.debts, null, txn)
+    };
+    try {
+      await DataService.update(patch);
+      delete debtPayForms[debtId];
+      render();
+    } catch (err) { f.error = "COULDN'T SAVE; CHECK CONNECTION"; render(); console.warn(err); }
+  }
+
+  function renderAddDebtForm() {
+    const f = addForms.debt;
+    const err = formErrors.add_debt;
+    const pm = f.pendingMatch;
+    return `
+      <div class="inline-form">
+        <div class="sub-label">NEW DEBT</div>
+        <div class="field"><label>LABEL</label><input data-action="add-form-input" data-kind="debt" data-field="label" value="${Util.esc(f.label)}" placeholder="STUDENT LOAN"></div>
+        <div class="field"><label>BALANCE</label><input data-action="add-form-input" data-kind="debt" data-field="balance" value="${Util.esc(f.balance)}" placeholder="0" inputmode="decimal"></div>
+        <div class="field"><label>MINIMUM PAYMENT</label><input data-action="add-form-input" data-kind="debt" data-field="minimumPayment" value="${Util.esc(f.minimumPayment)}" placeholder="0" inputmode="decimal"></div>
+        <div class="field"><label>INTEREST RATE (%)</label><input data-action="add-form-input" data-kind="debt" data-field="interestRate" value="${Util.esc(f.interestRate)}" placeholder="0" inputmode="decimal"></div>
+        ${err ? `<div class="text-danger meta">${Util.esc(err)}</div>` : ""}
+        ${pm ? `
+          <div class="text-danger meta" style="margin-top:8px;">IS THIS THE SAME AS YOUR '${Util.esc(pm.targetLabel)}' CARD?</div>
+          <div class="row-actions">
+            <button class="cta ghost" data-action="link-choose" data-kind="debt" data-v="no">× NO; KEEP SEPARATE</button>
+            <button class="cta" data-action="link-choose" data-kind="debt" data-v="yes">→ YES; LINK THEM</button>
+          </div>
+        ` : `
+          <div class="row-actions">
+            <button class="cta ghost" data-action="cancel-add-debt">× CANCEL</button>
+            <button class="cta" data-action="save-add-debt">→ SAVE</button>
+          </div>
+        `}
+      </div>`;
+  }
+
+  async function saveNewDebt(s) {
+    formErrors.add_debt = "";
+    const f = addForms.debt || {};
+    const label = (f.label||"").trim();
+    if (!label) { formErrors.add_debt = "LABEL REQUIRED"; render(); return; }
+    // Fuzzy-match against existing cards before saving.
+    if (!f.linkChoice) {
+      const match = (s.creditCards || []).find(c => fuzzyLabelMatch(c.label, label));
+      if (match) {
+        f.pendingMatch = { targetId: match.id, targetLabel: match.label };
+        render(); return;
+      }
+    }
+    const balance = parseFloat(f.balance) || 0;
+    const min = parseFloat(f.minimumPayment) || 0;
+    const rate = parseFloat(f.interestRate) || 0;
+    const linkCardId = (f.linkChoice === "yes" && f.pendingMatch) ? f.pendingMatch.targetId : null;
+    const newDebt = {
+      id: Util.uuid(),
+      label: label.toUpperCase(),
+      balance: balance,
+      originalBalance: balance,
+      minimumPayment: min,
+      interestRate: rate,
+      cardId: linkCardId
+    };
+    const patch = { debts: [...(s.debts||[]), newDebt] };
+    if (linkCardId) {
+      patch.creditCards = (s.creditCards || []).map(c => c.id === linkCardId ? { ...c, debtId: newDebt.id } : c);
+    }
+    try {
+      await DataService.update(patch);
+      addForms.debt = null;
+      render();
+    } catch (err) { alert("COULDN'T SAVE"); console.warn(err); }
+  }
+
+  /* ------------- SETTINGS SCREEN ------------- */
+  function renderSettings(s) {
+    activeView = "settings";
+    const isCouple = s.settings && s.settings.mode === "couple";
+    const income = BudgetEngine.totalIncome(s);
+    const titheAmt = BudgetEngine.tithe(s);
+
+    const householdCode = DataService.getId() || "";
+
+    const incomeItems = (s.income||[]).map(i => renderListItem("income", i, s)).join("");
+    const billItems = (s.bills||[]).filter(b => (b.category||"bill") === "bill").map(b => renderListItem("bill", b, s)).join("");
+    const savingsItems = (s.bills||[]).filter(b => b.category === "savings").map(b => renderListItem("savings", b, s)).join("");
+    const spendingItems = (s.spendingCategories||[]).map(c => renderListItem("spending", c, s)).join("");
+    const debtItems = (s.debts||[]).map(d => renderListItem("debt", d, s)).join("");
+    const cardItems = (s.creditCards||[]).map(c => renderListItem("card", c, s)).join("");
+
+    root.innerHTML = `
+      <div class="screen">
+        <section class="section lime">
+          <div class="settings-header">
+            <div class="section-label"><span class="settings-title-icon">${cogSvg(32)}</span>SETTINGS</div>
+            <button class="settings-back" data-action="close-settings">← BACK</button>
+          </div>
+        </section>
+
+        <section class="section gray" style="padding-top:16px;">
+
+          <div class="settings-group">
+            <h3>HOUSEHOLD</h3>
+            <div class="list-item"><span>CODE</span><span>${Util.esc(householdCode)}</span><button class="copy-btn" data-action="copy-code" data-code="${Util.esc(householdCode)}">COPY →</button></div>
+            <div class="list-item"><span>MODE</span><span>${Util.esc((s.settings.mode||"").toUpperCase())}</span><span></span></div>
+            <div class="list-item"><span>NAMES</span><span>${Util.esc((s.settings.names||[]).join(" · "))}</span><span></span></div>
+            <div class="list-item"><span>BUILD</span><span>${Util.esc(APP_VERSION)}</span><span></span></div>
+            <div class="list-item"><span>SIGN OUT OF HOUSEHOLD</span><span></span><button class="link" data-action="signout">× SIGN OUT</button></div>
+          </div>
+
+          <div class="settings-group">
+            <h3>TITHING</h3>
+            <div class="list-item">
+              <span>TITHE RATE</span>
+              <span>${BudgetEngine.tithePercent(s)}%</span>
+              <button class="link" data-action="edit-tithe">EDIT →</button>
+            </div>
+            ${titheEdit.open ? `
+              <div class="inline-form">
+                <div class="sub-label">EDIT TITHE RATE</div>
+                <div class="field"><label>PERCENT (0-100)</label><input id="tithe-input" value="${Util.esc(titheEdit.value)}" inputmode="decimal"></div>
+                ${formErrors.tithe ? `<div class="text-danger meta">${Util.esc(formErrors.tithe)}</div>` : ""}
+                <div class="row-actions">
+                  <button class="cta ghost" data-action="cancel-tithe">× CANCEL</button>
+                  <button class="cta" data-action="save-tithe">→ SAVE</button>
+                </div>
+              </div>
+            ` : ""}
+            <div class="list-item locked">
+              <span>CURRENT AMOUNT</span>
+              <span>${Util.esc(Util.fmtMoney(titheAmt,0))}</span>
+              <span class="locked-tag">AUTO</span>
+            </div>
+            <div class="meta" style="margin-top:12px; opacity:0.8;">AUTO-CALCULATED FROM TOTAL INCOME EACH MONTH · FIRST LINE ITEM TAKEN FROM INCOME; CANNOT BE DELETED</div>
+          </div>
+
+          <div class="settings-group">
+            <h3>INCOME · TOTAL ${Util.esc(Util.fmtMoney(income,0))}</h3>
+            ${incomeItems || `<div class="meta">NO INCOME SOURCES</div>`}
+            ${addForms.income ? renderAddForm("income") : `<button class="link" data-action="show-add" data-kind="income">+ ADD INCOME SOURCE →</button>`}
+          </div>
+
+          <div class="settings-group">
+            <h3>BILLS &amp; FIXED EXPENSES</h3>
+            <div class="list-item locked">
+              <span>TITHE · 10% OF INCOME</span>
+              <span>${Util.esc(Util.fmtMoney(titheAmt,0))}</span>
+              <span class="locked-tag">GIVING · LOCKED</span>
+            </div>
+            ${billItems}
+            ${addForms.bill ? renderAddForm("bill") : `<button class="link" data-action="show-add" data-kind="bill">+ ADD BILL →</button>`}
+            <div class="divider-line"></div>
+            <h3 style="margin-top:8px;">SAVINGS</h3>
+            ${savingsItems}
+            ${addForms.savings ? renderAddForm("savings") : `<button class="link" data-action="show-add" data-kind="savings">+ ADD SAVINGS BILL →</button>`}
+          </div>
+
+          <div class="settings-group">
+            <h3>SPENDING BUDGET</h3>
+            ${spendingItems || `<div class="meta">NO CATEGORIES</div>`}
+            ${addForms.spending ? renderAddForm("spending") : `<button class="link" data-action="show-add" data-kind="spending">+ ADD CATEGORY →</button>`}
+          </div>
+
+          <div class="settings-group">
+            <h3>DEBTS</h3>
+            ${debtItems || `<div class="meta">NO DEBTS</div>`}
+            ${addForms.debt ? renderAddDebtForm() : `<button class="link" data-action="show-add-debt">+ ADD DEBT →</button>`}
+          </div>
+
+          <div class="settings-group">
+            <h3>CREDIT CARDS</h3>
+            ${cardItems || `<div class="meta">NO CARDS</div>`}
+            ${addForms.card ? renderAddCardForm() : `<button class="link" data-action="show-add" data-kind="card">+ ADD CARD →</button>`}
+          </div>
+
+          <div class="settings-group">
+            <h3>BALANCES</h3>
+            ${(s.importProfiles && s.importProfiles.length) ? (s.importProfiles).map(p => renderBalanceRow(s, p)).join("") : `<div class="meta">NO ACCOUNTS YET; IMPORT FROM BANK TO ADD ONE</div>`}
+            <div class="meta" style="opacity:0.7; margin-top:8px;">MANUAL SNAPSHOT; DOES NOT SYNC</div>
+          </div>
+
+          <div class="settings-group">
+            <h3>NEW MONTH · CURRENT: ${Util.esc(Util.fmtMonthLong(s.currentMonth))}</h3>
+            <div class="meta" style="opacity:0.85;">START A NEW BUDGET MONTH · REVIEW ROLLOVERS · RESET SPENDING</div>
+            <button class="cta" style="margin-top:16px;" data-action="open-new-month">→ START NEW MONTH</button>
+          </div>
+
+          <div class="settings-group">
+            <h3>START FROM SCRATCH?</h3>
+            ${resetConfirmOpen ? `
+              <div class="meta" style="opacity:0.9;">THIS ERASES ALL TRANSACTIONS, DEBTS, CARDS, AND AMOUNTS FOR THIS HOUSEHOLD AND STARTS YOU OVER AT ZERO. YOUR CODE AND NAMES ARE KEPT.</div>
+              <div class="row-actions" style="display:flex; gap:8px; margin-top:16px;">
+                <button class="cta ghost" data-action="reset-cancel">× CANCEL</button>
+                <button class="cta" data-action="reset-confirm">→ YES, START OVER</button>
+              </div>
+            ` : `
+              <div class="meta" style="opacity:0.85;">WIPE ALL DATA BUT KEEP THIS HOUSEHOLD CODE AND NAMES.</div>
+              <button class="link" style="margin-top:12px;" data-action="reset-open">→ START FROM SCRATCH</button>
+            `}
+          </div>
+
+        </section>
+
+        ${footer()}
+      </div>
+    `;
+    bindSettingsEvents(s);
+  }
+
+  function findBalance(s, profileId) {
+    return (s.balances || []).find(b => b.profileId === profileId) || null;
+  }
+
+  function renderBalanceRow(s, profile) {
+    const bal = findBalance(s, profile.id);
+    const edit = balanceEdits[profile.id];
+    const dateLine = bal ? `UPDATED ${Util.esc(Util.fmtDateShort(bal.updatedDate))}` : "NEVER UPDATED";
+    return `
+      <div class="list-item">
+        <span>${Util.esc(profile.label)}</span>
+        <span>${bal ? Util.esc(Util.fmtMoney(Number(bal.amount)||0,0)) : "$0"}</span>
+        <button class="link" data-action="balance-edit-toggle" data-id="${Util.esc(profile.id)}">${edit && edit.open ? "× CANCEL" : "UPDATE →"}</button>
+      </div>
+      <div class="list-item"><span class="locked-tag">${dateLine}</span><span></span><span></span></div>
+      ${edit && edit.open ? `
+        <div class="inline-form">
+          <div class="field">
+            <label>NEW BALANCE</label>
+            <input id="balance-input-${Util.esc(profile.id)}" value="${Util.esc(edit.value)}" inputmode="decimal" placeholder="0">
+          </div>
+          <div class="row-actions">
+            <button class="cta" data-action="balance-save" data-id="${Util.esc(profile.id)}">→ SAVE</button>
+          </div>
+        </div>
+      ` : ""}
+    `;
+  }
+
+  function renderAddCardForm() {
+    const f = addForms.card;
+    const err = formErrors.add_card;
+    const pm = f.pendingMatch;
+    return `
+      <div class="inline-form">
+        <div class="sub-label">NEW CARD</div>
+        <div class="field"><label>LABEL</label><input data-action="add-form-input" data-kind="card" data-field="label" value="${Util.esc(f.label)}" placeholder="FREEDOM"></div>
+        ${err ? `<div class="text-danger meta">${Util.esc(err)}</div>` : ""}
+        ${pm ? `
+          <div class="text-danger meta" style="margin-top:8px;">IS THIS THE SAME AS YOUR '${Util.esc(pm.targetLabel)}' DEBT?</div>
+          <div class="row-actions">
+            <button class="cta ghost" data-action="link-choose" data-kind="card" data-v="no">× NO; KEEP SEPARATE</button>
+            <button class="cta" data-action="link-choose" data-kind="card" data-v="yes">→ YES; LINK THEM</button>
+          </div>
+        ` : `
+          <div class="row-actions">
+            <button class="cta ghost" data-action="cancel-add" data-kind="card">× CANCEL</button>
+            <button class="cta" data-action="save-add" data-kind="card">→ SAVE</button>
+          </div>
+        `}
+      </div>`;
+  }
+
+  function renderListItem(kind, item, s) {
+    const editing = editStates[kind + "_" + item.id];
+    const isLocked = false;
+    let mainCell = "";
+    let amtCell = "";
+    if (kind === "income") {
+      mainCell = `<span>${Util.esc(item.label)} · DUE ${item.dueDateOfMonth || 1}</span>`;
+      amtCell = `<span>${Util.esc(Util.fmtMoney(Number(item.amount)||0,0))}</span>`;
+    } else if (kind === "bill" || kind === "savings") {
+      mainCell = `<span>${Util.esc(item.label)} · DUE ${item.dueDateOfMonth || 1}</span>`;
+      amtCell = `<span>${Util.esc(Util.fmtMoney(Number(item.amount)||0,0))}</span>`;
+    } else if (kind === "spending") {
+      mainCell = `<span>${Util.esc(item.label)}</span>`;
+      amtCell = `<span>${Util.esc(Util.fmtMoney(Number(item.budgeted)||0,0))}</span>`;
+    } else if (kind === "debt") {
+      mainCell = `<span>${Util.esc(item.label)}</span>`;
+      amtCell = `<span>${Util.esc(Util.fmtMoney(Number(item.balance)||0,0))} · MIN ${Util.esc(Util.fmtMoney(Number(item.minimumPayment)||0,0))}</span>`;
+    } else if (kind === "card") {
+      const linkedDebt = item.debtId ? (s.debts||[]).find(d => d.id === item.debtId) : null;
+      mainCell = `<span>${Util.esc(item.label)}${linkedDebt ? `<div class="link-tag">LINKED: ${Util.esc(linkedDebt.label)} DEBT</div>` : ""}</span>`;
+      amtCell = `<span class="locked-tag">CARD</span>`;
+    }
+    const actions = `
+      <span class="row-right">
+        <button class="link" data-action="edit-item" data-kind="${kind}" data-id="${Util.esc(item.id)}">EDIT</button>
+        <button class="del" data-action="delete-item" data-kind="${kind}" data-id="${Util.esc(item.id)}">×</button>
+      </span>`;
+    const editForm = editing ? renderEditForm(kind, item) : "";
+    return `<div class="list-item ${isLocked ? 'locked' : ''}">${mainCell}${amtCell}${actions}</div>${editForm}`;
+  }
+
+  function renderEditForm(kind, item) {
+    const isDebt = kind === "debt";
+    const isSpending = kind === "spending";
+    const isCard = kind === "card";
+    const hasDate = (kind === "bill" || kind === "savings" || kind === "income");
+    const amountField = isDebt ? "balance" : (isSpending ? "budgeted" : "amount");
+    const amountLabel = isDebt ? "BALANCE" : (isSpending ? "BUDGETED" : "AMOUNT");
+    if (isCard) {
+      return `
+        <div class="inline-form" data-edit-form data-kind="${kind}" data-id="${Util.esc(item.id)}">
+          <div class="field"><label>LABEL</label><input data-edit-field="label" value="${Util.esc(item.label||'')}"></div>
+          <div class="row-actions">
+            <button class="cta ghost" data-action="cancel-edit" data-kind="${kind}" data-id="${Util.esc(item.id)}">× CANCEL</button>
+            <button class="cta" data-action="save-edit" data-kind="${kind}" data-id="${Util.esc(item.id)}">→ SAVE</button>
+          </div>
+        </div>`;
+    }
+    return `
+      <div class="inline-form" data-edit-form data-kind="${kind}" data-id="${Util.esc(item.id)}">
+        <div class="field"><label>LABEL</label><input data-edit-field="label" value="${Util.esc(item.label||'')}"></div>
+        <div class="field"><label>${amountLabel}</label><input data-edit-field="${amountField}" value="${Util.esc(item[amountField]==null?'':item[amountField])}" inputmode="decimal"></div>
+        ${hasDate ? `<div class="field"><label>DUE DAY</label><input data-edit-field="dueDateOfMonth" value="${Util.esc(item.dueDateOfMonth||1)}" inputmode="numeric"></div>` : ""}
+        ${isDebt ? `
+          <div class="field"><label>MIN PAYMENT</label><input data-edit-field="minimumPayment" value="${Util.esc(item.minimumPayment==null?'':item.minimumPayment)}" inputmode="decimal"></div>
+          <div class="field"><label>INTEREST %</label><input data-edit-field="interestRate" value="${Util.esc(item.interestRate==null?'':item.interestRate)}" inputmode="decimal"></div>
+        ` : ""}
+        <div class="row-actions">
+          <button class="cta ghost" data-action="cancel-edit" data-kind="${kind}" data-id="${Util.esc(item.id)}">× CANCEL</button>
+          <button class="cta" data-action="save-edit" data-kind="${kind}" data-id="${Util.esc(item.id)}">→ SAVE</button>
+        </div>
+      </div>`;
+  }
+
+  function renderAddForm(kind) {
+    const f = addForms[kind];
+    const isSpending = kind === "spending";
+    const isIncome = kind === "income";
+    const hasDate = (kind === "bill" || kind === "savings" || kind === "income");
+    const amountField = isSpending ? "budgeted" : "amount";
+    const amountLabel = isSpending ? "BUDGETED" : "AMOUNT";
+    const err = formErrors["add_" + kind];
+    return `
+      <div class="inline-form">
+        <div class="sub-label">NEW ${Util.esc(kind.toUpperCase())}</div>
+        <div class="field"><label>LABEL</label><input data-action="add-form-input" data-kind="${kind}" data-field="label" value="${Util.esc(f.label)}"></div>
+        <div class="field"><label>${amountLabel}</label><input data-action="add-form-input" data-kind="${kind}" data-field="${amountField}" value="${Util.esc(f[amountField])}" inputmode="decimal"></div>
+        ${hasDate ? `<div class="field"><label>DUE DAY OF MONTH</label><input data-action="add-form-input" data-kind="${kind}" data-field="dueDateOfMonth" value="${Util.esc(f.dueDateOfMonth)}" inputmode="numeric"></div>` : ""}
+        ${err ? `<div class="text-danger meta">${Util.esc(err)}</div>` : ""}
+        <div class="row-actions">
+          <button class="cta ghost" data-action="cancel-add" data-kind="${kind}">× CANCEL</button>
+          <button class="cta" data-action="save-add" data-kind="${kind}">→ SAVE</button>
+        </div>
+      </div>`;
+  }
+
+  function bindSettingsEvents(s) {
+    root.querySelectorAll("[data-action=close-settings]").forEach(el => {
+      el.addEventListener("click", () => { settingsOpen = false; render(); });
+    });
+    root.querySelectorAll("[data-action=signout]").forEach(el => {
+      el.addEventListener("click", () => {
+        if (!confirm("SIGN OUT? YOU'LL NEED THE HOUSEHOLD CODE TO RETURN.")) return;
+        DataService.clearHouseholdId();
+        settingsOpen = false;
+        setupState.step = "who"; setupState.mode = null; setupState.names = ["",""];
+        setupState.generatedCode = ""; setupState.joinCode = ""; setupState.error = "";
+        renderSetup();
+      });
+    });
+    root.querySelectorAll("[data-action=copy-code]").forEach(el => {
+      el.addEventListener("click", async () => {
+        try { await navigator.clipboard.writeText(el.dataset.code); const t=el.textContent; el.textContent="COPIED"; setTimeout(()=>{el.textContent=t;},1000); } catch (e) {}
+      });
+    });
+    root.querySelectorAll("[data-action=edit-tithe]").forEach(el => {
+      el.addEventListener("click", () => {
+        titheEdit.open = true;
+        titheEdit.value = String(BudgetEngine.tithePercent(s));
+        formErrors.tithe = "";
+        render();
+      });
+    });
+    const titheInput = root.querySelector("#tithe-input");
+    if (titheInput) titheInput.addEventListener("input", e => { titheEdit.value = e.target.value; });
+    root.querySelectorAll("[data-action=cancel-tithe]").forEach(el => {
+      el.addEventListener("click", () => { titheEdit.open = false; formErrors.tithe = ""; render(); });
+    });
+    root.querySelectorAll("[data-action=save-tithe]").forEach(el => {
+      el.addEventListener("click", async () => {
+        formErrors.tithe = "";
+        const n = parseFloat(titheEdit.value);
+        if (!isFinite(n) || n < 0 || n > 100) {
+          formErrors.tithe = "ENTER A NUMBER 0-100";
+          render();
+          return;
+        }
+        try {
+          await DataService.update({ "settings.tithePercent": n });
+          titheEdit.open = false;
+          render();
+        } catch (e) { alert("COULDN'T SAVE"); console.warn(e); }
+      });
+    });
+    root.querySelectorAll("[data-action=show-add]").forEach(el => {
+      el.addEventListener("click", () => {
+        const kind = el.dataset.kind;
+        if (kind === "income") addForms.income = { label: "", amount: "", dueDateOfMonth: "1" };
+        else if (kind === "bill") addForms.bill = { label: "", amount: "", dueDateOfMonth: "1" };
+        else if (kind === "savings") addForms.savings = { label: "", amount: "", dueDateOfMonth: "1" };
+        else if (kind === "spending") addForms.spending = { label: "", budgeted: "" };
+        else if (kind === "card") addForms.card = { label: "" };
+        render();
+      });
+    });
+    root.querySelectorAll("[data-action=show-add-debt]").forEach(el => {
+      el.addEventListener("click", () => {
+        addForms.debt = { label: "", balance: "", minimumPayment: "", interestRate: "" };
+        render();
+      });
+    });
+    root.querySelectorAll("[data-action=add-form-input]").forEach(el => {
+      el.addEventListener("input", e => {
+        const kind = el.dataset.kind;
+        const field = el.dataset.field;
+        if (addForms[kind]) addForms[kind][field] = e.target.value;
+      });
+    });
+    root.querySelectorAll("[data-action=cancel-add]").forEach(el => {
+      el.addEventListener("click", () => {
+        const k = el.dataset.kind;
+        addForms[k] = null;
+        formErrors["add_" + k] = "";
+        render();
+      });
+    });
+    root.querySelectorAll("[data-action=cancel-add-debt]").forEach(el => {
+      el.addEventListener("click", () => {
+        addForms.debt = null;
+        formErrors.add_debt = "";
+        render();
+      });
+    });
+    root.querySelectorAll("[data-action=save-add]").forEach(el => {
+      el.addEventListener("click", () => saveNewItem(el.dataset.kind, s));
+    });
+    root.querySelectorAll("[data-action=save-add-debt]").forEach(el => {
+      el.addEventListener("click", () => saveNewDebt(s));
+    });
+    root.querySelectorAll("[data-action=link-choose]").forEach(el => {
+      el.addEventListener("click", () => {
+        const kind = el.dataset.kind;
+        const v = el.dataset.v; // "yes" | "no"
+        const f = addForms[kind];
+        if (!f) return;
+        f.linkChoice = v;
+        if (kind === "debt") saveNewDebt(s);
+        else saveNewItem(kind, s);
+      });
+    });
+    root.querySelectorAll("[data-action=delete-item]").forEach(el => {
+      el.addEventListener("click", () => deleteItem(el.dataset.kind, el.dataset.id, s));
+    });
+    root.querySelectorAll("[data-action=edit-item]").forEach(el => {
+      el.addEventListener("click", () => {
+        const key = el.dataset.kind + "_" + el.dataset.id;
+        editStates[key] = !editStates[key];
+        render();
+      });
+    });
+    bindEditFormEvents(s);
+    root.querySelectorAll("[data-action=open-new-month]").forEach(el => {
+      el.addEventListener("click", () => {
+        newMonthOpen = true;
+        newMonthChoices = {};
+        render();
+      });
+    });
+    root.querySelectorAll("[data-action=reset-open]").forEach(el => {
+      el.addEventListener("click", () => { resetConfirmOpen = true; render(); });
+    });
+    root.querySelectorAll("[data-action=reset-cancel]").forEach(el => {
+      el.addEventListener("click", () => { resetConfirmOpen = false; render(); });
+    });
+    root.querySelectorAll("[data-action=reset-confirm]").forEach(el => {
+      el.addEventListener("click", () => resetHousehold(s));
+    });
+    root.querySelectorAll("[data-action=balance-edit-toggle]").forEach(el => {
+      el.addEventListener("click", () => {
+        const id = el.dataset.id;
+        const bal = findBalance(s, id);
+        if (balanceEdits[id] && balanceEdits[id].open) balanceEdits[id].open = false;
+        else balanceEdits[id] = { open: true, value: bal ? String(bal.amount) : "" };
+        render();
+      });
+    });
+    (s.importProfiles || []).forEach(p => {
+      const inp = root.querySelector(`#balance-input-${window.CSS && CSS.escape ? CSS.escape(p.id) : p.id}`);
+      if (inp) inp.addEventListener("input", e => {
+        if (balanceEdits[p.id]) balanceEdits[p.id].value = e.target.value;
+      });
+    });
+    root.querySelectorAll("[data-action=balance-save]").forEach(el => {
+      el.addEventListener("click", () => saveBalance(s, el.dataset.id));
+    });
+  }
+
+  async function saveBalance(s, profileId) {
+    const edit = balanceEdits[profileId];
+    if (!edit) return;
+    const n = parseFloat(String(edit.value).replace(/[^0-9.\-]/g, ""));
+    if (!isFinite(n)) return;
+    const today = Util.todayISO();
+    const balances = (s.balances || []).filter(b => b.profileId !== profileId);
+    balances.push({ profileId, amount: Math.round(n * 100) / 100, updatedDate: today });
+    try {
+      await DataService.update({ balances });
+      balanceEdits[profileId].open = false;
+      render();
+    } catch (e) { alert("COULDN'T SAVE; CHECK CONNECTION"); console.warn(e); }
+  }
+
+  // Reset the household doc to seed data, KEEPING mode, names, tithePercent, debtStrategy,
+  // and the same household code / doc ID. The snapshot listener re-renders both phones.
+  async function resetHousehold(s) {
+    const mode = s.settings && s.settings.mode ? s.settings.mode : "solo";
+    const names = (s.settings && s.settings.names) ? s.settings.names.slice() : ["ME"];
+    const fresh = buildDefaultData(mode, names);
+    fresh.settings.tithePercent = BudgetEngine.tithePercent(s);
+    fresh.settings.debtStrategy = BudgetEngine.debtStrategy(s);
+    try {
+      // Clear any transient UI state that could leak across the reset
+      Object.keys(txnEdits).forEach(k => delete txnEdits[k]);
+      Object.keys(editStates).forEach(k => delete editStates[k]);
+      Object.keys(addForms).forEach(k => addForms[k] = null);
+      Object.keys(formErrors).forEach(k => delete formErrors[k]);
+      logForm.amount = ""; logForm.categoryId = null; logForm.categoryType = null;
+      logForm.paymentType = "cash"; logForm.cardId = null; logForm.note = "";
+      extraPreview = 0;
+      resetConfirmOpen = false;
+      await DataService.set(fresh);
+      render();
+    } catch (e) { alert("COULDN'T RESET; CHECK CONNECTION"); console.warn(e); resetConfirmOpen = true; render(); }
+  }
+
+  function bindEditFormEvents(s) {
+    root.querySelectorAll("[data-action=cancel-edit]").forEach(el => {
+      el.addEventListener("click", () => {
+        editStates[el.dataset.kind + "_" + el.dataset.id] = false;
+        render();
+      });
+    });
+    root.querySelectorAll("[data-action=save-edit]").forEach(el => {
+      el.addEventListener("click", () => saveEdit(el.dataset.kind, el.dataset.id, s));
+    });
+  }
+
+  async function saveEdit(kind, id, s) {
+    const form = root.querySelector(`[data-edit-form][data-kind="${kind}"][data-id="${id}"]`);
+    if (!form) return;
+    const values = {};
+    form.querySelectorAll("[data-edit-field]").forEach(inp => { values[inp.dataset.editField] = inp.value; });
+    const patch = {};
+    if (kind === "income") {
+      const arr = (s.income||[]).map(i => i.id === id ? {
+        ...i,
+        label: (values.label||i.label).toUpperCase(),
+        amount: parseFloat(values.amount) || 0,
+        dueDateOfMonth: parseInt(values.dueDateOfMonth,10) || 1
+      } : i);
+      patch.income = arr;
+    } else if (kind === "bill" || kind === "savings") {
+      const arr = (s.bills||[]).map(b => b.id === id ? {
+        ...b,
+        label: (values.label||b.label).toUpperCase(),
+        amount: parseFloat(values.amount) || 0,
+        dueDateOfMonth: parseInt(values.dueDateOfMonth,10) || 1
+      } : b);
+      patch.bills = arr;
+    } else if (kind === "spending") {
+      const arr = (s.spendingCategories||[]).map(c => c.id === id ? {
+        ...c,
+        label: (values.label||c.label).toUpperCase(),
+        budgeted: parseFloat(values.budgeted) || 0
+      } : c);
+      patch.spendingCategories = arr;
+    } else if (kind === "debt") {
+      const arr = (s.debts||[]).map(d => {
+        if (d.id !== id) return d;
+        const newBal = parseFloat(values.balance);
+        return {
+          ...d,
+          label: (values.label||d.label).toUpperCase(),
+          balance: isFinite(newBal) ? newBal : d.balance,
+          originalBalance: Number(d.originalBalance) || (isFinite(newBal) ? newBal : d.balance),
+          minimumPayment: parseFloat(values.minimumPayment) || 0,
+          interestRate: parseFloat(values.interestRate) || 0
+        };
+      });
+      patch.debts = arr;
+    } else if (kind === "card") {
+      const arr = (s.creditCards||[]).map(c => c.id === id ? {
+        ...c,
+        label: (values.label||c.label).toUpperCase()
+      } : c);
+      patch.creditCards = arr;
+    }
+    try {
+      await DataService.update(patch);
+      editStates[kind + "_" + id] = false;
+      render();
+    } catch (e) { alert("COULDN'T SAVE"); console.warn(e); }
+  }
+
+  async function saveNewItem(kind, s) {
+    formErrors["add_" + kind] = "";
+    const f = addForms[kind] || {};
+    const label = (f.label||"").trim();
+    if (!label) { formErrors["add_" + kind] = "LABEL REQUIRED"; render(); return; }
+    const patch = {};
+    if (kind === "income") {
+      const item = { id: Util.uuid(), label: label.toUpperCase(), amount: parseFloat(f.amount)||0, dueDateOfMonth: parseInt(f.dueDateOfMonth,10)||1 };
+      patch.income = [...(s.income||[]), item];
+    } else if (kind === "bill" || kind === "savings") {
+      const item = { id: Util.uuid(), label: label.toUpperCase(), amount: parseFloat(f.amount)||0, dueDateOfMonth: parseInt(f.dueDateOfMonth,10)||1, category: kind };
+      patch.bills = [...(s.bills||[]), item];
+    } else if (kind === "spending") {
+      const item = { id: Util.uuid(), label: label.toUpperCase(), budgeted: parseFloat(f.budgeted)||0, type: "spending" };
+      patch.spendingCategories = [...(s.spendingCategories||[]), item];
+    } else if (kind === "card") {
+      // Card ↔ Debt fuzzy link confirm (mirror of the debt path).
+      if (!f.linkChoice) {
+        const match = (s.debts || []).find(d => fuzzyLabelMatch(d.label, label));
+        if (match) {
+          f.pendingMatch = { targetId: match.id, targetLabel: match.label };
+          render();
+          return;
+        }
+      }
+      const linkDebtId = (f.linkChoice === "yes" && f.pendingMatch) ? f.pendingMatch.targetId : null;
+      const item = { id: Util.uuid(), label: label.toUpperCase(), debtId: linkDebtId };
+      patch.creditCards = [...(s.creditCards||[]), item];
+      if (linkDebtId) {
+        patch.debts = (s.debts || []).map(d => d.id === linkDebtId ? { ...d, cardId: item.id } : d);
+      }
+    }
+    try {
+      await DataService.update(patch);
+      addForms[kind] = null;
+      render();
+    } catch (e) { alert("COULDN'T SAVE"); console.warn(e); }
+  }
+
+  async function deleteItem(kind, id, s) {
+    if (!confirm("DELETE THIS ITEM?")) return;
+    const patch = {};
+    if (kind === "income") patch.income = (s.income||[]).filter(x => x.id !== id);
+    else if (kind === "bill" || kind === "savings") patch.bills = (s.bills||[]).filter(x => x.id !== id);
+    else if (kind === "spending") patch.spendingCategories = (s.spendingCategories||[]).filter(x => x.id !== id);
+    else if (kind === "debt") {
+      // Also clear cardId on any card that was linked to this debt.
+      patch.debts = (s.debts||[]).filter(x => x.id !== id);
+      patch.creditCards = (s.creditCards||[]).map(c => c.debtId === id ? { ...c, debtId: null } : c);
+    }
+    else if (kind === "card") {
+      patch.creditCards = (s.creditCards||[]).filter(x => x.id !== id);
+      // Clear cardId on any debt referencing this card.
+      patch.debts = (s.debts||[]).map(d => d.cardId === id ? { ...d, cardId: null } : d);
+    }
+    try { await DataService.update(patch); render(); } catch (e) { alert("COULDN'T DELETE"); }
+  }
+
+  /* ------------- IMPORT PIPELINE ------------- */
+
+  function resetImportFlow() {
+    importFlow.open = false;
+    importFlow.stage = null;
+    importFlow.kind = null;
+    importFlow.error = "";
+    importFlow.rawText = "";
+    importFlow.fileName = "";
+    importFlow.csvHeaders = [];
+    importFlow.csvRows = [];
+    importFlow.pasteItems = [];
+    importFlow.pasteStructure = null;
+    importFlow.matchedProfile = null;
+    importFlow.learn = {
+      dateColumn: null, amountColumn: null, descriptionColumn: null,
+      balanceIsAmount: false, hasBalancePrompt: false,
+      label: "", paymentType: "cash", negativeIsPurchase: null,
+      somethingsWrong: false,
+      override: { amountPos: null, secondIsBalance: null, linesPerTxn: null }
+    };
+    importFlow.reviewRows = [];
+    importFlow.showOlder = false;
+    importFlow.choicePanelOpen = false;
+    importFlow.autoMatchResult = null;
+  }
+
+  function openPasteOverlay() {
+    resetImportFlow();
+    importFlow.open = true;
+    importFlow.stage = "paste-input";
+    importFlow.kind = "paste";
+    render();
+  }
+
+  function onCsvFilePicked(s, file) {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      resetImportFlow();
+      importFlow.open = true;
+      importFlow.kind = "csv";
+      importFlow.fileName = file.name || "IMPORT.CSV";
+      const parsed = ImportEngine.csvParse(String(reader.result || ""));
+      importFlow.csvHeaders = parsed.headers;
+      importFlow.csvRows = parsed.rows;
+      // Try to match an existing profile by fingerprint.
+      const fp = ImportEngine.computeCsvFingerprint(parsed.headers);
+      const profile = (s.importProfiles || []).find(p => p.profileType === "csv" && p.headerFingerprint === fp);
+      if (profile) {
+        importFlow.matchedProfile = profile;
+        goToReviewFromCsv(s);
+      } else {
+        importFlow.stage = "learning";
+        render();
+      }
+    };
+    reader.onerror = () => {
+      resetImportFlow();
+      importFlow.open = true;
+      importFlow.stage = "error";
+      importFlow.error = "COULDN'T READ FILE";
+      render();
+    };
+    reader.readAsText(file);
+  }
+
+  function onPasteSubmit(s) {
+    const text = importFlow.rawText || "";
+    const parsed = ImportEngine.textParse(text);
+    if (!parsed.structure.hasDates) {
+      importFlow.stage = "no-dates";
+      render();
+      return;
+    }
+    importFlow.pasteItems = parsed.items;
+    importFlow.pasteStructure = parsed.structure;
+    const fp = ImportEngine.computePasteFingerprint(parsed.structure);
+    const profile = (s.importProfiles || []).find(p => p.profileType === "paste" && p.formatFingerprint === fp);
+    if (profile) {
+      importFlow.matchedProfile = profile;
+      // Re-parse with the profile's saved overrides so recognized imports
+      // apply the same corrections the user made the first time.
+      if (profile.lineFormat) {
+        const lf = profile.lineFormat;
+        const rep = ImportEngine.textParse(text, {
+          amountPos: (lf.amountPosition === "first" || lf.amountPosition === "last") ? lf.amountPosition : undefined,
+          secondIsBalance: lf.secondIsBalance == null ? undefined : !!lf.secondIsBalance,
+          linesPerTxn: lf.linesPerTransaction || undefined
+        });
+        importFlow.pasteItems = rep.items;
+      }
+      goToReviewFromPaste(s);
+    } else {
+      // Learn mode
+      importFlow.learn.hasBalancePrompt = parsed.structure.hasBalance;
+      // Auto-detect sign convention when unambiguous
+      const signs = parsed.items.map(i => Math.sign(i.amount));
+      if (signs.every(x => x >= 0)) importFlow.learn.negativeIsPurchase = false;
+      else if (signs.every(x => x <= 0)) importFlow.learn.negativeIsPurchase = true;
+      importFlow.stage = "learning";
+      render();
+    }
+  }
+
+  // Build review rows from CSV using either the matched profile or the learning-wizard picks.
+  function goToReviewFromCsv(s) {
+    const profile = importFlow.matchedProfile || {
+      dateColumn: importFlow.learn.dateColumn,
+      amountColumn: importFlow.learn.amountColumn,
+      descriptionColumn: importFlow.learn.descriptionColumn,
+      negativeIsPurchase: !!importFlow.learn.negativeIsPurchase,
+      paymentType: importFlow.learn.paymentType,
+      label: importFlow.learn.label
+    };
+    const items = [];
+    for (const row of importFlow.csvRows) {
+      if (!row || !row.length) continue;
+      const dateRaw = row[profile.dateColumn] || "";
+      const amtRaw = row[profile.amountColumn] || "";
+      const desc = row[profile.descriptionColumn] || "";
+      const iso = ImportEngine.parseDate(dateRaw);
+      if (!iso) continue;
+      const amtToks = ImportEngine.findAmounts(amtRaw) || [];
+      const amount = amtToks.length ? amtToks[0].value : parseFloat(String(amtRaw).replace(/[^0-9.\-]/g, ""));
+      if (!isFinite(amount)) continue;
+      items.push({ date: iso, amount, description: desc });
+    }
+    buildReviewRows(s, items, profile);
+  }
+
+  function goToReviewFromPaste(s) {
+    const profile = importFlow.matchedProfile || {
+      profileType: "paste",
+      negativeIsPurchase: !!importFlow.learn.negativeIsPurchase,
+      paymentType: importFlow.learn.paymentType,
+      label: importFlow.learn.label,
+      formatFingerprint: ImportEngine.computePasteFingerprint(importFlow.pasteStructure)
+    };
+    buildReviewRows(s, importFlow.pasteItems, profile);
+  }
+
+  function buildReviewRows(s, items, profile) {
+    const existing = s.transactions || [];
+    const mmap = s.merchantMap || {};
+    const rows = [];
+    for (const it of items) {
+      const signed = Number(it.amount) || 0;
+      const isNeg = signed < 0;
+      // With negativeIsPurchase: negative = purchase, positive = deposit.
+      // Without: positive = purchase, negative = deposit/refund.
+      const isDeposit = profile.negativeIsPurchase ? !isNeg : isNeg;
+      const absAmt = Math.abs(signed);
+      const merchantKey = ImportEngine.normalizeMerchantKey(it.description);
+      const mappedCat = mmap[merchantKey] || null;
+      // Prefer spending category ids; fall back gracefully.
+      let categoryType = null;
+      if (mappedCat) {
+        const inSpending = (s.spendingCategories || []).some(c => c.id === mappedCat);
+        const inBills = (s.bills || []).some(b => b.id === mappedCat);
+        categoryType = inSpending ? "spending" : (inBills ? "bill" : "spending");
+      }
+      const cand = { date: it.date, amount: absAmt, description: it.description };
+      let skipped = false, skipReason = "";
+      if (isDeposit) { skipped = true; skipReason = "DEPOSIT; SKIPPED"; }
+      if (!skipped && ImportEngine.isExactDupe(cand, existing)) {
+        skipped = true;
+        skipReason = "ALREADY LOGGED";
+      }
+      if (!skipped) {
+        const fuzz = ImportEngine.findFuzzyMatch(cand, existing);
+        if (fuzz) {
+          skipped = true;
+          const label = (fuzz.note || "MATCH").toUpperCase();
+          skipReason = `MATCHES: ${label} · ${Util.fmtDateShort(fuzz.date)}`;
+        }
+      }
+      rows.push({
+        id: Util.uuid(),
+        date: it.date,
+        amount: absAmt,
+        originalSigned: signed,
+        description: (it.description || "").toUpperCase().slice(0, 60),
+        merchantKey,
+        categoryId: mappedCat,
+        categoryType,
+        categoryAuto: !!mappedCat,
+        paymentType: profile.paymentType || "cash",
+        cardId: null,
+        person: (s.settings && s.settings.mode === "couple") ? "JOINT" : ((s.settings && s.settings.names && s.settings.names[0]) || "ME").toUpperCase(),
+        isDeposit,
+        skipped,
+        skipReason
+      });
+    }
+    importFlow.reviewRows = rows;
+    importFlow.stage = "review";
+    render();
+  }
+
+  // Finalize learning wizard, save profile to Firestore, then advance to review.
+  async function finalizeLearningAndReview(s) {
+    const l = importFlow.learn;
+    const label = (l.label || "").trim().toUpperCase() || (importFlow.kind === "csv" ? "CSV IMPORT" : "PASTED IMPORT");
+    if (importFlow.kind === "csv") {
+      if (l.dateColumn == null || l.amountColumn == null || l.descriptionColumn == null) {
+        importFlow.error = "MAP DATE, AMOUNT, AND DESCRIPTION COLUMNS";
+        render();
+        return;
+      }
+    }
+    if (l.negativeIsPurchase == null) l.negativeIsPurchase = true;
+    const profile = {
+      id: Util.uuid(),
+      label,
+      profileType: importFlow.kind === "csv" ? "csv" : "paste",
+      paymentType: l.paymentType || "cash",
+      negativeIsPurchase: !!l.negativeIsPurchase
+    };
+    if (importFlow.kind === "csv") {
+      profile.dateColumn = l.dateColumn;
+      profile.amountColumn = l.amountColumn;
+      profile.descriptionColumn = l.descriptionColumn;
+      profile.headerFingerprint = ImportEngine.computeCsvFingerprint(importFlow.csvHeaders);
+    } else {
+      // Compose effective override values (user picks fall back to auto-detected).
+      const auto = importFlow.pasteStructure;
+      const ov = l.override || {};
+      const legacyOverride = (ov.amountPos == null && l.balanceIsAmount) ? "last" : ov.amountPos;
+      const effAmountPos = legacyOverride || auto.amountPos;
+      const effSecond = ov.secondIsBalance == null ? true : !!ov.secondIsBalance;
+      const effLines = ov.linesPerTxn || auto.linesPerTxn;
+      profile.lineFormat = {
+        datePosition: auto.datePos,
+        amountPosition: effAmountPos,        // "first" | "last" — the user's effective choice
+        amountPosAuto: auto.amountPos,        // preserved for debugging / migration
+        dateFormat: "AUTO",
+        linesPerTransaction: effLines,
+        secondIsBalance: effSecond
+      };
+      // Fingerprint tracks the AUTO-detected shape so future pastes of the same
+      // layout are recognized; profile.lineFormat carries the user's overrides.
+      profile.formatFingerprint = ImportEngine.computePasteFingerprint(auto);
+    }
+    try {
+      await DataService.update({ importProfiles: [...(s.importProfiles || []), profile] });
+    } catch (e) {
+      alert("COULDN'T SAVE PROFILE; CHECK CONNECTION"); console.warn(e); return;
+    }
+    importFlow.matchedProfile = profile;
+    // Re-parse the pasted text with the user's final overrides so review shows the
+    // corrected items (not the auto-parsed ones from the initial preview).
+    if (importFlow.kind === "paste") {
+      const reparsed = ImportEngine.textParse(importFlow.rawText, {
+        amountPos: profile.lineFormat.amountPosition,
+        secondIsBalance: profile.lineFormat.secondIsBalance,
+        linesPerTxn: profile.lineFormat.linesPerTransaction
+      });
+      importFlow.pasteItems = reparsed.items;
+    }
+    if (importFlow.kind === "csv") goToReviewFromCsv(s);
+    else goToReviewFromPaste(s);
+  }
+
+  // Called when the user taps → IMPORT ALL. If any non-skipped rows lack a
+  // category, we open the three-choice panel instead of blocking. Once the user
+  // resolves via AUTO-MATCH (if there are still leftovers), IMPORT-LATER, or
+  // PICK-ONE-BY-ONE, we route to commitImportWrite.
+  function commitImport(s) {
+    const flow = importFlow;
+    const uncategorized = flow.reviewRows.filter(r => !r.skipped && !r.categoryId);
+    if (uncategorized.length) {
+      importFlow.choicePanelOpen = true;
+      importFlow.error = "";
+      render();
+      return;
+    }
+    commitImportWrite(s, { allowUncategorized: false });
+  }
+
+  // Fuzzy match between two normalized merchant keys (already single-token from
+  // normalizeMerchantKey). Returns true on equality, prefix-containment, or a
+  // shared leading 3+ character run.
+  function fuzzyMerchantMatch(a, b) {
+    if (!a || !b) return false;
+    if (a === b) return true;
+    if (a.startsWith(b) || b.startsWith(a)) return true;
+    // Both keys are already leading-alphabetic tokens; share the first 3 chars?
+    if (a.length >= 3 && b.length >= 3 && a.slice(0, 3) === b.slice(0, 3)) return true;
+    return false;
+  }
+
+  // Bulk auto-match categories on the review rows. Mutates rows in place.
+  // Tries: (1) exact merchantMap hit, (2) fuzzy vs merchantMap keys,
+  // (3) fuzzy vs merchant keys extracted from already-categorized transactions.
+  function bulkAutoMatchCategories(s, rows) {
+    const mmap = s.merchantMap || {};
+    const spending = s.spendingCategories || [];
+    const catIds = new Set(spending.map(c => c.id));
+    // Build a "learned" key→categoryId table from past categorized transactions.
+    const learnedCount = {};
+    for (const t of (s.transactions || [])) {
+      if (!t.categoryId || !catIds.has(t.categoryId)) continue;
+      const k = ImportEngine.normalizeMerchantKey(t.note || "");
+      if (!k) continue;
+      learnedCount[k] = learnedCount[k] || {};
+      learnedCount[k][t.categoryId] = (learnedCount[k][t.categoryId] || 0) + 1;
+    }
+    const learned = {};
+    for (const k in learnedCount) {
+      let bestId = null, best = 0;
+      for (const cid in learnedCount[k]) {
+        if (learnedCount[k][cid] > best) { best = learnedCount[k][cid]; bestId = cid; }
+      }
+      if (bestId) learned[k] = bestId;
+    }
+
+    let matched = 0, total = 0;
+    for (const r of rows) {
+      if (r.skipped || r.categoryId) continue;
+      total++;
+      const k = r.merchantKey || "";
+      if (!k) continue;
+      // 1. Exact merchantMap hit
+      if (mmap[k] && catIds.has(mmap[k])) {
+        r.categoryId = mmap[k]; r.categoryType = "spending"; r.categoryAuto = true; matched++; continue;
+      }
+      // 2. Fuzzy merchantMap
+      let hit = null;
+      for (const stored in mmap) {
+        if (!catIds.has(mmap[stored])) continue;
+        if (fuzzyMerchantMatch(k, stored)) { hit = mmap[stored]; break; }
+      }
+      if (hit) {
+        r.categoryId = hit; r.categoryType = "spending"; r.categoryAuto = true; matched++; continue;
+      }
+      // 3. Fuzzy against learned keys from past transactions
+      for (const stored in learned) {
+        if (fuzzyMerchantMatch(k, stored)) { hit = learned[stored]; break; }
+      }
+      if (hit) {
+        r.categoryId = hit; r.categoryType = "spending"; r.categoryAuto = true; matched++;
+      }
+    }
+    return { matched, total, remaining: total - matched };
+  }
+
+  async function commitImportWrite(s, opts) {
+    opts = opts || {};
+    const flow = importFlow;
+    const newTxns = [];
+    const mapUpdates = {};
+    for (const r of flow.reviewRows) {
+      if (r.skipped) continue;
+      if (!r.categoryId && !opts.allowUncategorized) continue;
+      const monthYM = String(r.date || "").slice(0, 7) || s.currentMonth;
+      const txn = {
+        id: r.id,
+        date: r.date,
+        amount: Math.round(r.amount * 100) / 100,
+        categoryId: r.categoryId || "",
+        categoryType: r.categoryType || "spending",
+        note: (r.description || "").toUpperCase().slice(0, 60),
+        paymentType: r.paymentType,
+        person: r.person,
+        month: monthYM,
+        cardId: r.paymentType === "credit" ? (r.cardId || null) : null,
+        source: "import"
+      };
+      if (r.merchantKey) txn.merchantKey = r.merchantKey;
+      if (!r.categoryId) txn.needsCategory = true;
+      newTxns.push(txn);
+      if (r.merchantKey && r.categoryId) mapUpdates[r.merchantKey] = r.categoryId;
+    }
+    if (!newTxns.length) {
+      importFlow.error = "NO TRANSACTIONS TO IMPORT";
+      render();
+      return;
+    }
+    const patch = {
+      transactions: [...(s.transactions || []), ...newTxns]
+    };
+    if (Object.keys(mapUpdates).length) {
+      patch.merchantMap = { ...(s.merchantMap || {}), ...mapUpdates };
+    }
+    try {
+      await DataService.update(patch);
+      // Compute how many of the imported rows landed outside the current month
+      // so the LOG screen can flag it. Off-month rows are valid but won't
+      // show in THIS MONTH — this was invisible in V8, hence the notice.
+      const cm = s.currentMonth;
+      const offMonth = newTxns.filter(t => (t.month || "").slice(0, 7) !== cm).length;
+      postImportNotice = { total: newTxns.length, offMonth, dismissed: false };
+      resetImportFlow();
+      importMenuOpen = false;
+      currentTab = "log";
+      render();
+    } catch (e) { alert("COULDN'T IMPORT; CHECK CONNECTION"); console.warn(e); }
+  }
+
+  function renderImportOverlay(s) {
+    const stage = importFlow.stage;
+    const overlay = document.createElement("div");
+    overlay.className = "overlay";
+    let inner = "";
+    if (stage === "paste-input") inner = renderPasteInput();
+    else if (stage === "no-dates") inner = renderNoDates();
+    else if (stage === "error") inner = renderImportError();
+    else if (stage === "learning") inner = renderLearning(s);
+    else if (stage === "review") inner = renderReview(s);
+    overlay.innerHTML = `<div class="overlay-inner">${inner}</div>`;
+    document.body.appendChild(overlay);
+    bindImportOverlay(s, overlay);
+  }
+
+  function renderPasteInput() {
+    return `
+      <div class="row" style="justify-content:space-between; align-items:center; margin-bottom:16px;">
+        <div class="overlay-title">→ PASTE TRANSACTIONS</div>
+        <button class="link" data-action="import-cancel">× CLOSE</button>
+      </div>
+      <textarea class="paste-area" id="paste-input" placeholder="PASTE TRANSACTION TEXT FROM YOUR BANK'S WEBSITE OR STATEMENT">${Util.esc(importFlow.rawText)}</textarea>
+      ${importFlow.error ? `<div class="text-danger meta" style="margin-top:12px;">${Util.esc(importFlow.error)}</div>` : ""}
+      <button class="cta" style="margin-top:16px;" data-action="paste-parse">→ PARSE</button>
+    `;
+  }
+
+  function renderNoDates() {
+    return `
+      <div class="row" style="justify-content:space-between; align-items:center; margin-bottom:16px;">
+        <div class="overlay-title">→ PASTE TRANSACTIONS</div>
+        <button class="link" data-action="import-cancel">× CLOSE</button>
+      </div>
+      <div class="text-danger meta" style="margin-top:8px;">COULDN'T FIND DATES IN THIS TEXT; TRY COPYING THE TRANSACTION ROWS ONLY, WITHOUT HEADERS OR SUMMARIES</div>
+      <textarea class="paste-area" style="margin-top:16px;" id="paste-input">${Util.esc(importFlow.rawText)}</textarea>
+      <button class="cta" style="margin-top:16px;" data-action="paste-parse">→ TRY AGAIN</button>
+    `;
+  }
+
+  function renderImportError() {
+    return `
+      <div class="row" style="justify-content:space-between; align-items:center; margin-bottom:16px;">
+        <div class="overlay-title">→ IMPORT</div>
+        <button class="link" data-action="import-cancel">× CLOSE</button>
+      </div>
+      <div class="text-danger meta">${Util.esc(importFlow.error || "SOMETHING WENT WRONG")}</div>
+    `;
+  }
+
+  function renderLearning(s) {
+    if (importFlow.kind === "csv") return renderLearningCsv(s);
+    return renderLearningPaste(s);
+  }
+
+  function renderLearningCsv(s) {
+    const l = importFlow.learn;
+    const headers = importFlow.csvHeaders;
+    const sampleRows = importFlow.csvRows.slice(0, 3);
+    const roleOf = (i) => {
+      if (l.dateColumn === i) return "picked date";
+      if (l.amountColumn === i) return "picked amount";
+      if (l.descriptionColumn === i) return "picked description";
+      return "";
+    };
+    const headerCells = headers.map((h, i) => {
+      const dot = (role) => (l[role+"Column"] === i ? "* " : "");
+      return `<th>
+        <div>${Util.esc(h || `COL ${i+1}`)}</div>
+        <button class="csv-col-btn ${l.dateColumn===i?'picked':''}" data-action="csv-pick-col" data-role="date" data-i="${i}">${dot("date")}DATE</button>
+        <button class="csv-col-btn ${l.amountColumn===i?'picked':''}" data-action="csv-pick-col" data-role="amount" data-i="${i}">${dot("amount")}AMOUNT</button>
+        <button class="csv-col-btn ${l.descriptionColumn===i?'picked':''}" data-action="csv-pick-col" data-role="description" data-i="${i}">${dot("description")}DESC</button>
+      </th>`;
+    }).join("");
+    const rowsHtml = sampleRows.map(r => `<tr>${r.map(c => `<td>${Util.esc(c)}</td>`).join("")}</tr>`).join("");
+    return `
+      <div class="row" style="justify-content:space-between; align-items:center; margin-bottom:8px;">
+        <div class="overlay-title">→ NEW ACCOUNT</div>
+        <button class="link" data-action="import-cancel">× CLOSE</button>
+      </div>
+      <div class="overlay-sub">MAP COLUMNS FROM ${Util.esc(importFlow.fileName || "CSV")}</div>
+      <div class="csv-preview"><table>
+        <thead><tr>${headerCells}</tr></thead>
+        <tbody>${rowsHtml}</tbody>
+      </table></div>
+      ${renderAccountInfoBlock()}
+      ${importFlow.error ? `<div class="text-danger meta" style="margin-top:12px;">${Util.esc(importFlow.error)}</div>` : ""}
+      <button class="cta" style="margin-top:24px;" data-action="learning-continue">→ CONTINUE</button>
+    `;
+  }
+
+  function renderLearningPaste(s) {
+    const l = importFlow.learn;
+    const items = importFlow.pasteItems.slice(0, 3);
+    const previewHtml = items.map(it => `
+      <div class="preview-txn">
+        <div class="d">${Util.esc(Util.fmtDateShort(it.date))}</div>
+        <div class="desc">${Util.esc(it.description)}</div>
+        <div class="a">${Util.esc((it.amount<0?'-':'')+Util.fmtMoney(Math.abs(it.amount),2).replace(/^-\$/,'$'))}</div>
+      </div>
+    `).join("");
+    const balanceQ = (l.hasBalancePrompt && !l.somethingsWrong) ? `
+      <div class="overlay-sub" style="margin-top:24px;">SOME LINES HAVE TWO DOLLAR AMOUNTS. IS THE SECOND ONE A RUNNING BALANCE?</div>
+      <div class="toggle-row">
+        <button class="toggle ${l.balanceIsAmount===false?'active':''}" data-action="learn-balance" data-v="ignore">YES; IGNORE IT</button>
+        <button class="toggle ${l.balanceIsAmount===true?'active':''}" data-action="learn-balance" data-v="amount">NO; IT'S THE AMOUNT</button>
+      </div>
+    ` : "";
+    // Show negative-is-purchase only when the paste is ambiguous (mixed signs).
+    const signQ = l.negativeIsPurchase == null ? `
+      <div class="overlay-sub" style="margin-top:24px;">ARE PURCHASES SHOWN AS NEGATIVE NUMBERS?</div>
+      <div class="toggle-row">
+        <button class="toggle ${l.negativeIsPurchase===true?'active':''}" data-action="learn-sign" data-v="yes">YES</button>
+        <button class="toggle ${l.negativeIsPurchase===false?'active':''}" data-action="learn-sign" data-v="no">NO</button>
+      </div>
+    ` : "";
+    // Effective override values displayed on the re-parse controls.
+    const ov = l.override || {};
+    const auto = importFlow.pasteStructure || { amountPos: "first", linesPerTxn: 1 };
+    const effAmountPos = ov.amountPos || auto.amountPos;
+    const effSecondBal = ov.secondIsBalance == null ? true : !!ov.secondIsBalance;
+    const effLines = ov.linesPerTxn || auto.linesPerTxn;
+    const wrongPanel = l.somethingsWrong ? `
+      <div class="overlay-sub" style="margin-top:24px;">AMOUNT IS THE</div>
+      <div class="toggle-row">
+        <button class="toggle ${effAmountPos==='first'?'active':''}" data-action="reparse-amt" data-v="first">FIRST NUMBER</button>
+        <button class="toggle ${effAmountPos==='last'?'active':''}" data-action="reparse-amt" data-v="last">LAST NUMBER</button>
+      </div>
+      <div class="overlay-sub" style="margin-top:16px;">SECOND NUMBER IS A RUNNING BALANCE</div>
+      <div class="toggle-row">
+        <button class="toggle ${effSecondBal===true?'active':''}" data-action="reparse-sec" data-v="yes">YES</button>
+        <button class="toggle ${effSecondBal===false?'active':''}" data-action="reparse-sec" data-v="no">NO</button>
+      </div>
+      <div class="overlay-sub" style="margin-top:16px;">LINES PER TRANSACTION</div>
+      <div class="toggle-row">
+        <button class="toggle ${effLines===1?'active':''}" data-action="reparse-lpt" data-v="1">1</button>
+        <button class="toggle ${effLines===2?'active':''}" data-action="reparse-lpt" data-v="2">2</button>
+        <button class="toggle ${effLines===3?'active':''}" data-action="reparse-lpt" data-v="3">3</button>
+      </div>
+      <button class="cta ghost" style="margin-top:12px;" data-action="reparse-preview">→ RE-PREVIEW</button>
+    ` : "";
+    return `
+      <div class="row" style="justify-content:space-between; align-items:center; margin-bottom:8px;">
+        <div class="overlay-title">→ NEW ACCOUNT</div>
+        <button class="link" data-action="import-cancel">× CLOSE</button>
+      </div>
+      <div class="overlay-sub">HERE'S WHAT WE FOUND; DOES THIS LOOK RIGHT?</div>
+      <div style="margin-top:12px;">${previewHtml || `<div class="meta">NO TRANSACTIONS DETECTED</div>`}</div>
+      <div class="toggle-row" style="margin-top:12px;">
+        <button class="toggle ${l.somethingsWrong?'':'active'}" data-action="paste-looks-right">LOOKS RIGHT</button>
+        <button class="toggle ${l.somethingsWrong?'active':''}" data-action="paste-somethings-wrong">× SOMETHING'S WRONG</button>
+      </div>
+      ${wrongPanel}
+      ${balanceQ}
+      ${signQ}
+      ${renderAccountInfoBlock()}
+      ${importFlow.error ? `<div class="text-danger meta" style="margin-top:12px;">${Util.esc(importFlow.error)}</div>` : ""}
+      <button class="cta" style="margin-top:24px;" data-action="learning-continue">→ CONTINUE</button>
+    `;
+  }
+
+  function renderAccountInfoBlock() {
+    const l = importFlow.learn;
+    return `
+      <div class="overlay-sub" style="margin-top:24px;">WHAT SHOULD WE CALL THIS ACCOUNT?</div>
+      <input class="underline" style="margin-top:8px;" id="learn-label" value="${Util.esc(l.label)}" placeholder="CHASE CHECKING" maxlength="24">
+      <div class="overlay-sub" style="margin-top:24px;">IS THIS A CREDIT CARD OR CASH / DEBIT ACCOUNT?</div>
+      <div class="toggle-row">
+        <button class="toggle ${l.paymentType==='cash'?'active':''}" data-action="learn-pay" data-v="cash">CASH / DEBIT</button>
+        <button class="toggle ${l.paymentType==='credit'?'active':''}" data-action="learn-pay" data-v="credit">CREDIT</button>
+      </div>
+    `;
+  }
+
+  function renderReview(s) {
+    const isCouple = s.settings && s.settings.mode === "couple";
+    const currentMonth = s.currentMonth;
+    const allRows = importFlow.reviewRows;
+    const spendingCats = s.spendingCategories || [];
+    const cards = s.creditCards || [];
+    const shown = importFlow.showOlder ? allRows : allRows.filter(r => r.date.slice(0,7) >= currentMonth);
+    const olderCount = allRows.length - shown.length;
+    const label = importFlow.matchedProfile ? importFlow.matchedProfile.label : (importFlow.learn.label || "IMPORT");
+    const recognized = !!importFlow.matchedProfile && !importFlow.stageWasLearning;
+    const rowsHtml = shown.map(r => renderReviewRow(r, spendingCats, cards, isCouple, s)).join("") ||
+      `<div class="meta" style="padding:16px;">NO TRANSACTIONS IN THE CURRENT MONTH</div>`;
+    const importable = allRows.filter(r => !r.skipped).length;
+    const uncatCount = allRows.filter(r => !r.skipped && !r.categoryId).length;
+    const autoRes = importFlow.autoMatchResult;
+    // Off-month breakdown BEFORE import, so nothing vanishes silently.
+    const monthBuckets = {};
+    for (const r of allRows) {
+      if (r.skipped) continue;
+      const ym = (r.date || "").slice(0, 7);
+      if (!ym) continue;
+      if (ym === s.currentMonth) continue;
+      monthBuckets[ym] = (monthBuckets[ym] || 0) + 1;
+    }
+    const offMonthHtml = Object.keys(monthBuckets).length ? `
+      <div class="text-danger meta" style="margin-top:8px;">
+        ${Object.keys(monthBuckets).sort().map(ym => `${monthBuckets[ym]} ROW${monthBuckets[ym]===1?'':'S'} DATED ${Util.esc(Util.fmtMonthLong(ym))}`).join(" · ")}
+      </div>
+    ` : "";
+    const choicePanel = importFlow.choicePanelOpen ? `
+      <div class="settings-group" style="margin-top:16px; background: var(--gray-light);">
+        <h3 class="text-danger">${uncatCount} OF ${importable} ROWS HAVE NO CATEGORY</h3>
+        ${autoRes ? `<div class="meta" style="margin-bottom:12px;">MATCHED ${autoRes.matched} OF ${autoRes.total}${autoRes.remaining>0 ? `; ${autoRes.remaining} STILL NEED CATEGORIES` : ""}</div>` : ""}
+        <div style="display:flex; flex-direction:column; gap:8px;">
+          <button class="cta ghost" data-action="import-auto-match">→ AUTO-MATCH CATEGORIES</button>
+          <button class="cta ghost" data-action="import-later">→ IMPORT; ASSIGN LATER</button>
+          <button class="cta ghost" data-action="import-pick-one-by-one">→ PICK ONE BY ONE</button>
+        </div>
+      </div>
+    ` : "";
+    return `
+      <div class="row" style="justify-content:space-between; align-items:center; margin-bottom:8px;">
+        <div class="overlay-title">→ REVIEW IMPORT</div>
+        <button class="link" data-action="import-cancel">× CLOSE</button>
+      </div>
+      <div class="overlay-sub">${recognized ? "RECOGNIZED: " : ""}${Util.esc(label)}</div>
+      <div class="overlay-sub" style="opacity:0.7;">${importable} OF ${allRows.length} WILL BE IMPORTED${uncatCount ? ` · ${uncatCount} NEED CATEGORIES` : ""}</div>
+      ${offMonthHtml}
+      <div style="margin-top:16px;">${rowsHtml}</div>
+      ${olderCount > 0 || importFlow.showOlder ? `
+        <button class="link" style="margin-top:16px;" data-action="toggle-older">${importFlow.showOlder ? "× HIDE OLDER" : `→ SHOW OLDER TRANSACTIONS (${olderCount})`}</button>
+      ` : ""}
+      ${importFlow.error ? `<div class="text-danger meta" style="margin-top:12px;">${Util.esc(importFlow.error)}</div>` : ""}
+      ${choicePanel}
+      <button class="cta" style="margin-top:24px;" data-action="import-commit">→ IMPORT ALL</button>
+    `;
+  }
+
+  function renderReviewRow(r, spendingCats, cards, isCouple, s) {
+    const needsCategory = !r.skipped && !r.categoryId;
+    const chips = spendingCats.map(c => `
+      <button class="review-cat-chip ${r.categoryId===c.id?'active':''}" data-action="review-cat" data-id="${Util.esc(r.id)}" data-cat="${Util.esc(c.id)}">
+        ${Util.esc(c.label)}${(r.categoryAuto && r.categoryId===c.id) ? `<span class="auto">AUTO</span>` : ""}
+      </button>
+    `).join("");
+    const catLabelHtml = needsCategory
+      ? `<div class="review-cat-label needs">× PICK A CATEGORY</div>`
+      : (r.skipped ? "" : `<div class="review-cat-label">CATEGORY</div>`);
+    const personChips = isCouple ? `
+      <div class="review-cat-chips" style="margin-top:6px;">
+        ${[s.settings.names[0], s.settings.names[1], "JOINT"].map(p => {
+          const val = p.toUpperCase();
+          return `<button class="review-cat-chip ${r.person===val?'active':''}" data-action="review-person" data-id="${Util.esc(r.id)}" data-p="${Util.esc(val)}">${Util.esc(p)}</button>`;
+        }).join("")}
+      </div>
+    ` : "";
+    const cardChips = r.paymentType === "credit" && cards.length ? `
+      <div class="review-cat-chips" style="margin-top:6px;">
+        ${cards.map(c => `<button class="review-cat-chip ${r.cardId===c.id?'active':''}" data-action="review-card" data-id="${Util.esc(r.id)}" data-c="${Util.esc(c.id)}">${Util.esc(c.label)}</button>`).join("")}
+        ${r.cardId ? `<button class="review-cat-chip" data-action="review-card" data-id="${Util.esc(r.id)}" data-c="">× NONE</button>` : ""}
+      </div>
+    ` : "";
+    return `
+      <div class="review-row ${r.skipped ? 'skipped' : ''} ${needsCategory ? 'needs-category' : ''}">
+        <div class="review-row-line">
+          <div class="d">${Util.esc(Util.fmtDateShort(r.date))}</div>
+          <div class="desc">${Util.esc(r.description)}</div>
+          <div class="a">${r.isDeposit ? "+" : "-"}${Util.esc(Util.fmtMoney(r.amount, 2).replace(/^-\$/, "$"))}</div>
+        </div>
+        ${catLabelHtml}
+        <div class="review-cat-chips">${chips || `<div class="meta">NO SPENDING CATEGORIES</div>`}</div>
+        ${personChips}
+        <div class="review-controls">
+          <button class="toggle ${r.paymentType==='cash'?'active':''}" data-action="review-pay" data-id="${Util.esc(r.id)}" data-v="cash">CASH</button>
+          <button class="toggle ${r.paymentType==='credit'?'active':''}" data-action="review-pay" data-id="${Util.esc(r.id)}" data-v="credit">CREDIT</button>
+          ${r.skipped
+            ? `<button class="unskip-btn" data-action="review-skip" data-id="${Util.esc(r.id)}" data-v="off">→ UN-SKIP</button>`
+            : `<button class="skip-btn" data-action="review-skip" data-id="${Util.esc(r.id)}" data-v="on">× SKIP</button>`}
+        </div>
+        ${cardChips}
+        ${r.skipped && r.skipReason ? `<div class="review-skip-reason">${Util.esc(r.skipReason)}</div>` : ""}
+      </div>
+    `;
+  }
+
+  function bindImportOverlay(s, overlay) {
+    const q = sel => overlay.querySelectorAll(sel);
+    q("[data-action=import-cancel]").forEach(el => el.addEventListener("click", () => {
+      resetImportFlow();
+      overlay.remove();
+      render();
+    }));
+    const ta = overlay.querySelector("#paste-input");
+    if (ta) ta.addEventListener("input", e => { importFlow.rawText = e.target.value; });
+    q("[data-action=paste-parse]").forEach(el => el.addEventListener("click", () => {
+      overlay.remove();
+      onPasteSubmit(s);
+    }));
+    q("[data-action=csv-pick-col]").forEach(el => el.addEventListener("click", () => {
+      const i = parseInt(el.dataset.i, 10);
+      const role = el.dataset.role;
+      if (role === "date") importFlow.learn.dateColumn = i;
+      else if (role === "amount") importFlow.learn.amountColumn = i;
+      else if (role === "description") importFlow.learn.descriptionColumn = i;
+      overlay.remove(); render();
+    }));
+    q("[data-action=paste-looks-right]").forEach(el => el.addEventListener("click", () => {
+      // Collapse the re-parse panel; the user is satisfied with the current preview.
+      importFlow.learn.somethingsWrong = false;
+      overlay.remove(); render();
+    }));
+    q("[data-action=paste-somethings-wrong]").forEach(el => el.addEventListener("click", () => {
+      // Reveal inline re-parse controls; do NOT commit best-guess to review yet.
+      importFlow.learn.somethingsWrong = true;
+      importFlow.error = "";
+      // Seed override defaults from the auto-detected structure so the toggles
+      // show the current state rather than blanks.
+      const auto = importFlow.pasteStructure || {};
+      const ov = importFlow.learn.override || {};
+      if (ov.amountPos == null) ov.amountPos = auto.amountPos || "first";
+      if (ov.secondIsBalance == null) ov.secondIsBalance = true;
+      if (ov.linesPerTxn == null) ov.linesPerTxn = auto.linesPerTxn || 1;
+      importFlow.learn.override = ov;
+      overlay.remove(); render();
+    }));
+    q("[data-action=reparse-amt]").forEach(el => el.addEventListener("click", () => {
+      const ov = importFlow.learn.override; ov.amountPos = el.dataset.v;
+      overlay.remove(); render();
+    }));
+    q("[data-action=reparse-sec]").forEach(el => el.addEventListener("click", () => {
+      const ov = importFlow.learn.override; ov.secondIsBalance = (el.dataset.v === "yes");
+      overlay.remove(); render();
+    }));
+    q("[data-action=reparse-lpt]").forEach(el => el.addEventListener("click", () => {
+      const ov = importFlow.learn.override; ov.linesPerTxn = parseInt(el.dataset.v, 10) || 1;
+      overlay.remove(); render();
+    }));
+    q("[data-action=reparse-preview]").forEach(el => el.addEventListener("click", () => {
+      // Re-run textParse with the current overrides and refresh preview.
+      const ov = importFlow.learn.override || {};
+      const rep = ImportEngine.textParse(importFlow.rawText, {
+        amountPos: ov.amountPos || undefined,
+        secondIsBalance: ov.secondIsBalance == null ? undefined : ov.secondIsBalance,
+        linesPerTxn: ov.linesPerTxn || undefined
+      });
+      importFlow.pasteItems = rep.items;
+      // Structure stays auto-detected (fingerprint stability); do not overwrite it.
+      overlay.remove(); render();
+    }));
+    q("[data-action=learn-balance]").forEach(el => el.addEventListener("click", () => {
+      // Legacy question kept when NOT in the SOMETHING'S WRONG panel.
+      const isAmount = el.dataset.v === "amount";
+      importFlow.learn.balanceIsAmount = isAmount;
+      // Also mirror into override.amountPos so downstream consumers see one truth.
+      importFlow.learn.override.amountPos = isAmount ? "last" : "first";
+      overlay.remove(); render();
+    }));
+    q("[data-action=learn-sign]").forEach(el => el.addEventListener("click", () => {
+      importFlow.learn.negativeIsPurchase = (el.dataset.v === "yes");
+      overlay.remove(); render();
+    }));
+    q("[data-action=learn-pay]").forEach(el => el.addEventListener("click", () => {
+      importFlow.learn.paymentType = el.dataset.v;
+      overlay.remove(); render();
+    }));
+    const labelInput = overlay.querySelector("#learn-label");
+    if (labelInput) labelInput.addEventListener("input", e => { importFlow.learn.label = e.target.value; });
+    q("[data-action=learning-continue]").forEach(el => el.addEventListener("click", () => {
+      importFlow.error = "";
+      // Read the label from the input at commit time so we don't drop keystrokes.
+      const li = overlay.querySelector("#learn-label");
+      if (li) importFlow.learn.label = li.value;
+      overlay.remove();
+      finalizeLearningAndReview(s);
+    }));
+    q("[data-action=toggle-older]").forEach(el => el.addEventListener("click", () => {
+      importFlow.showOlder = !importFlow.showOlder;
+      overlay.remove(); render();
+    }));
+    q("[data-action=review-cat]").forEach(el => el.addEventListener("click", () => {
+      const r = importFlow.reviewRows.find(x => x.id === el.dataset.id);
+      if (!r) return;
+      r.categoryId = el.dataset.cat;
+      r.categoryType = "spending";
+      r.categoryAuto = false; // user chose it now
+      // Once no row is missing a category, drop the block banner.
+      if (importFlow.error && !importFlow.reviewRows.some(x => !x.skipped && !x.categoryId)) importFlow.error = "";
+      overlay.remove(); render();
+    }));
+    q("[data-action=review-person]").forEach(el => el.addEventListener("click", () => {
+      const r = importFlow.reviewRows.find(x => x.id === el.dataset.id);
+      if (!r) return;
+      r.person = el.dataset.p;
+      overlay.remove(); render();
+    }));
+    q("[data-action=review-card]").forEach(el => el.addEventListener("click", () => {
+      const r = importFlow.reviewRows.find(x => x.id === el.dataset.id);
+      if (!r) return;
+      r.cardId = el.dataset.c || null;
+      overlay.remove(); render();
+    }));
+    q("[data-action=review-pay]").forEach(el => el.addEventListener("click", () => {
+      const r = importFlow.reviewRows.find(x => x.id === el.dataset.id);
+      if (!r) return;
+      r.paymentType = el.dataset.v;
+      if (r.paymentType !== "credit") r.cardId = null;
+      overlay.remove(); render();
+    }));
+    q("[data-action=review-skip]").forEach(el => el.addEventListener("click", () => {
+      const r = importFlow.reviewRows.find(x => x.id === el.dataset.id);
+      if (!r) return;
+      if (el.dataset.v === "off") { r.skipped = false; r.skipReason = ""; }
+      else { r.skipped = true; r.skipReason = r.skipReason || "SKIPPED"; }
+      if (importFlow.error && !importFlow.reviewRows.some(x => !x.skipped && !x.categoryId)) importFlow.error = "";
+      overlay.remove(); render();
+    }));
+    q("[data-action=import-commit]").forEach(el => el.addEventListener("click", () => {
+      overlay.remove();
+      commitImport(s);
+    }));
+    q("[data-action=import-auto-match]").forEach(el => el.addEventListener("click", () => {
+      const result = bulkAutoMatchCategories(s, importFlow.reviewRows);
+      importFlow.autoMatchResult = result;
+      // If everything is now categorized, we can commit straight through; else
+      // keep the panel visible so the user can pick IMPORT-LATER or PICK-ONE.
+      if (result.remaining === 0) {
+        importFlow.choicePanelOpen = false;
+        overlay.remove();
+        commitImportWrite(s, { allowUncategorized: false });
+        return;
+      }
+      overlay.remove(); render();
+    }));
+    q("[data-action=import-later]").forEach(el => el.addEventListener("click", () => {
+      importFlow.choicePanelOpen = false;
+      overlay.remove();
+      commitImportWrite(s, { allowUncategorized: true });
+    }));
+    q("[data-action=import-pick-one-by-one]").forEach(el => el.addEventListener("click", () => {
+      importFlow.choicePanelOpen = false;
+      importFlow.autoMatchResult = null;
+      overlay.remove(); render();
+    }));
+  }
+
+  /* ------------- NEW MONTH OVERLAY (only allowed modal) ------------- */
+  function renderNewMonthOverlay(s) {
+    const cats = (s.spendingCategories||[]);
+    const rows = cats.map(c => {
+      const remaining = BudgetEngine.categoryRemaining(s, c);
+      const choice = newMonthChoices[c.id] || "roll";
+      return `
+        <div class="rollover-row">
+          <h4>${Util.esc(c.label)}</h4>
+          <div class="amt">${Util.esc(Util.fmtMoney(remaining,0))} UNSPENT</div>
+          <div class="choice-row">
+            <button class="${choice==='roll'?'active':''}" data-action="nm-choice" data-id="${Util.esc(c.id)}" data-choice="roll">ROLL OVER →</button>
+            <button class="${choice==='reset'?'active':''}" data-action="nm-choice" data-id="${Util.esc(c.id)}" data-choice="reset">RESET TO $0</button>
+          </div>
+        </div>`;
+    }).join("");
+
+    const overlay = document.createElement("div");
+    overlay.className = "overlay";
+    overlay.innerHTML = `
+      <div class="overlay-inner">
+        <button class="link" data-action="nm-cancel">× CLOSE</button>
+        <h2 class="section-label" style="margin-top:16px;">→ NEW MONTH</h2>
+        <div class="meta" style="margin-top:8px;">CURRENT: ${Util.esc(Util.fmtMonthLong(s.currentMonth))} · NEXT: ${Util.esc(Util.fmtMonthLong(nextMonth(s.currentMonth)))}</div>
+        <div style="margin-top:24px;">${rows || `<div class="meta">NO SPENDING CATEGORIES</div>`}</div>
+        <button class="cta big" style="margin-top:24px;" data-action="nm-confirm">→ CONFIRM NEW MONTH</button>
+      </div>`;
+    document.body.appendChild(overlay);
+
+    overlay.querySelectorAll("[data-action=nm-choice]").forEach(el => {
+      el.addEventListener("click", () => {
+        newMonthChoices[el.dataset.id] = el.dataset.choice;
+        // Re-render overlay only (remove existing and re-add)
+        overlay.remove();
+        renderNewMonthOverlay(s);
+      });
+    });
+    overlay.querySelector("[data-action=nm-cancel]").addEventListener("click", () => {
+      newMonthOpen = false; overlay.remove(); render();
+    });
+    overlay.querySelector("[data-action=nm-confirm]").addEventListener("click", () => confirmNewMonth(s, overlay));
+  }
+
+  function nextMonth(ym) {
+    let [y, m] = ym.split("-").map(Number);
+    m++;
+    if (m > 12) { m = 1; y++; }
+    return `${y}-${String(m).padStart(2,"0")}`;
+  }
+
+  async function confirmNewMonth(s, overlay) {
+    const newMonth = nextMonth(s.currentMonth);
+    const rollovers = {};
+    (s.spendingCategories||[]).forEach(c => {
+      const choice = newMonthChoices[c.id] || "roll";
+      if (choice === "roll") {
+        const remaining = BudgetEngine.categoryRemaining(s, c);
+        if (remaining > 0) rollovers[c.id] = Math.round(remaining * 100) / 100;
+      }
+    });
+    const patch = {};
+    const mr = Object.assign({}, s.monthlyRollover || {});
+    mr[newMonth] = rollovers;
+    patch.monthlyRollover = mr;
+    patch.currentMonth = newMonth;
+    try {
+      await DataService.update(patch);
+      newMonthOpen = false;
+      newMonthChoices = {};
+      overlay.remove();
+      render();
+    } catch (e) { alert("COULDN'T UPDATE"); console.warn(e); }
+  }
+
+  /* ------------- GLOBAL EVENTS ------------- */
+  function bindGlobalTabs() {
+    root.querySelectorAll(".tab").forEach(el => {
+      el.addEventListener("click", () => { currentTab = el.dataset.tab; settingsOpen = false; render(); });
+    });
+    root.querySelectorAll("[data-action=open-settings]").forEach(el => {
+      el.addEventListener("click", () => { settingsOpen = true; render(); });
+    });
+  }
+
+  return { render, renderLoading };
+})();
+
+/* ============================================================
+   BOOT
+   ============================================================ */
+(function boot() {
+  DataService.onData(() => UI.render());
+  DataService.onError(() => {
+    // If we've never received data and we can't reach Firestore,
+    // fall back gracefully — if there's no household ID, show setup.
+    if (!DataService.get() && !DataService.getHouseholdId()) {
+      UI.render();
+    }
+  });
+
+  const existing = DataService.getHouseholdId();
+  if (existing) {
+    UI.renderLoading("SYNCING...");
+    if (db) {
+      DataService.subscribe(existing);
+      // Safety: if we don't receive data within 6s, keep loading screen but still allow reset
+    } else {
+      UI.renderLoading("OFFLINE; CAN'T REACH SYNC");
+    }
+  } else {
+    UI.render(); // renders setup
+  }
+})();
+</script>
+</body>
+</html>
