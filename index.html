@@ -2713,8 +2713,8 @@ const UI = (() => {
         <div class="hero ${heroDanger}" data-learn="WHAT'S TRULY LEFT TO SPEND THIS MONTH AFTER TITHE, BILLS, DEBT MINIMUMS, AND UNPAID CREDIT ARE SET ASIDE. GOES RED WHEN NEGATIVE.">${Util.esc(Util.fmtMoney(safe, 0))}</div>
         <div class="sub-label" style="margin-top:8px;" data-learn="HOW MUCH OF YOUR EXPECTED INCOME HAS ACTUALLY ARRIVED THIS MONTH. ONLY RECEIVED INCOME COUNTS TOWARD SAFE TO SPEND. MARK INCOME AS RECEIVED ON THE LOG INCOME TAB.">RECEIVED ${Util.esc(Util.fmtMoney(received, 0))} OF ${Util.esc(Util.fmtMoney(expectedIncome, 0))} EXPECTED</div>
         <div class="sub-label" style="margin-top:8px;" data-learn="TOTAL BUDGETED = TITHE + BILLS + DEBT MINIMUMS + SPENDING BUDGETS, FOR YOUR FULL EXPECTED MONTH, SO IT DOESN'T MOVE AS PAYCHECKS LAND. ON CREDIT = TOTAL OF THIS MONTH'S CREDIT TRANSACTIONS THAT AREN'T PAID OFF YET.">${Util.esc(Util.fmtMoney(budgeted, 0))} BUDGETED · ${Util.esc(Util.fmtMoney(credit, 0))} ON CREDIT</div>
-        ${peopleHtml}
         ${dueSoonHtml}
+        ${peopleHtml}
         ${staleHtml}
       </section>`;
   }
