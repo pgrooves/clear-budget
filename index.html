@@ -3900,7 +3900,8 @@ const UI = (() => {
     // and the tab label.
     return `
         <section class="section lavender" data-learn="BILLS STATUS FOR THIS MONTH. TICK EACH BILL AS IT GETS PAID SO YOU CAN SEE WHAT'S LEFT. THIS IS TRACKING ONLY AND NEVER CHANGES YOUR BUDGET MATH.">
-          <div class="sub-label" data-learn="HOW MUCH OF YOUR BILL TOTAL YOU'VE MARKED PAID SO FAR THIS MONTH.">${Util.esc(Util.fmtMoney(paidTotal, 0))} OF ${Util.esc(Util.fmtMoney(expectedTotal, 0))} PAID</div>
+          <div class="section-label">→ RECURRING</div>
+          <div class="sub-label" style="margin-top:16px;" data-learn="HOW MUCH OF YOUR BILL TOTAL YOU'VE MARKED PAID SO FAR THIS MONTH.">${Util.esc(Util.fmtMoney(paidTotal, 0))} OF ${Util.esc(Util.fmtMoney(expectedTotal, 0))} PAID</div>
           <div class="sub-label" style="margin-top:8px;" data-learn="HOW MANY INDIVIDUAL BILLS ARE TICKED OFF OUT OF YOUR TOTAL.">${paidCount} OF ${bills.length} BILLS CLEARED</div>
           ${listHtml}
         </section>`;
