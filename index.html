@@ -1724,7 +1724,7 @@ const UI = (() => {
   // written to Firestore. Switching must not disturb logForm.
   let logSubTab = "purchase"; // "purchase" | "income"
   // One-off income only; set-up paychecks are cleared from the expected list.
-  const incomeForm = { amount: "", person: "JOINT", note: "" };
+  const incomeForm = { amount: "", person: "JOINT", note: "", bankId: null };
   // Inline edit of an expected-income amount on the LOG INCOME sub-tab.
   // { id, value } while one row is open, otherwise null. Touches i.amount only;
   // a cleared entry's recorded actual lives in incomeLog and is never involved.
@@ -2893,6 +2893,17 @@ const UI = (() => {
         </div>
       </div>` : "";
 
+    // Same WHICH BANK picker the purchase form uses. Income always lands in an
+    // account, so unlike purchases there's no payment type gating it.
+    const incBankChipsHtml = banks.length ? `
+      <div data-learn="WHICH BANK. IF YOU KEEP MORE THAN ONE CHECKING ACCOUNT, PICK THE ONE THIS LANDED IN. ADD ACCOUNTS IN SETTINGS.">
+        <div class="sub-label">WHICH BANK</div>
+        <div class="chips" data-scroll-key="inc-bank-chips">
+          ${banks.map(b => `<button class="chip ${incomeForm.bankId===b.id?'active':''}" data-action="inc-pick-bank" data-id="${Util.esc(b.id)}">${Util.esc(b.label)}</button>`).join("")}
+          ${incomeForm.bankId ? `<button class="chip" data-action="inc-pick-bank" data-id="">× NONE</button>` : ""}
+        </div>
+      </div>` : "";
+
     const incExpectedRows = (s.income || []).length
       ? (s.income || []).map(i => {
           const entry = clearedFor(i.id);
@@ -2923,6 +2934,7 @@ const UI = (() => {
           <input class="underline big num-input" id="inc-amount" inputmode="decimal" placeholder="$0.00" value="${Util.esc(incomeForm.amount)}" data-learn="ENTER THE AMOUNT YOU ACTUALLY RECEIVED.">
         </div>
         ${incPersonChips}
+        ${incBankChipsHtml}
         <div>
           <div class="sub-label">NOTE</div>
           <input class="underline" id="inc-note" placeholder="WHERE DID IT COME FROM?" value="${Util.esc(incomeForm.note)}" maxlength="60" data-learn="WHERE THIS MONEY CAME FROM, LIKE 'BIRTHDAY GIFT' OR 'SIDE JOB'. THIS BECOMES THE LABEL ON THE ENTRY. YOUR SET-UP PAYCHECKS ARE TICKED OFF IN THE LIST BELOW INSTEAD.">
@@ -3083,6 +3095,9 @@ const UI = (() => {
     if (iAmt) iAmt.addEventListener("input", e => { incomeForm.amount = e.target.value; });
     const iNote = root.querySelector("#inc-note");
     if (iNote) iNote.addEventListener("input", e => { incomeForm.note = e.target.value; });
+    root.querySelectorAll("[data-action=inc-pick-bank]").forEach(el => {
+      el.addEventListener("click", () => { incomeForm.bankId = el.dataset.id || null; render(); });
+    });
     root.querySelectorAll("[data-action=inc-pick-person]").forEach(el => {
       el.addEventListener("click", () => { incomeForm.person = el.dataset.person; render(); });
     });
@@ -3639,6 +3654,7 @@ const UI = (() => {
       month: date.slice(0, 7),
       person: person,
       note: note.toUpperCase().slice(0, 60),
+      bankId: incomeForm.bankId || null,
       source: "manual"
     };
     try {
@@ -3873,26 +3889,65 @@ const UI = (() => {
     const billItems = bills.filter(b => b.category !== "savings").slice().sort(byDue);
     const savingsItems = bills.filter(b => b.category === "savings").slice().sort(byDue);
 
+    // Credit cards carrying a balance ride along in the RECURRING list so every
+    // monthly obligation is visible in one place. A card's figures live on the
+    // debt it's linked to (balance, minimum, due day).
+    //
+    // These are display-only mirrors and are deliberately NOT written into
+    // s.bills: card minimums are already subtracted from Safe to Spend as debt
+    // minimums, so adding them as real bills would double-count them and move
+    // every budget figure. Ticking them off happens on the DEBTS tab, where
+    // logging a payment also debits the balance — hence no PAID? checkbox here.
+    const cardBillItems = (s.creditCards || []).map(c => {
+      const d = c.debtId ? (s.debts || []).find(x => x.id === c.debtId) : null;
+      if (!d || (Number(d.balance) || 0) <= 0) return null;
+      return {
+        label: c.label,
+        amount: Number(d.minimumPayment) || 0,
+        dueDateOfMonth: Number(d.dueDateOfMonth) || 0
+      };
+    }).filter(Boolean).sort(byDue);
+
+    const cardRowFor = (c) => {
+      const due = Number(c.dueDateOfMonth) || 0;
+      const overdue = sameMonth && due > 0 && due < todayDay;
+      return `
+        <div class="inc-row" data-learn="A CREDIT CARD WITH A BALANCE, SHOWN HERE WITH ITS MINIMUM AND DUE DAY. IT'S ALREADY COUNTED AS A DEBT MINIMUM IN SAFE TO SPEND, SO IT ISN'T TICKED OFF HERE — LOG THE PAYMENT ON THE DEBTS TAB INSTEAD.">
+          <div>
+            <div class="inc-label">${Util.esc(c.label)}</div>
+            <div class="meta">CARD MINIMUM · TRACK ON DEBTS TAB</div>
+          </div>
+          <div class="inc-amt">
+            ${Util.esc(Util.fmtMoney(c.amount, 0))}
+            <span class="${overdue ? "text-danger" : ""}" style="opacity:0.75;">DUE ${due || "—"}</span>
+          </div>
+          <span></span>
+        </div>`;
+    };
+
+    const cardRowsHtml = cardBillItems.map(cardRowFor).join("");
+
     // Same add-form machinery Settings uses, surfaced at the end of each group.
     const addLink = (kind, label) => addForms[kind]
       ? renderAddForm(kind)
       : `<button class="link" style="margin-top:12px;" data-action="show-add" data-kind="${kind}" data-learn="ADD A NEW ${Util.esc(label)} TO YOUR BUDGET. IT SHOWS UP HERE AND IN SETTINGS.">* ADD ${Util.esc(label)} →</button>`;
 
-    const groupHtml = (title, items, kind, addLabel) => `
+    const groupHtml = (title, items, kind, addLabel, extraRows) => `
       <div style="margin-top:24px;">
         <div class="sub-label">${title}</div>
-        ${items.length ? `
+        ${(items.length || extraRows) ? `
           <div class="inc-head" style="margin-top:12px;">
             <div class="sub-label">NAME</div>
             <div class="sub-label">AMOUNT</div>
             <div class="sub-label">PAID?</div>
           </div>
           ${items.map(rowFor).join("")}
+          ${extraRows || ""}
         ` : ""}
         ${addLink(kind, addLabel)}
       </div>`;
 
-    const listHtml = groupHtml("BILLS", billItems, "bill", "BILL")
+    const listHtml = groupHtml("BILLS", billItems, "bill", "BILL", cardRowsHtml)
       + groupHtml("SAVINGS", savingsItems, "savings", "SAVINGS");
 
     // The MONTH OF line and the "→ BILLS" section label used to open this block.
@@ -4038,7 +4093,7 @@ const UI = (() => {
         </section>
 
         <section class="section gray">
-          <div class="sub-label" data-learn="PAYOFF ORDER TOGGLE. AVALANCHE ATTACKS THE HIGHEST INTEREST RATE FIRST (LESS INTEREST PAID). SNOWBALL ATTACKS THE SMALLEST BALANCE FIRST (QUICK EMOTIONAL WINS).">PAYOFF ORDER</div>
+          <div class="section-label" data-learn="PAYOFF ORDER TOGGLE. AVALANCHE ATTACKS THE HIGHEST INTEREST RATE FIRST (LESS INTEREST PAID). SNOWBALL ATTACKS THE SMALLEST BALANCE FIRST (QUICK EMOTIONAL WINS).">→ WHAT IF?</div>
           <div class="toggle-row" style="margin-top:8px;">
             <button class="toggle ${strat==='avalanche'?'active':''}" data-action="pick-strategy" data-strategy="avalanche" data-learn="AVALANCHE PAYS THE HIGHEST INTEREST RATE FIRST, TIE-BROKEN BY SMALLER BALANCE. MATHEMATICALLY OPTIMAL; LEAST INTEREST PAID.">AVALANCHE</button>
             <button class="toggle ${strat==='snowball'?'active':''}" data-action="pick-strategy" data-strategy="snowball" data-learn="SNOWBALL PAYS THE SMALLEST BALANCE FIRST, TIE-BROKEN BY HIGHER RATE. QUICK WINS; MOTIVATING BUT MAY COST MORE INTEREST.">SNOWBALL</button>
@@ -4058,6 +4113,7 @@ const UI = (() => {
         </section>
 
         <section class="section off-white" style="padding:0;" data-learn="DEBT LIST, SORTED BY PAYOFF ORDER. EACH CARD SHOWS THE BALANCE, PROGRESS BAR, PROJECTED PAYOFF MONTH, MINIMUM, AND INTEREST RATE. TAP → LOG PAYMENT TO RECORD A PAYMENT — IT DEBITS THE BALANCE AND WRITES A TRANSACTION IN ONE STEP.">
+          <div class="section-label" style="padding:32px 24px 0;">→ ORDER</div>
           ${cardsHtml}
           <div style="padding:24px;">
             ${addForm || `<button class="link" data-action="show-add-debt" data-learn="ADD A NEW DEBT: LABEL, BALANCE, MINIMUM PAYMENT, AND INTEREST RATE.">* ADD DEBT →</button>`}
@@ -4094,7 +4150,7 @@ const UI = (() => {
     });
     const addBtn = root.querySelector("[data-action=show-add-debt]");
     if (addBtn) addBtn.addEventListener("click", () => {
-      addForms.debt = { label: "", balance: "", minimumPayment: "", interestRate: "" };
+      addForms.debt = { label: "", balance: "", minimumPayment: "", interestRate: "", dueDateOfMonth: "" };
       render();
     });
     root.querySelectorAll("[data-action=add-form-input]").forEach(el => {
@@ -4283,6 +4339,7 @@ const UI = (() => {
         <div class="field"><label>BALANCE</label><input data-action="add-form-input" data-kind="debt" data-field="balance" value="${Util.esc(f.balance)}" placeholder="0" inputmode="decimal"></div>
         <div class="field"><label>MINIMUM PAYMENT</label><input data-action="add-form-input" data-kind="debt" data-field="minimumPayment" value="${Util.esc(f.minimumPayment)}" placeholder="0" inputmode="decimal"></div>
         <div class="field"><label>INTEREST RATE (%)</label><input data-action="add-form-input" data-kind="debt" data-field="interestRate" value="${Util.esc(f.interestRate)}" placeholder="0" inputmode="decimal"></div>
+        <div class="field"><label>DUE DAY OF MONTH</label><input data-action="add-form-input" data-kind="debt" data-field="dueDateOfMonth" value="${Util.esc(f.dueDateOfMonth==null?'':f.dueDateOfMonth)}" placeholder="—" inputmode="numeric"></div>
         ${err ? `<div class="text-danger meta">${Util.esc(err)}</div>` : ""}
         ${pm ? `
           <div class="text-danger meta" style="margin-top:8px;">IS THIS THE SAME AS YOUR '${Util.esc(pm.targetLabel)}' CARD?</div>
@@ -4323,6 +4380,7 @@ const UI = (() => {
       originalBalance: balance,
       minimumPayment: min,
       interestRate: rate,
+      dueDateOfMonth: parseInt(f.dueDateOfMonth, 10) || null,
       cardId: linkCardId
     };
     const patch = { debts: [...(s.debts||[]), newDebt] };
@@ -4595,6 +4653,7 @@ const UI = (() => {
         ${isDebt ? `
           <div class="field"><label>MIN PAYMENT</label><input data-edit-field="minimumPayment" value="${Util.esc(item.minimumPayment==null?'':item.minimumPayment)}" inputmode="decimal"></div>
           <div class="field"><label>INTEREST %</label><input data-edit-field="interestRate" value="${Util.esc(item.interestRate==null?'':item.interestRate)}" inputmode="decimal"></div>
+          <div class="field"><label>DUE DAY</label><input data-edit-field="dueDateOfMonth" value="${Util.esc(item.dueDateOfMonth==null?'':item.dueDateOfMonth)}" inputmode="numeric" placeholder="—"></div>
         ` : ""}
         <div class="row-actions">
           <button class="cta ghost" data-action="cancel-edit" data-kind="${kind}" data-id="${Util.esc(item.id)}">× CANCEL</button>
@@ -5329,7 +5388,7 @@ const UI = (() => {
     bindAddFormEvents(s);
     root.querySelectorAll("[data-action=show-add-debt]").forEach(el => {
       el.addEventListener("click", () => {
-        addForms.debt = { label: "", balance: "", minimumPayment: "", interestRate: "" };
+        addForms.debt = { label: "", balance: "", minimumPayment: "", interestRate: "", dueDateOfMonth: "" };
         render();
       });
     });
@@ -5466,7 +5525,9 @@ const UI = (() => {
           balance: isFinite(newBal) ? newBal : d.balance,
           originalBalance: Number(d.originalBalance) || (isFinite(newBal) ? newBal : d.balance),
           minimumPayment: parseFloat(values.minimumPayment) || 0,
-          interestRate: parseFloat(values.interestRate) || 0
+          interestRate: parseFloat(values.interestRate) || 0,
+          // Blank stays unset so the bills list shows "—" rather than a made-up day.
+          dueDateOfMonth: parseInt(values.dueDateOfMonth, 10) || null
         };
       });
       patch.debts = arr;
