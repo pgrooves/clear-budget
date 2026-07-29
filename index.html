@@ -4030,7 +4030,7 @@ const UI = (() => {
     return `
         <section class="section terracotta" data-learn="DEBT-FREE DATE. THE MONTH YOU'LL FINISH PAYING OFF EVERY DEBT AT YOUR CURRENT PACE. FACTORS IN MINIMUMS, INTEREST, AND ANY EXTRA PAYMENT.">
           <div class="section-label">→ DEBTS</div>
-          <div class="sub-label" style="margin-top:16px;">DEBT-FREE DATE</div>
+          <div class="sub-label" style="margin-top:16px;">HOW MUCH LONGER?</div>
           <div class="hero" style="margin-top:8px;">${Util.esc(Util.fmtMonthLong(monthYMFromShort(debtFree)) || debtFree)}</div>
           <div class="sub-label" style="margin-top:8px;">AT CURRENT PACE</div>
           ${paidOff > 0 ? `<div class="sub-label" style="margin-top:8px;" data-learn="HOW MUCH TOTAL DEBT YOU'VE CLEARED SINCE YOU FIRST ENTERED THESE BALANCES. COMPARES EACH DEBT'S ORIGINAL BALANCE TO WHAT'S LEFT.">PAID OFF ${Util.esc(Util.fmtMoney(paidOff,0))} SINCE YOU STARTED</div>` : ""}
