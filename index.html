@@ -713,7 +713,7 @@
 
 // Build version. Surfaced in Settings > HOUSEHOLD so a stale cache is diagnosable.
 // Bump every round.
-const APP_VERSION = "V38";
+const APP_VERSION = "V39";
 
 /* ============================================================
    FIREBASE INIT
@@ -5167,24 +5167,30 @@ const UI = (() => {
     }
     document.body.appendChild(layer);
 
-    // Teardown has three possible triggers because no single one is reliable
-    // everywhere: afterprint (desktop and Android), the print media query
-    // going false (Safari), and a long failsafe timer if neither fires.
+    // Teardown is deliberately NOT wired to afterprint or the print media query
+    // any more. On iOS both can fire the moment print() is called and flip
+    // straight back, which removed this layer before the sheet had rendered it.
+    // The tap then looked like it did nothing at all — and no diagnostic fired
+    // either, because the browser HAD reported entering print state, so the
+    // "didn't open" check below saw began === true and stayed quiet.
+    //
+    // A display:none subtree costs nothing to leave in the document, so it now
+    // lingers until the next report replaces it or the timer below fires.
+    // Racing the browser to remove it bought nothing and broke the feature.
     let done = false;
     // Whether the browser ever actually started printing. iOS Safari can ignore
     // window.print() outright and report nothing, so this is the only way to
-    // tell "the sheet opened and was cancelled" from "the call did nothing".
+    // tell "the sheet opened" from "the call did nothing".
     let began = false;
     const mql = window.matchMedia ? window.matchMedia("print") : null;
-    const onMql = (e) => { if (e.matches) began = true; else cleanup(); };
+    const onMql = (e) => { if (e && e.matches) began = true; };
     const onBefore = () => { began = true; };
-    const failsafe = setTimeout(() => cleanup(), 60000);
+    const failsafe = setTimeout(() => cleanup(), 30000);
 
     function cleanup() {
       if (done) return;
       done = true;
       clearTimeout(failsafe);
-      window.removeEventListener("afterprint", cleanup);
       window.removeEventListener("beforeprint", onBefore);
       if (mql) {
         if (mql.removeEventListener) mql.removeEventListener("change", onMql);
@@ -5196,7 +5202,6 @@ const UI = (() => {
     }
     printTeardown = cleanup;
 
-    window.addEventListener("afterprint", cleanup);
     window.addEventListener("beforeprint", onBefore);
     if (mql) {
       if (mql.addEventListener) mql.addEventListener("change", onMql);
@@ -5220,11 +5225,11 @@ const UI = (() => {
 
     // print() returning tells us nothing on iOS — it doesn't block and doesn't
     // throw when it declines. If nothing reported starting shortly after, the
-    // call was dropped; clear the layer and say so rather than leaving the tap
-    // looking like it did nothing.
+    // call was dropped; say so rather than leaving the tap looking like it did
+    // nothing. The layer is left in place either way: Safari's own Share > Print
+    // will pick it up, which is the workaround the message points at.
     setTimeout(() => {
       if (began || done) return;
-      cleanup();
       alert("SAFARI DIDN'T OPEN THE PRINT SHEET. USE THE SHARE ICON IN THE BROWSER BAR, THEN PRINT, AND PICK SAVE AS PDF.");
     }, 1500);
   }
