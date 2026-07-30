@@ -713,7 +713,7 @@
 
 // Build version. Surfaced in Settings > HOUSEHOLD so a stale cache is diagnosable.
 // Bump every round.
-const APP_VERSION = "V36";
+const APP_VERSION = "V37";
 
 /* ============================================================
    FIREBASE INIT
@@ -1568,7 +1568,15 @@ const ImportEngine = (() => {
     return false;
   }
 
-  // Tier 2: same amount, |date delta| ≤ 3 days, only vs source:"manual".
+  // Tier 2: same amount, |date delta| within tolerance, only vs source:"manual".
+  //
+  // Debt payments get a wider window. Tier 1 can't catch them — it compares the
+  // statement description against the stored note, and a hand-logged payment
+  // reads "MINIMUM PAYMENT" or nothing while the bank line reads something like
+  // "AUTOPAY CARD 1234". That leaves this tier as the only guard, and a payment
+  // is often recorded some days off from when it actually cleared.
+  const FUZZY_DAYS = 3;
+  const FUZZY_DAYS_DEBT = 10;
   function findFuzzyMatch(cand, existing) {
     const amt = Math.round(Math.abs(Number(cand.amount) || 0) * 100);
     const cDate = new Date(cand.date + "T00:00:00");
@@ -1579,7 +1587,7 @@ const ImportEngine = (() => {
       const tDate = new Date(String(t.date || "") + "T00:00:00");
       if (isNaN(tDate)) continue;
       const days = Math.abs((cDate - tDate) / 86400000);
-      if (days <= 3) return t;
+      if (days <= (t.categoryType === "debt" ? FUZZY_DAYS_DEBT : FUZZY_DAYS)) return t;
     }
     return null;
   }
@@ -4096,6 +4104,16 @@ const UI = (() => {
         if (f) f.amount = e.target.value;
       });
     });
+    root.querySelectorAll("[data-action=min-pay-date]").forEach(el => {
+      // Both events: iOS date pickers commit on change, desktop fires input.
+      // Neither re-renders, so the open picker and any typing aren't disturbed.
+      const onDate = e => {
+        const f = minPayPrompts[el.dataset.id];
+        if (f) f.date = e.target.value;
+      };
+      el.addEventListener("input", onDate);
+      el.addEventListener("change", onDate);
+    });
     root.querySelectorAll("[data-action=min-pay-save]").forEach(el => {
       el.addEventListener("click", () => {
         const f = minPayPrompts[el.dataset.id];
@@ -4129,7 +4147,7 @@ const UI = (() => {
     const existing = tickPayTxnFor(s, debtId);
     if (!existing) {
       if ((Number(debt.minimumPayment) || 0) <= 0) return;
-      minPayPrompts[debtId] = { mode: "ask", amount: "", error: "" };
+      minPayPrompts[debtId] = { mode: "ask", amount: "", date: Util.todayISO(), error: "" };
       render();
       return;
     }
@@ -4148,10 +4166,16 @@ const UI = (() => {
   async function logDebtTickPayment(s, debtId, rawAmount) {
     const debt = (s.debts || []).find(d => d.id === debtId);
     if (!debt) return;
-    const f = minPayPrompts[debtId] || (minPayPrompts[debtId] = { mode: "ask", amount: "", error: "" });
+    const f = minPayPrompts[debtId] || (minPayPrompts[debtId] = { mode: "ask", amount: "", date: Util.todayISO(), error: "" });
     const amount = Math.round((Number(rawAmount) || 0) * 100) / 100;
     if (!isFinite(amount) || amount <= 0) {
       f.error = "ENTER A VALID AMOUNT";
+      render();
+      return;
+    }
+    const dateISO = String(f.date || "").trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateISO) || isNaN(new Date(dateISO + "T00:00:00"))) {
+      f.error = "ENTER A VALID DATE";
       render();
       return;
     }
@@ -4159,15 +4183,17 @@ const UI = (() => {
     const isCouple = s.settings && s.settings.mode === "couple";
     const txn = {
       id: Util.uuid(),
-      date: Util.todayISO(),
+      date: dateISO,
       amount: amount,
       categoryId: debtId,
       categoryType: "debt",
       note: amount === minAmt ? "MINIMUM PAYMENT" : "PAYMENT",
       paymentType: "cash",
       person: isCouple ? "JOINT" : ((s.settings.names && s.settings.names[0]) || "ME").toUpperCase(),
-      // Keyed to the month being tracked, not today, so the tick matches the
-      // month the BILLS tab is showing.
+      // Keyed to the month being tracked rather than derived from the date, so
+      // the tick stays checked on the month you're looking at even when the
+      // payment cleared just either side of the month boundary. Dedupe on
+      // import compares `date`, which is the real one above.
       month: s.currentMonth,
       cardId: null,
       tickPay: true,
@@ -4190,11 +4216,18 @@ const UI = (() => {
     if (!f) return "";
     const minAmt = Math.round((Number(debt.minimumPayment) || 0) * 100) / 100;
     const id = Util.esc(debt.id);
+    // Date the payment actually left the account, not the day you got round to
+    // ticking it. Import dedupe compares dates, so a date that matches what the
+    // bank will report is what stops the same payment landing twice.
+    const dateField = `
+      <div class="field"><label>DATE PAID</label><input type="date" data-action="min-pay-date" data-id="${id}" value="${Util.esc(f.date || "")}"></div>
+      <div class="meta">USE THE DATE IT LEFT YOUR ACCOUNT, SO AN IMPORTED STATEMENT RECOGNISES IT AS THE SAME PAYMENT.</div>`;
     if (f.mode === "custom") {
       return `
         <div class="inline-form">
           <div class="sub-label">HOW MUCH DID YOU PAY?</div>
           <div class="field"><label>AMOUNT PAID</label><input data-action="min-pay-input" data-id="${id}" value="${Util.esc(f.amount)}" inputmode="decimal" placeholder="${Util.esc(String(minAmt))}"></div>
+          ${dateField}
           <div class="meta">LOGS AS A DEBIT AGAINST ${Util.esc(debt.label)} AND REDUCES THE BALANCE BY THIS AMOUNT.</div>
           ${f.error ? `<div class="text-danger meta">${Util.esc(f.error)}</div>` : ""}
           <div class="row-actions">
@@ -4207,6 +4240,7 @@ const UI = (() => {
       <div class="inline-form">
         <div class="sub-label">DID YOU PAY THE MINIMUM?</div>
         <div class="meta">EITHER WAY THIS LOGS A DEBIT AGAINST ${Util.esc(debt.label)} AND REDUCES THE BALANCE.</div>
+        ${dateField}
         ${f.error ? `<div class="text-danger meta">${Util.esc(f.error)}</div>` : ""}
         <div class="row-actions">
           <button class="cta ghost" data-action="min-pay-custom" data-id="${id}">A DIFFERENT AMOUNT</button>
