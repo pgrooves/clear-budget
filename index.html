@@ -713,7 +713,7 @@
 
 // Build version. Surfaced in Settings > HOUSEHOLD so a stale cache is diagnosable.
 // Bump every round.
-const APP_VERSION = "V35";
+const APP_VERSION = "V36";
 
 /* ============================================================
    FIREBASE INIT
@@ -4273,7 +4273,7 @@ const UI = (() => {
           <div class="debt-meta">MIN: ${Util.esc(Util.fmtMoney(Number(d.minimumPayment)||0,0))}/MO · RATE: ${(Number(d.interestRate)||0).toFixed(1)}%</div>
           ${linkedCard ? `<div class="debt-meta" data-learn="THIS DEBT IS LINKED TO A CREDIT CARD YOU SET UP IN SETTINGS. LINKING IS INFORMATIONAL — BALANCES STAY INDEPENDENT.">LINKED CARD: ${Util.esc(linkedCard.label)}</div>` : ""}
           ${minRowHtml}
-          <button class="link" data-action="debt-pay-open" data-id="${Util.esc(d.id)}" style="margin-top:8px;" data-learn="LOG A PAYMENT AGAINST THIS DEBT. OPENS A FORM (AMOUNT, DEBIT/CREDIT, NOTE). ON SAVE THE BALANCE DECREASES AND A TRANSACTION IS RECORDED.">${payForm && payForm.open ? "× CANCEL PAYMENT" : "→ LOG PAYMENT"}</button>
+          <button class="link" data-action="debt-pay-open" data-id="${Util.esc(d.id)}" style="margin-top:8px;" data-learn="LOG A PAYMENT AGAINST THIS DEBT. OPENS A FORM (AMOUNT, NOTE). ON SAVE THE BALANCE DECREASES AND A DEBIT TRANSACTION IS RECORDED.">${payForm && payForm.open ? "× CANCEL PAYMENT" : "→ LOG PAYMENT"}</button>
           ${payHtml}
           ${editHtml}
         </div>`;
@@ -4393,8 +4393,6 @@ const UI = (() => {
           debtPayForms[id] = {
             open: true,
             amount: "",
-            paymentType: "cash",
-            cardId: null,
             person: "JOINT",
             note: "",
             error: ""
@@ -4407,21 +4405,6 @@ const UI = (() => {
       el.addEventListener("input", e => {
         const f = debtPayForms[el.dataset.id]; if (!f) return;
         f[el.dataset.field] = e.target.value;
-      });
-    });
-    root.querySelectorAll("[data-action=debt-pay-toggle]").forEach(el => {
-      el.addEventListener("click", () => {
-        const f = debtPayForms[el.dataset.id]; if (!f) return;
-        f.paymentType = el.dataset.v;
-        if (f.paymentType !== "credit") f.cardId = null;
-        render();
-      });
-    });
-    root.querySelectorAll("[data-action=debt-pay-card]").forEach(el => {
-      el.addEventListener("click", () => {
-        const f = debtPayForms[el.dataset.id]; if (!f) return;
-        f.cardId = el.dataset.card || null;
-        render();
       });
     });
     root.querySelectorAll("[data-action=debt-pay-person]").forEach(el => {
@@ -4445,20 +4428,18 @@ const UI = (() => {
   // form's field structure so the containment CSS applies. On save, writes a
   // manual transaction (categoryType "debt", categoryId = debt.id) and lets
   // applyDebtDelta reconcile the debt's balance in the same patch.
+  // Debt payments are debit-only. The DEBIT/CREDIT pair this form used to carry
+  // mirrored the purchase log, but funding a debt payment with credit isn't a
+  // thing you can generally do — card issuers don't accept cards for card
+  // balances, and most loan servicers don't either. Worse, it let a card-linked
+  // debt be "paid" with its own card, which dropped the debt balance and raised
+  // that same card's unpaid credit for the month: no money moved, but Safe to
+  // Spend fell. A balance transfer, the one adjacent real case, isn't
+  // representable here anyway — it should raise the other debt's balance, not
+  // add to this month's unpaid credit.
   function renderDebtPayForm(s, d) {
     const f = debtPayForms[d.id];
     const isCouple = s.settings && s.settings.mode === "couple";
-    const cards = s.creditCards || [];
-    const cardChipsHtml = f.paymentType === "credit" ? `
-      <div class="field">
-        <label>WHICH CARD</label>
-        ${cards.length ? `
-          <div class="chips" data-scroll-key="debt-pay-card-${Util.esc(d.id)}">
-            ${cards.map(c => `<button class="chip ${f.cardId===c.id?'active':''}" data-action="debt-pay-card" data-id="${Util.esc(d.id)}" data-card="${Util.esc(c.id)}">${Util.esc(c.label)}</button>`).join("")}
-            ${f.cardId ? `<button class="chip" data-action="debt-pay-card" data-id="${Util.esc(d.id)}" data-card="">× NONE</button>` : ""}
-          </div>
-        ` : `<div class="meta">NO CARDS; ADD THEM IN SETTINGS</div>`}
-      </div>` : "";
     const personChips = isCouple ? `
       <div class="field">
         <label>WHO PAID</label>
@@ -4473,13 +4454,6 @@ const UI = (() => {
       <div class="inline-form">
         <div class="sub-label">LOG PAYMENT</div>
         <div class="field"><label>AMOUNT</label><input data-action="debt-pay-input" data-id="${Util.esc(d.id)}" data-field="amount" value="${Util.esc(f.amount)}" inputmode="decimal" placeholder="0"></div>
-        <div class="field"><label>PAYMENT</label>
-          <div class="toggle-row">
-            <button class="toggle ${f.paymentType==='cash'?'active':''}" data-action="debt-pay-toggle" data-id="${Util.esc(d.id)}" data-v="cash">DEBIT</button>
-            <button class="toggle ${f.paymentType==='credit'?'active':''}" data-action="debt-pay-toggle" data-id="${Util.esc(d.id)}" data-v="credit">CREDIT</button>
-          </div>
-        </div>
-        ${cardChipsHtml}
         ${personChips}
         <div class="field"><label>NOTE</label><input data-action="debt-pay-input" data-id="${Util.esc(d.id)}" data-field="note" value="${Util.esc(f.note)}" maxlength="60" placeholder="NOTE (OPTIONAL)"></div>
         ${f.error ? `<div class="text-danger meta">${Util.esc(f.error)}</div>` : ""}
@@ -4508,10 +4482,11 @@ const UI = (() => {
       categoryId: debtId,
       categoryType: "debt",
       note: (f.note || "").toUpperCase().slice(0, 60),
-      paymentType: f.paymentType || "cash",
+      // Debit-only; see renderDebtPayForm for why credit isn't offered.
+      paymentType: "cash",
       person: person,
       month: dateISO.slice(0, 7),
-      cardId: f.paymentType === "credit" ? (f.cardId || null) : null,
+      cardId: null,
       source: "manual"
     };
     // Reuse applyDebtDelta so the debt-balance reconciliation logic is shared
