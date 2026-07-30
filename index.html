@@ -1771,6 +1771,11 @@ const UI = (() => {
   // { open, amount, paymentType, cardId, person, note, error }
   const debtPayForms = {};
 
+  // Confirm step behind the PAID? tick on a card/debt row, keyed by debt id.
+  // { mode: "ask" | "custom", amount, error }. Transient UI only; the tick's
+  // real state lives in the logged transaction.
+  const minPayPrompts = {};
+
   // Post-import notice — shown on the LOG screen after a batch commits.
   // { total, offMonth, dismissed }. Renders in danger-red when offMonth > 0.
   let postImportNotice = null;
@@ -3893,36 +3898,48 @@ const UI = (() => {
     // monthly obligation is visible in one place. A card's figures live on the
     // debt it's linked to (balance, minimum, due day).
     //
-    // These are display-only mirrors and are deliberately NOT written into
-    // s.bills: card minimums are already subtracted from Safe to Spend as debt
-    // minimums, so adding them as real bills would double-count them and move
-    // every budget figure. Ticking them off happens on the DEBTS tab, where
-    // logging a payment also debits the balance — hence no PAID? checkbox here.
+    // These rows are not entries in s.bills: card minimums are already
+    // subtracted from Safe to Spend as debt minimums, so storing them as real
+    // bills would double-count them. Their PAID? tick is the same record the
+    // DEBTS tab card uses, so ticking here ticks there and vice versa.
     const cardBillItems = (s.creditCards || []).map(c => {
       const d = c.debtId ? (s.debts || []).find(x => x.id === c.debtId) : null;
-      if (!d || (Number(d.balance) || 0) <= 0) return null;
+      if (!d) return null;
+      const paidTxn = tickPayTxnFor(s, d.id);
+      // A cleared balance normally drops the card out of this list; keep it
+      // while its tick is on, or there'd be no way left to undo the payment.
+      if ((Number(d.balance) || 0) <= 0 && !paidTxn) return null;
       return {
+        debt: d,
         label: c.label,
         amount: Number(d.minimumPayment) || 0,
-        dueDateOfMonth: Number(d.dueDateOfMonth) || 0
+        dueDateOfMonth: Number(d.dueDateOfMonth) || 0,
+        paidTxn: paidTxn
       };
     }).filter(Boolean).sort(byDue);
 
     const cardRowFor = (c) => {
       const due = Number(c.dueDateOfMonth) || 0;
-      const overdue = sameMonth && due > 0 && due < todayDay;
+      const paid = !!c.paidTxn;
+      const overdue = !paid && sameMonth && due > 0 && due < todayDay;
+      // Nothing to log without a minimum on the linked debt.
+      const canPay = c.amount > 0;
+      const paidNote = paid
+        ? ` · PAID ${Util.fmtMoney(Number(c.paidTxn.amount) || 0, 0)}`
+        : (canPay ? "" : " · SET A MINIMUM IN SETTINGS");
       return `
-        <div class="inc-row" data-learn="A CREDIT CARD WITH A BALANCE, SHOWN HERE WITH ITS MINIMUM AND DUE DAY. IT'S ALREADY COUNTED AS A DEBT MINIMUM IN SAFE TO SPEND, SO IT ISN'T TICKED OFF HERE — LOG THE PAYMENT ON THE DEBTS TAB INSTEAD.">
+        <div class="inc-row">
           <div>
             <div class="inc-label">${Util.esc(c.label)}</div>
-            <div class="meta">CARD MINIMUM · TRACK ON DEBTS TAB</div>
+            <div class="meta">CARD MINIMUM${Util.esc(paidNote)}</div>
           </div>
           <div class="inc-amt">
             ${Util.esc(Util.fmtMoney(c.amount, 0))}
             <span class="${overdue ? "text-danger" : ""}" style="opacity:0.75;">DUE ${due || "—"}</span>
           </div>
-          <span></span>
-        </div>`;
+          <button class="txn-check ${paid ? "checked" : ""} ${canPay ? "" : "disabled"}"${canPay ? "" : " disabled"} data-action="card-min-toggle" data-id="${Util.esc(c.debt.id)}" aria-label="PAID" data-learn="TICK TO LOG A PAYMENT AGAINST THIS CARD. IT ASKS WHETHER YOU PAID THE MINIMUM OR A DIFFERENT AMOUNT, THEN RECORDS A DEBIT TRANSACTION AND REDUCES THE DEBT BALANCE. IT TICKS ON THE DEBTS TAB TOO; UNTICK TO UNDO BOTH."></button>
+        </div>
+        ${renderMinPayPrompt(s, c.debt)}`;
     };
 
     const cardRowsHtml = cardBillItems.map(cardRowFor).join("");
@@ -3966,6 +3983,7 @@ const UI = (() => {
     root.querySelectorAll("[data-action=bill-toggle]").forEach(el => {
       el.addEventListener("click", () => toggleBillPaid(s, el.dataset.id));
     });
+    bindCardMinEvents(s);
     // The ADD BILL / ADD SAVINGS links reuse Settings' add-form machinery.
     bindAddFormEvents(s);
   }
@@ -4032,6 +4050,156 @@ const UI = (() => {
     } catch (e) { alert("COULDN'T SAVE; CHECK CONNECTION"); console.warn(e); }
   }
 
+  // Shared by the BILLS tab card rows and the DEBTS tab cards so one tick works
+  // identically from either place.
+  function bindCardMinEvents(s) {
+    root.querySelectorAll("[data-action=card-min-toggle]").forEach(el => {
+      el.addEventListener("click", () => toggleDebtMinPaid(s, el.dataset.id));
+    });
+    root.querySelectorAll("[data-action=min-pay-min]").forEach(el => {
+      el.addEventListener("click", () => {
+        const d = (s.debts || []).find(x => x.id === el.dataset.id);
+        if (d) logDebtTickPayment(s, el.dataset.id, Number(d.minimumPayment) || 0);
+      });
+    });
+    root.querySelectorAll("[data-action=min-pay-custom]").forEach(el => {
+      el.addEventListener("click", () => {
+        const d = (s.debts || []).find(x => x.id === el.dataset.id);
+        const f = minPayPrompts[el.dataset.id];
+        if (!f) return;
+        f.mode = "custom";
+        // Prefill with the minimum so it's an edit, not a blank field.
+        f.amount = d ? String(Number(d.minimumPayment) || "") : "";
+        f.error = "";
+        render();
+      });
+    });
+    root.querySelectorAll("[data-action=min-pay-input]").forEach(el => {
+      el.addEventListener("input", e => {
+        const f = minPayPrompts[el.dataset.id];
+        if (f) f.amount = e.target.value;
+      });
+    });
+    root.querySelectorAll("[data-action=min-pay-save]").forEach(el => {
+      el.addEventListener("click", () => {
+        const f = minPayPrompts[el.dataset.id];
+        logDebtTickPayment(s, el.dataset.id, parseFloat(f ? f.amount : ""));
+      });
+    });
+    root.querySelectorAll("[data-action=min-pay-cancel]").forEach(el => {
+      el.addEventListener("click", () => { delete minPayPrompts[el.dataset.id]; render(); });
+    });
+  }
+
+  // A card/debt row's PAID? tick is backed by one payment transaction, flagged
+  // tickPay so it can be found and undone exactly. The BILLS tab card rows and
+  // the DEBTS tab cards both read and write this single record, which is what
+  // keeps the two tabs in step: ticking either one ticks both, and the payment
+  // itself lands in the ledger like any other, so the log, the debt balance and
+  // every total that reads them all move together.
+  //
+  // Unlike a bill's tick this is a real ledger event, so ticking asks first
+  // whether it was the minimum or some other amount rather than assuming.
+  function tickPayTxnFor(s, debtId) {
+    return (s.transactions || []).find(t =>
+      t && t.tickPay && t.categoryType === "debt" &&
+      t.categoryId === debtId && t.month === s.currentMonth) || null;
+  }
+
+  // Tick opens the confirm step; untick reverses immediately.
+  async function toggleDebtMinPaid(s, debtId) {
+    const debt = (s.debts || []).find(d => d.id === debtId);
+    if (!debt) return;
+    const existing = tickPayTxnFor(s, debtId);
+    if (!existing) {
+      if ((Number(debt.minimumPayment) || 0) <= 0) return;
+      minPayPrompts[debtId] = { mode: "ask", amount: "", error: "" };
+      render();
+      return;
+    }
+    // Undo: drop the payment and let applyDebtDelta restore the balance, the
+    // same reversal the txn editor's delete path uses.
+    delete minPayPrompts[debtId];
+    try {
+      await DataService.update({
+        transactions: (s.transactions || []).filter(x => x.id !== existing.id),
+        debts: applyDebtDelta(s.debts, existing, null)
+      });
+      render();
+    } catch (e) { alert("COULDN'T SAVE; CHECK CONNECTION"); console.warn(e); }
+  }
+
+  async function logDebtTickPayment(s, debtId, rawAmount) {
+    const debt = (s.debts || []).find(d => d.id === debtId);
+    if (!debt) return;
+    const f = minPayPrompts[debtId] || (minPayPrompts[debtId] = { mode: "ask", amount: "", error: "" });
+    const amount = Math.round((Number(rawAmount) || 0) * 100) / 100;
+    if (!isFinite(amount) || amount <= 0) {
+      f.error = "ENTER A VALID AMOUNT";
+      render();
+      return;
+    }
+    const minAmt = Math.round((Number(debt.minimumPayment) || 0) * 100) / 100;
+    const isCouple = s.settings && s.settings.mode === "couple";
+    const txn = {
+      id: Util.uuid(),
+      date: Util.todayISO(),
+      amount: amount,
+      categoryId: debtId,
+      categoryType: "debt",
+      note: amount === minAmt ? "MINIMUM PAYMENT" : "PAYMENT",
+      paymentType: "cash",
+      person: isCouple ? "JOINT" : ((s.settings.names && s.settings.names[0]) || "ME").toUpperCase(),
+      // Keyed to the month being tracked, not today, so the tick matches the
+      // month the BILLS tab is showing.
+      month: s.currentMonth,
+      cardId: null,
+      tickPay: true,
+      source: "manual"
+    };
+    try {
+      await DataService.update({
+        transactions: DataService.appendTxns(txn),
+        debts: applyDebtDelta(s.debts, null, txn)
+      });
+      delete minPayPrompts[debtId];
+      render();
+    } catch (e) { f.error = "COULDN'T SAVE; CHECK CONNECTION"; render(); console.warn(e); }
+  }
+
+  // The confirm step itself. Rendered as a sibling of the row that opened it,
+  // from either tab, so both places get the identical prompt.
+  function renderMinPayPrompt(s, debt) {
+    const f = minPayPrompts[debt.id];
+    if (!f) return "";
+    const minAmt = Math.round((Number(debt.minimumPayment) || 0) * 100) / 100;
+    const id = Util.esc(debt.id);
+    if (f.mode === "custom") {
+      return `
+        <div class="inline-form">
+          <div class="sub-label">HOW MUCH DID YOU PAY?</div>
+          <div class="field"><label>AMOUNT PAID</label><input data-action="min-pay-input" data-id="${id}" value="${Util.esc(f.amount)}" inputmode="decimal" placeholder="${Util.esc(String(minAmt))}"></div>
+          <div class="meta">LOGS AS A DEBIT AGAINST ${Util.esc(debt.label)} AND REDUCES THE BALANCE BY THIS AMOUNT.</div>
+          ${f.error ? `<div class="text-danger meta">${Util.esc(f.error)}</div>` : ""}
+          <div class="row-actions">
+            <button class="cta ghost" data-action="min-pay-cancel" data-id="${id}">× CANCEL</button>
+            <button class="cta" data-action="min-pay-save" data-id="${id}">→ LOG IT</button>
+          </div>
+        </div>`;
+    }
+    return `
+      <div class="inline-form">
+        <div class="sub-label">DID YOU PAY THE MINIMUM?</div>
+        <div class="meta">EITHER WAY THIS LOGS A DEBIT AGAINST ${Util.esc(debt.label)} AND REDUCES THE BALANCE.</div>
+        ${f.error ? `<div class="text-danger meta">${Util.esc(f.error)}</div>` : ""}
+        <div class="row-actions">
+          <button class="cta ghost" data-action="min-pay-custom" data-id="${id}">A DIFFERENT AMOUNT</button>
+          <button class="cta" data-action="min-pay-min" data-id="${id}">→ MINIMUM · ${Util.esc(Util.fmtMoney(minAmt, 0))}</button>
+        </div>
+        <button class="link" data-action="min-pay-cancel" data-id="${id}" style="margin-top:8px;">× CANCEL</button>
+      </div>`;
+  }
+
   /* ------------- DEBTS SCREEN ------------- */
   function debtsBodyHtml(s) {
     // Progress since you started: every debt stores originalBalance, so this is
@@ -4063,6 +4231,19 @@ const UI = (() => {
       const linkedCard = d.cardId ? (s.creditCards||[]).find(c => c.id === d.cardId) : null;
       const payForm = debtPayForms[d.id];
       const payHtml = payForm && payForm.open ? renderDebtPayForm(s, d) : "";
+      // Same tick as the card row on the BILLS tab — one record, both tabs.
+      const minAmt = Number(d.minimumPayment) || 0;
+      const minPaidTxn = tickPayTxnFor(s, d.id);
+      const minRowHtml = minAmt > 0 ? `
+          <div class="inc-row" style="margin-top:8px;">
+            <div>
+              <div class="inc-label">MINIMUM THIS MONTH</div>
+              <div class="meta">${minPaidTxn ? `PAID ${Util.esc(Util.fmtMoney(Number(minPaidTxn.amount) || 0, 0))}; BALANCE REDUCED` : "TICK TO LOG A PAYMENT"}</div>
+            </div>
+            <div class="inc-amt">${Util.esc(Util.fmtMoney(minAmt, 0))}</div>
+            <button class="txn-check ${minPaidTxn ? "checked" : ""}" data-action="card-min-toggle" data-id="${Util.esc(d.id)}" aria-label="MINIMUM PAID" data-learn="TICK TO LOG A PAYMENT AGAINST THIS DEBT. IT ASKS WHETHER YOU PAID THE MINIMUM OR A DIFFERENT AMOUNT, THEN RECORDS A DEBIT TRANSACTION AND REDUCES THE BALANCE. IT TICKS ALONGSIDE THE CARD ROW ON THE BILLS TAB; UNTICK TO UNDO BOTH."></button>
+          </div>
+          ${renderMinPayPrompt(s, d)}` : "";
       return `
         <div class="debt-card" data-learn="DEBT CARD. SHOWS YOUR REMAINING BALANCE, HOW MUCH OF THE ORIGINAL IS PAID, THE PROJECTED PAYOFF MONTH, AND THE MINIMUM PAYMENT AND INTEREST RATE.">
           <div class="debt-header">
@@ -4075,6 +4256,7 @@ const UI = (() => {
           <div class="debt-meta">${paidPct.toFixed(0)}% PAID · PAYOFF: ${Util.esc(payoff)}</div>
           <div class="debt-meta">MIN: ${Util.esc(Util.fmtMoney(Number(d.minimumPayment)||0,0))}/MO · RATE: ${(Number(d.interestRate)||0).toFixed(1)}%</div>
           ${linkedCard ? `<div class="debt-meta" data-learn="THIS DEBT IS LINKED TO A CREDIT CARD YOU SET UP IN SETTINGS. LINKING IS INFORMATIONAL — BALANCES STAY INDEPENDENT.">LINKED CARD: ${Util.esc(linkedCard.label)}</div>` : ""}
+          ${minRowHtml}
           <button class="link" data-action="debt-pay-open" data-id="${Util.esc(d.id)}" style="margin-top:8px;" data-learn="LOG A PAYMENT AGAINST THIS DEBT. OPENS A FORM (AMOUNT, DEBIT/CREDIT, NOTE). ON SAVE THE BALANCE DECREASES AND A TRANSACTION IS RECORDED.">${payForm && payForm.open ? "× CANCEL PAYMENT" : "→ LOG PAYMENT"}</button>
           ${payHtml}
           ${editHtml}
@@ -4239,6 +4421,7 @@ const UI = (() => {
     root.querySelectorAll("[data-action=debt-pay-save]").forEach(el => {
       el.addEventListener("click", () => saveDebtPayment(s, el.dataset.id));
     });
+    bindCardMinEvents(s);
     bindEditFormEvents(s);
   }
 
