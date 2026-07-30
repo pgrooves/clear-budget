@@ -713,7 +713,7 @@
 
 // Build version. Surfaced in Settings > HOUSEHOLD so a stale cache is diagnosable.
 // Bump every round.
-const APP_VERSION = "V43";
+const APP_VERSION = "V44";
 
 /* ============================================================
    FIREBASE INIT
@@ -1726,8 +1726,15 @@ const UI = (() => {
     person: "JOINT",
     note: "",
     cardId: null,
-    bankId: null
+    bankId: null,
+    // Only set when a scanned receipt supplied a date. Null means "today", the
+    // behaviour every manually typed purchase has always had.
+    date: null
   };
+
+  // Receipt scan flow. Local UI state; nothing here is written to Firestore.
+  // { step: "input"|"review", text, parsed, match, matchDismissed, busy, progress, error }
+  let receiptScan = null;
   // Which sub-tab of the Log screen is showing. Local UI state only; never
   // written to Firestore. Switching must not disturb logForm.
   let logSubTab = "purchase"; // "purchase" | "income"
@@ -2997,8 +3004,11 @@ const UI = (() => {
               <div class="sub-label">NOTE</div>
               <input class="underline" id="log-note" placeholder="NOTE (OPTIONAL)" value="${Util.esc(logForm.note)}" maxlength="60" data-learn="OPTIONAL SHORT NOTE FOR THE TRANSACTION LIST (E.G. 'HEB RUN').">
             </div>
+            ${logForm.date ? `<div class="meta" data-learn="THIS PURCHASE WILL BE DATED FROM THE RECEIPT YOU SCANNED RATHER THAN TODAY.">DATED ${Util.esc(Util.fmtDateShort(logForm.date))} FROM THE RECEIPT</div>` : ""}
             ${formErrors.log ? `<div class="text-danger meta">${Util.esc(formErrors.log)}</div>` : ""}
             <button class="cta" data-action="log-it" data-learn="SAVE THIS TRANSACTION. IT APPEARS IN THE LIST BELOW AND ON YOUR PARTNER'S PHONE; SAFE TO SPEND AND CATEGORY BARS UPDATE INSTANTLY.">→ LOG IT</button>
+            <button class="cta ghost" data-action="receipt-open" style="margin-top:12px;" data-learn="READ A RECEIPT INSTEAD OF TYPING IT. ON IPHONE THIS USES THE TEXT SCANNER BUILT INTO IOS; ELSEWHERE IT READS A PHOTO. YOU CHECK EVERYTHING BEFORE IT SAVES, AND IT WARNS YOU IF THE PURCHASE LOOKS ALREADY LOGGED.">${receiptScan ? "× CANCEL SCAN" : "⌾ SCAN A RECEIPT"}</button>
+            ${receiptScan ? renderReceiptScan(s) : ""}
           </div>`}
         </section>
 
@@ -3146,6 +3156,58 @@ const UI = (() => {
     });
     const cta = root.querySelector("[data-action=log-it]");
     if (cta) cta.addEventListener("click", () => submitLog(s));
+
+    // --- Receipt scan
+    root.querySelectorAll("[data-action=receipt-open]").forEach(el => {
+      el.addEventListener("click", () => {
+        receiptScan = receiptScan
+          ? null
+          : { step: "input", text: "", parsed: null, match: null, matchDismissed: false, busy: false, progress: 0, error: "" };
+        render();
+      });
+    });
+    root.querySelectorAll("[data-action=receipt-text]").forEach(el => {
+      // No re-render on input: the OS scanner writes into this field, and
+      // rebuilding it mid-scan would throw away what it just inserted.
+      el.addEventListener("input", e => { if (receiptScan) receiptScan.text = e.target.value; });
+    });
+    root.querySelectorAll("[data-action=receipt-photo]").forEach(el => {
+      el.addEventListener("change", e => {
+        const file = e.target.files && e.target.files[0];
+        if (file) receiptRunOcr(s, file);
+      });
+    });
+    root.querySelectorAll("[data-action=receipt-read]").forEach(el => {
+      el.addEventListener("click", () => receiptReadText(s));
+    });
+    root.querySelectorAll("[data-action=receipt-field]").forEach(el => {
+      const onEdit = e => {
+        if (!receiptScan || !receiptScan.parsed) return;
+        receiptScan.parsed[el.dataset.field] = e.target.value;
+      };
+      el.addEventListener("input", onEdit);
+      el.addEventListener("change", onEdit);
+    });
+    root.querySelectorAll("[data-action=receipt-back]").forEach(el => {
+      el.addEventListener("click", () => {
+        if (!receiptScan) return;
+        receiptScan.step = "input"; receiptScan.error = "";
+        render();
+      });
+    });
+    root.querySelectorAll("[data-action=receipt-dupe-ok]").forEach(el => {
+      el.addEventListener("click", () => {
+        if (!receiptScan) return;
+        receiptScan.matchDismissed = true;
+        render();
+      });
+    });
+    root.querySelectorAll("[data-action=receipt-use]").forEach(el => {
+      el.addEventListener("click", () => receiptUseDetails());
+    });
+    root.querySelectorAll("[data-action=receipt-cancel]").forEach(el => {
+      el.addEventListener("click", () => { receiptScan = null; render(); });
+    });
 
     // Import entry point
     root.querySelectorAll("[data-action=import-toggle]").forEach(el => {
@@ -3737,6 +3799,241 @@ const UI = (() => {
     } catch (e) { alert("COULDN'T SAVE; CHECK CONNECTION"); console.warn(e); }
   }
 
+  function renderReceiptScan(s) {
+    const f = receiptScan;
+    if (!f) return "";
+    const ios = isIOSDevice();
+    const err = f.error ? `<div class="text-danger meta" style="margin-top:8px;">${Util.esc(f.error)}</div>` : "";
+
+    if (f.step === "review" && f.parsed) {
+      const p = f.parsed;
+      const m = f.match;
+      const matchHtml = (m && !f.matchDismissed) ? `
+        <div class="text-danger meta" style="margin-top:12px;">
+          ${m.tier === "exact" ? "ALREADY LOGGED" : "LOOKS LIKE ONE YOU ALREADY LOGGED"}:
+          ${Util.esc(Util.fmtMoney(Number(m.txn.amount) || 0, 2))} ON ${Util.esc(Util.fmtDateShort(m.txn.date))}${m.txn.note ? " · " + Util.esc(m.txn.note) : ""}
+        </div>
+        <div class="meta" style="margin-top:4px;">SAVING THIS WOULD COUNT THE PURCHASE TWICE.</div>
+        <div class="row-actions">
+          <button class="cta ghost" data-action="receipt-cancel">× DON'T LOG IT</button>
+          <button class="cta" data-action="receipt-dupe-ok">→ LOG IT ANYWAY</button>
+        </div>` : "";
+      return `
+        <div class="inline-form">
+          <div class="sub-label">CHECK WHAT IT READ</div>
+          <div class="field"><label>TOTAL</label><input data-action="receipt-field" data-field="amount" value="${Util.esc(p.amount)}" inputmode="decimal" placeholder="0.00"></div>
+          <div class="field"><label>DATE${p.dateFound ? "" : " (NOT FOUND; USING TODAY)"}</label><input type="date" data-action="receipt-field" data-field="date" value="${Util.esc(p.date)}"></div>
+          <div class="field"><label>SHOP</label><input data-action="receipt-field" data-field="merchant" value="${Util.esc(p.merchant)}" maxlength="60" placeholder="OPTIONAL"></div>
+          <div class="meta">CORRECT ANYTHING THAT'S WRONG. YOU'LL STILL PICK THE CATEGORY AND PAYMENT METHOD ABOVE BEFORE IT SAVES.</div>
+          ${err}
+          ${matchHtml}
+          ${(m && !f.matchDismissed) ? "" : `
+            <div class="row-actions">
+              <button class="cta ghost" data-action="receipt-back">← BACK TO TEXT</button>
+              <button class="cta" data-action="receipt-use">→ USE THESE DETAILS</button>
+            </div>`}
+        </div>`;
+    }
+
+    const busyHtml = f.busy ? `
+      <div class="meta" style="margin-top:8px;">READING THE PHOTO${f.progress ? " · " + f.progress + "%" : ""}... THIS CAN TAKE A FEW SECONDS.</div>` : "";
+
+    return `
+      <div class="inline-form">
+        <div class="sub-label">SCAN A RECEIPT</div>
+        ${ios ? `
+          <div class="meta">LONG-PRESS IN THE BOX BELOW AND CHOOSE <strong>SCAN TEXT</strong>, THEN POINT YOUR CAMERA AT THE RECEIPT. THAT USES THE SCANNER BUILT INTO YOUR IPHONE, SO THE RECEIPT NEVER LEAVES YOUR PHONE.</div>
+        ` : `
+          <div class="meta">PASTE OR TYPE THE RECEIPT TEXT BELOW, OR TAKE A PHOTO AND LET THE APP READ IT.</div>
+        `}
+        <div class="field" style="margin-top:8px;">
+          <label>RECEIPT TEXT</label>
+          <textarea data-action="receipt-text" rows="5" style="width:100%;background:transparent;border:1px solid rgba(26,58,140,0.35);color:var(--cobalt);font:inherit;font-size:16px;padding:8px;" placeholder="${ios ? "LONG-PRESS HERE → SCAN TEXT" : "RECEIPT TEXT"}">${Util.esc(f.text || "")}</textarea>
+        </div>
+        <label class="link" style="display:inline-block;margin-top:4px;">
+          ${ios ? "⊕ OR TAKE A PHOTO INSTEAD" : "⊕ TAKE A PHOTO"}
+          <input type="file" accept="image/*" capture="environment" data-action="receipt-photo" style="display:none;">
+        </label>
+        ${ios ? `<div class="meta" style="margin-top:4px;opacity:0.75;">THE PHOTO READER IS LESS ACCURATE THAN SCAN TEXT; USE IT ONLY IF SCAN TEXT ISN'T IN YOUR MENU.</div>` : ""}
+        ${busyHtml}
+        ${err}
+        <div class="row-actions">
+          <button class="cta ghost" data-action="receipt-cancel">× CANCEL</button>
+          <button class="cta" data-action="receipt-read"${f.busy ? " disabled" : ""}>→ READ IT</button>
+        </div>
+      </div>`;
+  }
+
+  /* ------------- RECEIPT SCAN ------------- */
+  // Two ways in, because no web page can open a text scanner by itself:
+  //
+  //  1. iOS/iPadOS: the OS scanner (Live Text). Long-press the box, choose Scan
+  //     Text, point at the receipt. Apple's recognition is far better than
+  //     anything shippable here, it runs on the device, and it costs nothing.
+  //     We can't trigger it from script, so the panel points at it instead.
+  //  2. Anywhere else: a photo through tesseract.js, fetched only when actually
+  //     used so nobody pays the download for a feature they never touch.
+  //
+  // Either way the text lands in the same box and is parsed by the same code,
+  // and nothing is saved until it's been shown for checking.
+  const TESSERACT_SRC = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
+  let tesseractLoad = null;
+
+  function isIOSDevice() {
+    const ua = navigator.userAgent || "";
+    // iPadOS 13+ reports itself as Macintosh; touch points disambiguate.
+    return /iPad|iPhone|iPod/.test(ua) || (/Macintosh/.test(ua) && (navigator.maxTouchPoints || 0) > 1);
+  }
+
+  function loadTesseract() {
+    if (window.Tesseract) return Promise.resolve(window.Tesseract);
+    if (tesseractLoad) return tesseractLoad;
+    tesseractLoad = new Promise((resolve, reject) => {
+      const sc = document.createElement("script");
+      sc.src = TESSERACT_SRC;
+      sc.onload = () => window.Tesseract ? resolve(window.Tesseract) : reject(new Error("READER DIDN'T LOAD"));
+      sc.onerror = () => { tesseractLoad = null; reject(new Error("COULDN'T DOWNLOAD THE READER; CHECK CONNECTION")); };
+      document.head.appendChild(sc);
+    });
+    return tesseractLoad;
+  }
+
+  // Pull the three fields worth having off a receipt. Deliberately built on the
+  // import engine's own primitives: findAmounts already knows that a bare
+  // integer is a store id and not money, and parseDate already handles every
+  // format a receipt is likely to print.
+  function parseReceiptText(raw) {
+    const lines = String(raw == null ? "" : raw).split(/\r?\n/)
+      .map(l => l.trim()).filter(Boolean);
+
+    // Merchant: receipts put the name at the top. Take the first line carrying
+    // real words rather than a phone number or an address of digits.
+    let merchant = "";
+    for (const l of lines) {
+      if ((l.match(/[A-Za-z]/g) || []).length >= 3) { merchant = l; break; }
+    }
+
+    let date = null;
+    for (const l of lines) {
+      const hit = ImportEngine.findDate(l);
+      if (hit && hit.iso) { date = hit.iso; break; }
+    }
+
+    // Total: the last line that says TOTAL and carries money. Subtotals, item
+    // counts and savings lines all say "total" too, so they're excluded.
+    const isTotalLine = (l) =>
+      /\btotals?\b/i.test(l) &&
+      !/\bsub[\s-]?total\b/i.test(l) &&
+      !/\btotal\s+(items?|qty|quantity|savings?|discounts?|tax)\b/i.test(l);
+    let amount = null;
+    for (let i = lines.length - 1; i >= 0 && amount == null; i--) {
+      if (!isTotalLine(lines[i])) continue;
+      const amts = ImportEngine.findAmounts(lines[i]) || [];
+      if (amts.length) amount = amts[amts.length - 1].value;
+    }
+    // No TOTAL line found — fall back to the largest amount on the receipt,
+    // which is the total far more often than not.
+    if (amount == null) {
+      lines.forEach(l => (ImportEngine.findAmounts(l) || []).forEach(a => {
+        if (amount == null || a.value > amount) amount = a.value;
+      }));
+    }
+
+    return {
+      amount: amount == null ? null : Math.abs(amount),
+      date: date,
+      merchant: ImportEngine.cleanDescription(merchant).toUpperCase().slice(0, 60)
+    };
+  }
+
+  // Same duplicate detection the spreadsheet and paste imports run, so a receipt
+  // for something already logged is caught by the same rules. The one deliberate
+  // difference: the bulk import skips a match silently, whereas here it's shown
+  // and the choice is yours.
+  function findReceiptMatch(cand, txns) {
+    const fz = ImportEngine.findFuzzyMatch(cand, txns);
+    if (fz) return { txn: fz, tier: "fuzzy" };
+    if (!ImportEngine.isExactDupe(cand, txns)) return null;
+    // isExactDupe only reports that one exists; find it so it can be shown.
+    const nd = ImportEngine.normalizeDescForCompare(cand.description);
+    const amt = Math.round(Math.abs(Number(cand.amount) || 0) * 100);
+    const hit = (txns || []).find(t => t.date === cand.date
+      && Math.round(Math.abs(Number(t.amount) || 0) * 100) === amt
+      && ImportEngine.normalizeDescForCompare(t.note || "") === nd);
+    return hit ? { txn: hit, tier: "exact" } : null;
+  }
+
+  function receiptReadText(s) {
+    if (!receiptScan) return;
+    const text = String(receiptScan.text || "").trim();
+    if (!text) { receiptScan.error = "NOTHING TO READ YET"; render(); return; }
+    const parsed = parseReceiptText(text);
+    if (parsed.amount == null) {
+      receiptScan.error = "COULDN'T FIND A TOTAL. CHECK THE TEXT, OR TYPE THE AMOUNT IN YOURSELF AFTER TAPPING USE THESE DETAILS.";
+    } else {
+      receiptScan.error = "";
+    }
+    receiptScan.parsed = {
+      amount: parsed.amount == null ? "" : String(parsed.amount.toFixed(2)),
+      date: parsed.date || Util.todayISO(),
+      merchant: parsed.merchant || "",
+      dateFound: !!parsed.date
+    };
+    receiptScan.match = findReceiptMatch(
+      { date: receiptScan.parsed.date, amount: parsed.amount || 0, description: parsed.merchant || "" },
+      s.transactions || []
+    );
+    receiptScan.matchDismissed = false;
+    receiptScan.step = "review";
+    render();
+  }
+
+  async function receiptRunOcr(s, file) {
+    if (!receiptScan || !file) return;
+    receiptScan.busy = true; receiptScan.progress = 0; receiptScan.error = "";
+    render();
+    try {
+      const T = await loadTesseract();
+      const res = await T.recognize(file, "eng", {
+        logger: (m) => {
+          if (!receiptScan || !m || m.status !== "recognizing text") return;
+          const pct = Math.round((m.progress || 0) * 100);
+          if (pct !== receiptScan.progress) { receiptScan.progress = pct; render(); }
+        }
+      });
+      if (!receiptScan) return;
+      receiptScan.text = (res && res.data && res.data.text) || "";
+      receiptScan.busy = false;
+      if (!receiptScan.text.trim()) {
+        receiptScan.error = "COULDN'T READ ANYTHING FROM THAT PHOTO. TRY AGAIN IN BETTER LIGHT, OR TYPE THE TOTAL IN YOURSELF.";
+        render();
+        return;
+      }
+      receiptReadText(s);
+    } catch (err) {
+      console.warn(err);
+      if (!receiptScan) return;
+      receiptScan.busy = false;
+      receiptScan.error = (err && err.message) || "COULDN'T READ THAT PHOTO";
+      render();
+    }
+  }
+
+  // Hand the checked details to the normal purchase form. Category, payment
+  // method and card/bank are still picked there, so a scanned purchase goes
+  // through exactly the same save path — and the same rules — as a typed one.
+  function receiptUseDetails() {
+    if (!receiptScan || !receiptScan.parsed) return;
+    const p = receiptScan.parsed;
+    const amt = parseFloat(p.amount);
+    if (!isFinite(amt) || amt <= 0) { receiptScan.error = "ENTER A VALID AMOUNT"; render(); return; }
+    logForm.amount = String(amt);
+    logForm.note = String(p.merchant || "").toUpperCase().slice(0, 60);
+    logForm.date = /^\d{4}-\d{2}-\d{2}$/.test(p.date) ? p.date : null;
+    receiptScan = null;
+    render();
+  }
+
   async function submitLog(s) {
     formErrors.log = "";
     const amount = parseFloat(logForm.amount);
@@ -3754,7 +4051,9 @@ const UI = (() => {
     const person = isCouple ? logForm.person : (s.settings.names[0] || "ME").toUpperCase();
     const txn = {
       id: Util.uuid(),
-      date: Util.todayISO(),
+      // A scanned receipt carries the date printed on it; anything typed by hand
+      // is today, as it always was.
+      date: logForm.date || Util.todayISO(),
       amount: Math.round(amount * 100) / 100,
       categoryId: logForm.categoryId,
       categoryType: logForm.categoryType,
@@ -3783,6 +4082,8 @@ const UI = (() => {
       // Reset form
       logForm.amount = "";
       logForm.note = "";
+      // A receipt's date belongs to that receipt only; never carry it forward.
+      logForm.date = null;
       // keep last-used category and payment for convenience
       render();
     } catch (err) {
