@@ -713,7 +713,7 @@
 
 // Build version. Surfaced in Settings > HOUSEHOLD so a stale cache is diagnosable.
 // Bump every round.
-const APP_VERSION = "V37";
+const APP_VERSION = "V38";
 
 /* ============================================================
    FIREBASE INIT
@@ -3405,21 +3405,33 @@ const UI = (() => {
     const isCouple = s.settings && s.settings.mode === "couple";
     const cards = s.creditCards || [];
 
-    // Category chips.
-    // Debts appear ONLY when editing an existing debt payment so applyDebtDelta
-    // reconciliation stays available for re-assign. For every other txn the
-    // editor's picker mirrors the log form: spending + bills only.
+    // A debt payment has no category to choose: the category IS the debt it was
+    // paid against. So the picker is dropped for those rows and replaced with a
+    // line naming the debt, rather than left out silently — a missing field
+    // reads as a bug. Re-pointing a payment at a different debt isn't offered
+    // here; the bulk editor already refuses debt rows for the same reason, and
+    // delete-and-re-log is the clean correction.
+    const isDebtTxn = t.categoryType === "debt";
+    const debtLabel = isDebtTxn
+      ? (((s.debts || []).find(d => d.id === t.categoryId) || {}).label || "DEBT")
+      : "";
+
+    // For every other txn the editor's picker mirrors the log form: spending +
+    // bills only.
     const chips = [];
-    (s.spendingCategories||[]).forEach(c => chips.push({ id: c.id, label: c.label, type: "spending" }));
-    (s.bills||[]).forEach(b => chips.push({ id: b.id, label: b.label, type: "bill" }));
-    if (t.categoryType === "debt") {
-      (s.debts||[]).forEach(d => chips.push({ id: d.id, label: d.label + " (DEBT)", type: "debt" }));
+    if (!isDebtTxn) {
+      (s.spendingCategories||[]).forEach(c => chips.push({ id: c.id, label: c.label, type: "spending" }));
+      (s.bills||[]).forEach(b => chips.push({ id: b.id, label: b.label, type: "bill" }));
     }
     const chipsHtml = chips.map(c => {
       const cls = "chip " + (f.categoryId === c.id ? "active " : "") +
-        (c.type === "debt" ? "debt-chip " : (c.type === "bill" ? "bill-chip " : ""));
+        (c.type === "bill" ? "bill-chip " : "");
       return `<button class="${cls}" data-action="txn-edit-cat" data-txn="${Util.esc(t.id)}" data-id="${Util.esc(c.id)}" data-type="${c.type}">${Util.esc(c.label)}</button>`;
     }).join("");
+
+    const categoryFieldHtml = isDebtTxn
+      ? `<div class="field"><label>PAID TOWARD</label><div class="meta" style="padding:6px 0;">${Util.esc(debtLabel)}</div></div>`
+      : `<div class="field"><label>CATEGORY</label><div class="chips" style="margin-top:4px;" data-scroll-key="txn-edit-cat-${Util.esc(t.id)}">${chipsHtml}</div></div>`;
 
     // Card row lives inside .field for the same min-width:0 cascade the CATEGORY
     // row gets. Prior to V9 this was a plain <div> — reproduced the iOS overflow
@@ -3461,7 +3473,7 @@ const UI = (() => {
       <div class="inline-form">
         <div class="sub-label">EDIT TRANSACTION</div>
         <div class="field"><label>AMOUNT</label><input data-action="txn-edit-field" data-txn="${Util.esc(t.id)}" data-field="amount" value="${Util.esc(f.amount)}" inputmode="decimal"></div>
-        <div class="field"><label>CATEGORY</label><div class="chips" style="margin-top:4px;" data-scroll-key="txn-edit-cat-${Util.esc(t.id)}">${chipsHtml}</div></div>
+        ${categoryFieldHtml}
         <div class="field"><label>PAYMENT</label>
           <div class="toggle-row">
             <button class="toggle ${f.paymentType==='cash'?'active':''}" data-action="txn-edit-pay" data-txn="${Util.esc(t.id)}" data-pay="cash">DEBIT</button>
