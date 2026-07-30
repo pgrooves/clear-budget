@@ -713,7 +713,7 @@
 
 // Build version. Surfaced in Settings > HOUSEHOLD so a stale cache is diagnosable.
 // Bump every round.
-const APP_VERSION = "V53";
+const APP_VERSION = "V54";
 
 /* ============================================================
    FIREBASE INIT
@@ -2759,7 +2759,12 @@ const UI = (() => {
     // Bills due or overdue (was Log-only).
     const dayInfo = BudgetEngine.monthDayInfo(s);
     const paidThisMonth = (s.billsPaid || {})[s.currentMonth] || {};
+    // Savings transfers live in s.bills alongside real bills, but this line
+    // counts BILLS — a savings pot you haven't funded yet isn't overdue in the
+    // sense of "someone is waiting to be paid", and the BILLS tab already keeps
+    // the two on separate sub-tabs.
     const unpaidBills = (s.bills || []).filter(b => {
+      if (b.category === "savings") return false;
       if (paidThisMonth[b.id] && paidThisMonth[b.id].paid) return false;
       return (Number(b.dueDateOfMonth) || 0) > 0;
     });
