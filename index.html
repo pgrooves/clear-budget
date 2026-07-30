@@ -713,7 +713,7 @@
 
 // Build version. Surfaced in Settings > HOUSEHOLD so a stale cache is diagnosable.
 // Bump every round.
-const APP_VERSION = "V39";
+const APP_VERSION = "V40";
 
 /* ============================================================
    FIREBASE INIT
@@ -3436,7 +3436,20 @@ const UI = (() => {
     // Card row lives inside .field for the same min-width:0 cascade the CATEGORY
     // row gets. Prior to V9 this was a plain <div> — reproduced the iOS overflow
     // when a credit txn had 4+ cards and 10+ categories.
-    const cardChipsHtml = f.paymentType === "credit" ? `
+    // Debt payments are debit-only, matching the LOG PAYMENT form. Leaving the
+    // toggle here let a card-linked debt be marked as paid with its own card:
+    // the balance dropped while that same card's unpaid credit rose, so no money
+    // moved yet Safe to Spend fell. Neither control is offered for those rows,
+    // and saveTxnEdit pins them to cash regardless.
+    const payFieldHtml = isDebtTxn ? "" : `
+        <div class="field"><label>PAYMENT</label>
+          <div class="toggle-row">
+            <button class="toggle ${f.paymentType==='cash'?'active':''}" data-action="txn-edit-pay" data-txn="${Util.esc(t.id)}" data-pay="cash">DEBIT</button>
+            <button class="toggle ${f.paymentType==='credit'?'active':''}" data-action="txn-edit-pay" data-txn="${Util.esc(t.id)}" data-pay="credit">CREDIT</button>
+          </div>
+        </div>`;
+
+    const cardChipsHtml = (!isDebtTxn && f.paymentType === "credit") ? `
       <div class="field">
         <label>WHICH CARD</label>
         ${cards.length ? `
@@ -3474,12 +3487,7 @@ const UI = (() => {
         <div class="sub-label">EDIT TRANSACTION</div>
         <div class="field"><label>AMOUNT</label><input data-action="txn-edit-field" data-txn="${Util.esc(t.id)}" data-field="amount" value="${Util.esc(f.amount)}" inputmode="decimal"></div>
         ${categoryFieldHtml}
-        <div class="field"><label>PAYMENT</label>
-          <div class="toggle-row">
-            <button class="toggle ${f.paymentType==='cash'?'active':''}" data-action="txn-edit-pay" data-txn="${Util.esc(t.id)}" data-pay="cash">DEBIT</button>
-            <button class="toggle ${f.paymentType==='credit'?'active':''}" data-action="txn-edit-pay" data-txn="${Util.esc(t.id)}" data-pay="credit">CREDIT</button>
-          </div>
-        </div>
+        ${payFieldHtml}
         ${cardChipsHtml}
         ${personChips}
         <div class="field"><label>NOTE</label><input data-action="txn-edit-field" data-txn="${Util.esc(t.id)}" data-field="note" value="${Util.esc(f.note)}" maxlength="60"></div>
@@ -3610,15 +3618,20 @@ const UI = (() => {
     }
     const isCouple = s.settings && s.settings.mode === "couple";
     const person = isCouple ? ed.form.person : (s.settings.names[0] || "ME").toUpperCase();
+    // Debt payments are debit-only. Pinned here rather than trusted from the
+    // form so a record saved as credit under an older build is corrected the
+    // next time it's opened and saved.
+    const isDebtTxn = ed.form.categoryType === "debt";
+    const paymentType = isDebtTxn ? "cash" : ed.form.paymentType;
     const updated = {
       ...old,
       amount: Math.round(amount * 100) / 100,
       categoryId: ed.form.categoryId,
       categoryType: ed.form.categoryType,
-      paymentType: ed.form.paymentType,
+      paymentType: paymentType,
       person: person,
       note: (ed.form.note || "").toUpperCase().slice(0, 60),
-      cardId: ed.form.paymentType === "credit" ? (ed.form.cardId || null) : null,
+      cardId: paymentType === "credit" ? (ed.form.cardId || null) : null,
       source: old.source || "manual"
     };
     // Assigning a category to a previously-import-with-no-category txn:
