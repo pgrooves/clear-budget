@@ -713,7 +713,7 @@
 
 // Build version. Surfaced in Settings > HOUSEHOLD so a stale cache is diagnosable.
 // Bump every round.
-const APP_VERSION = "V40";
+const APP_VERSION = "V41";
 
 /* ============================================================
    FIREBASE INIT
@@ -4750,7 +4750,7 @@ const UI = (() => {
             <div class="meta" style="margin-top:8px;">ANONYMIZED. NO NAMES, NO ACCOUNTS, NO TRANSACTIONS; NUMBERS ONLY.</div>
 
             <div class="meta" style="margin-top:20px;">PASTE THIS ALONGSIDE THE FILE</div>
-            <div style="margin-top:8px;border:1px solid rgba(26,58,140,0.35);padding:12px;text-transform:none;letter-spacing:0.01em;font-size:12px;line-height:1.55;white-space:pre-wrap;" data-learn="THE PROMPT TO SEND WITH THE FILE. IT TELLS THE AI TO ACT AS A FINANCIAL COACH AND GIVE YOU A PRIORITIZED PAYOFF PLAN USING YOUR REAL FIGURES.">${Util.esc(COACH_PROMPT)}</div>
+            <div style="margin-top:8px;border:1px solid rgba(26,58,140,0.35);padding:12px;text-transform:none;letter-spacing:0.01em;font-size:12px;line-height:1.55;white-space:pre-wrap;" data-learn="THE PROMPT TO SEND WITH THE FILE. IT TELLS THE AI TO ANSWER AS A PROFESSIONAL BANKER OR ADVISOR WOULD: WHAT YOUR FIGURES SAY, WHAT YOU'RE MISSING, AND THE FASTEST REALISTIC ROUTE TO FINANCIAL FREEDOM, USING YOUR REAL NUMBERS.">${Util.esc(COACH_PROMPT)}</div>
             <button class="link" data-action="copy-prompt" style="margin-top:10px;" data-learn="COPIES THE PROMPT ABOVE TO YOUR CLIPBOARD.">+ COPY PROMPT</button>
           </div>
 
@@ -5490,17 +5490,25 @@ const UI = (() => {
 
   const COACH_PROMPT = [
     "I'm attaching an anonymized snapshot of my household budget and debts for one month.",
-    "Act as a careful, non-judgmental financial coach.",
+    "Act as a seasoned private banker and financial advisor. Bring the same rigour you would",
+    "to a paying client's annual review: professional judgement, hard numbers, no hedging",
+    "and no filler.",
     "",
-    "First, tell me what my numbers actually say about my situation, in plain language.",
+    "First, tell me what these figures actually say about my position, in plain language.",
     "",
-    "Then give me a prioritized plan to get out of debt as fast as is realistically possible:",
-    "which debt to attack first and why, how much extra I can find each month and where it",
-    "should come from, what I should cut and what I should protect, and what a realistic",
-    "debt-free date looks like.",
+    "Then tell me what I'm missing. Assume there are inefficiencies here I can't see: money",
+    "leaking somewhere, debts ordered wrong, an interest rate worth challenging, a payment",
+    "structure costing me more than it should, a risk I haven't priced in. Also tell me what",
+    "you'd want to know that this snapshot doesn't show.",
     "",
-    "Flag anything in the numbers that looks like a risk. Be specific and use my actual",
-    "figures. Ask me clarifying questions if something important is missing."
+    "Then give me the fastest realistic route to financial freedom: which debt to attack",
+    "first and why, exactly where every spare dollar should go and what it buys me in months",
+    "saved, what to cut, what to protect, and what a realistic debt-free date looks like.",
+    "Quantify the trade-offs — where one path pays less interest and another finishes",
+    "sooner, show me both and tell me which you'd advise.",
+    "",
+    "Use my actual figures throughout. Tell me plainly where my thinking is wrong or where",
+    "I'm being too optimistic. Ask me clarifying questions if something important is missing."
   ].join("\n");
 
   function downloadAnonExport(s) {
