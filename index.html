@@ -713,7 +713,7 @@
 
 // Build version. Surfaced in Settings > HOUSEHOLD so a stale cache is diagnosable.
 // Bump every round.
-const APP_VERSION = "V46";
+const APP_VERSION = "V47";
 
 /* ============================================================
    FIREBASE INIT
@@ -1738,6 +1738,9 @@ const UI = (() => {
   // Which sub-tab of the Log screen is showing. Local UI state only; never
   // written to Firestore. Switching must not disturb logForm.
   let logSubTab = "purchase"; // "purchase" | "income"
+  // Which group the BILLS tab is showing. Local UI state, same as logSubTab;
+  // switching never disturbs a half-filled add form on the other side.
+  let billsSubTab = "bills"; // "bills" | "savings"
   // One-off income only; set-up paychecks are cleared from the expected list.
   const incomeForm = { amount: "", person: "JOINT", note: "", bankId: null };
   // Inline edit of an expected-income amount on the LOG INCOME sub-tab.
@@ -4324,11 +4327,14 @@ const UI = (() => {
     // uses. Only the rows scroll: the group title, the column headings and the
     // add link all stay put, so the headings can't scroll away from the rows
     // they describe and both add links are always reachable.
+    // Each group is its own sub-tab now, so the group name lives on the tab
+    // rather than as a heading above the rows. Only the rows scroll: the column
+    // headings and the add link stay put, so the headings can't scroll away
+    // from the rows they describe and the add link is always reachable.
     const groupHtml = (title, items, kind, addLabel, extraRows) => `
       <div style="margin-top:24px;">
-        <div class="sub-label">${title}</div>
         ${(items.length || extraRows) ? `
-          <div class="inc-head" style="margin-top:12px;">
+          <div class="inc-head">
             <div class="sub-label">NAME</div>
             <div class="sub-label">AMOUNT</div>
             <div class="sub-label">PAID?</div>
@@ -4337,12 +4343,18 @@ const UI = (() => {
             ${items.map(rowFor).join("")}
             ${extraRows || ""}
           </div>
-        ` : ""}
+        ` : `<div class="meta">NOTHING HERE YET · ADD ONE BELOW</div>`}
         ${addLink(kind, addLabel)}
       </div>`;
 
-    const listHtml = groupHtml("BILLS", billItems, "bill", "BILL", cardRowsHtml)
-      + groupHtml("SAVINGS", savingsItems, "savings", "SAVINGS");
+    const listHtml = `
+      <div class="subtab-row" style="margin-top:24px;" data-learn="SWITCH BETWEEN YOUR BILLS AND YOUR SAVINGS TRANSFERS. THE FIGURES ABOVE COVER BOTH. YOUR HALF-FILLED ADD FORM IS KEPT WHEN YOU SWITCH.">
+        <button class="subtab ${billsSubTab === "bills" ? "active" : ""}" data-action="bills-subtab" data-sub="bills" data-learn="MONTHLY BILLS AND FIXED EXPENSES, PLUS THE MINIMUM ON ANY CREDIT CARD CARRYING A BALANCE.">BILLS</button>
+        <button class="subtab ${billsSubTab === "savings" ? "active" : ""}" data-action="bills-subtab" data-sub="savings" data-learn="MONEY YOU SET ASIDE EACH MONTH. TRACKED THE SAME WAY AS A BILL AND SUBTRACTED FROM SAFE TO SPEND THE SAME WAY.">SAVINGS</button>
+      </div>
+      ${billsSubTab === "savings"
+        ? groupHtml("SAVINGS", savingsItems, "savings", "SAVINGS")
+        : groupHtml("BILLS", billItems, "bill", "BILL", cardRowsHtml)}`;
 
     // The MONTH OF line and the "→ BILLS" section label used to open this block.
     // Both are redundant now that the shared lime block above carries the month
@@ -4357,6 +4369,9 @@ const UI = (() => {
   }
 
   function bindBillsEvents(s) {
+    root.querySelectorAll("[data-action=bills-subtab]").forEach(el => {
+      el.addEventListener("click", () => { billsSubTab = el.dataset.sub; render(); });
+    });
     root.querySelectorAll("[data-action=bill-toggle]").forEach(el => {
       el.addEventListener("click", () => toggleBillPaid(s, el.dataset.id));
     });
