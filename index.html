@@ -713,7 +713,7 @@
 
 // Build version. Surfaced in Settings > HOUSEHOLD so a stale cache is diagnosable.
 // Bump every round.
-const APP_VERSION = "V34";
+const APP_VERSION = "V35";
 
 /* ============================================================
    FIREBASE INIT
@@ -5135,15 +5135,28 @@ const UI = (() => {
 
     const layer = document.createElement("div");
     layer.id = "print-report";
-    layer.innerHTML = buildPrintReport(s);
+    // A failure in here used to surface as the button doing nothing at all,
+    // because the exception escaped the click handler. Say so instead.
+    try {
+      layer.innerHTML = buildPrintReport(s);
+    } catch (err) {
+      console.warn(err);
+      alert("COULDN'T BUILD THE REPORT: " + ((err && err.message) || err));
+      return;
+    }
     document.body.appendChild(layer);
 
     // Teardown has three possible triggers because no single one is reliable
     // everywhere: afterprint (desktop and Android), the print media query
     // going false (Safari), and a long failsafe timer if neither fires.
     let done = false;
+    // Whether the browser ever actually started printing. iOS Safari can ignore
+    // window.print() outright and report nothing, so this is the only way to
+    // tell "the sheet opened and was cancelled" from "the call did nothing".
+    let began = false;
     const mql = window.matchMedia ? window.matchMedia("print") : null;
-    const onMql = (e) => { if (!e.matches) cleanup(); };
+    const onMql = (e) => { if (e.matches) began = true; else cleanup(); };
+    const onBefore = () => { began = true; };
     const failsafe = setTimeout(() => cleanup(), 60000);
 
     function cleanup() {
@@ -5151,6 +5164,7 @@ const UI = (() => {
       done = true;
       clearTimeout(failsafe);
       window.removeEventListener("afterprint", cleanup);
+      window.removeEventListener("beforeprint", onBefore);
       if (mql) {
         if (mql.removeEventListener) mql.removeEventListener("change", onMql);
         else if (mql.removeListener) mql.removeListener(onMql);
@@ -5162,6 +5176,7 @@ const UI = (() => {
     printTeardown = cleanup;
 
     window.addEventListener("afterprint", cleanup);
+    window.addEventListener("beforeprint", onBefore);
     if (mql) {
       if (mql.addEventListener) mql.addEventListener("change", onMql);
       else if (mql.addListener) mql.addListener(onMql);
@@ -5173,12 +5188,24 @@ const UI = (() => {
     // it appeared to "work" only after another button had granted the page
     // sticky activation).
     //
-    // The layer still has to be laid out before the print sheet snapshots the
-    // page. Reading offsetHeight forces a synchronous reflow, which gets that
-    // guarantee without leaving the gesture.
-    void layer.offsetHeight;
+    // (The layer is display:none on screen and only the print stylesheet makes
+    // it visible, so there's nothing useful to force a reflow on here.)
     try { window.print(); }
-    catch (e) { cleanup(); }
+    catch (e) {
+      cleanup();
+      alert("THIS BROWSER WOULDN'T OPEN THE PRINT SHEET.");
+      return;
+    }
+
+    // print() returning tells us nothing on iOS — it doesn't block and doesn't
+    // throw when it declines. If nothing reported starting shortly after, the
+    // call was dropped; clear the layer and say so rather than leaving the tap
+    // looking like it did nothing.
+    setTimeout(() => {
+      if (began || done) return;
+      cleanup();
+      alert("SAFARI DIDN'T OPEN THE PRINT SHEET. USE THE SHARE ICON IN THE BROWSER BAR, THEN PRINT, AND PICK SAVE AS PDF.");
+    }, 1500);
   }
 
   /* ------------- ANONYMIZED TEXT EXPORT FOR AI ANALYSIS ------------- */
