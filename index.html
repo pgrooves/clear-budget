@@ -713,7 +713,7 @@
 
 // Build version. Surfaced in Settings > HOUSEHOLD so a stale cache is diagnosable.
 // Bump every round.
-const APP_VERSION = "V45";
+const APP_VERSION = "V46";
 
 /* ============================================================
    FIREBASE INIT
@@ -4320,6 +4320,10 @@ const UI = (() => {
       ? renderAddForm(kind)
       : `<button class="link" style="margin-top:12px;" data-action="show-add" data-kind="${kind}" data-learn="ADD A NEW ${Util.esc(label)} TO YOUR BUDGET. IT SHOWS UP HERE AND IN SETTINGS.">* ADD ${Util.esc(label)} →</button>`;
 
+    // Each group scrolls on its own, using the same box the transaction list
+    // uses. Only the rows scroll: the group title, the column headings and the
+    // add link all stay put, so the headings can't scroll away from the rows
+    // they describe and both add links are always reachable.
     const groupHtml = (title, items, kind, addLabel, extraRows) => `
       <div style="margin-top:24px;">
         <div class="sub-label">${title}</div>
@@ -4329,19 +4333,16 @@ const UI = (() => {
             <div class="sub-label">AMOUNT</div>
             <div class="sub-label">PAID?</div>
           </div>
-          ${items.map(rowFor).join("")}
-          ${extraRows || ""}
+          <div class="txn-scroll" data-scroll-key="bills-scroll-${Util.esc(kind)}" data-learn="${Util.esc(title)} FOR THIS MONTH. SCROLL WITHIN THIS BOX.">
+            ${items.map(rowFor).join("")}
+            ${extraRows || ""}
+          </div>
         ` : ""}
         ${addLink(kind, addLabel)}
       </div>`;
 
-    // Same scroll box the transaction list uses, so a long bill list doesn't
-    // push the section totals off the screen.
-    const listHtml = `
-      <div class="txn-scroll" style="margin-top:8px;" data-scroll-key="bills-scroll" data-learn="YOUR BILLS AND SAVINGS FOR THIS MONTH. SCROLL WITHIN THIS BOX.">
-        ${groupHtml("BILLS", billItems, "bill", "BILL", cardRowsHtml)}
-        ${groupHtml("SAVINGS", savingsItems, "savings", "SAVINGS")}
-      </div>`;
+    const listHtml = groupHtml("BILLS", billItems, "bill", "BILL", cardRowsHtml)
+      + groupHtml("SAVINGS", savingsItems, "savings", "SAVINGS");
 
     // The MONTH OF line and the "→ BILLS" section label used to open this block.
     // Both are redundant now that the shared lime block above carries the month
