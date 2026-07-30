@@ -3944,6 +3944,22 @@ const UI = (() => {
 
     const cardRowsHtml = cardBillItems.map(cardRowFor).join("");
 
+    // The header figures describe everything listed in this section, cards
+    // included, so the count matches what's actually on screen. These sums are
+    // local to this block on purpose: BudgetEngine.totalBills stays bills-only
+    // so Safe to Spend and Budgeted don't shift.
+    // A card's contribution is capped at its minimum: this line is progress
+    // toward what's owed, so overpaying a card shouldn't push it past 100%.
+    // The full amount paid still shows on the row and in the debt balance.
+    const headerPaidTotal = paidTotal + cardBillItems.reduce((a, c) => {
+      if (!c.paidTxn) return a;
+      return a + Math.min(Number(c.paidTxn.amount) || 0, Number(c.amount) || 0);
+    }, 0);
+    const headerExpectedTotal = expectedTotal + cardBillItems.reduce(
+      (a, c) => a + (Number(c.amount) || 0), 0);
+    const headerPaidCount = paidCount + cardBillItems.filter(c => c.paidTxn).length;
+    const headerItemCount = bills.length + cardBillItems.length;
+
     // Same add-form machinery Settings uses, surfaced at the end of each group.
     const addLink = (kind, label) => addForms[kind]
       ? renderAddForm(kind)
@@ -3973,8 +3989,8 @@ const UI = (() => {
     return `
         <section class="section lavender" data-learn="BILLS STATUS FOR THIS MONTH. TICK EACH BILL AS IT GETS PAID SO YOU CAN SEE WHAT'S LEFT. THIS IS TRACKING ONLY AND NEVER CHANGES YOUR BUDGET MATH.">
           <div class="section-label">→ RECURRING</div>
-          <div class="sub-label" style="margin-top:16px;" data-learn="HOW MUCH OF YOUR BILL TOTAL YOU'VE MARKED PAID SO FAR THIS MONTH.">${Util.esc(Util.fmtMoney(paidTotal, 0))} OF ${Util.esc(Util.fmtMoney(expectedTotal, 0))} PAID</div>
-          <div class="sub-label" style="margin-top:8px;" data-learn="HOW MANY INDIVIDUAL BILLS ARE TICKED OFF OUT OF YOUR TOTAL.">${paidCount} OF ${bills.length} BILLS CLEARED</div>
+          <div class="sub-label" style="margin-top:16px;" data-learn="HOW MUCH OF YOUR MONTHLY TOTAL YOU'VE MARKED PAID SO FAR THIS MONTH. COVERS EVERYTHING LISTED BELOW: BILLS, SAVINGS, AND ANY CREDIT CARD MINIMUMS.">${Util.esc(Util.fmtMoney(headerPaidTotal, 0))} OF ${Util.esc(Util.fmtMoney(headerExpectedTotal, 0))} PAID</div>
+          <div class="sub-label" style="margin-top:8px;" data-learn="HOW MANY INDIVIDUAL ROWS BELOW ARE TICKED OFF, CREDIT CARDS INCLUDED.">${headerPaidCount} OF ${headerItemCount} CLEARED</div>
           ${listHtml}
         </section>`;
   }
