@@ -713,7 +713,7 @@
 
 // Build version. Surfaced in Settings > HOUSEHOLD so a stale cache is diagnosable.
 // Bump every round.
-const APP_VERSION = "V42";
+const APP_VERSION = "V43";
 
 /* ============================================================
    FIREBASE INIT
@@ -7372,7 +7372,9 @@ const UI = (() => {
   // a transform on any ancestor of a position:fixed element makes it resolve
   // against that ancestor instead of the viewport.
   const SWIPE_COMMIT_PX = 60;      // distance that commits a change
-  const SWIPE_AXIS_RATIO = 1.5;    // |dx| must beat |dy| by this much
+  const SWIPE_AXIS_RATIO = 1.0;    // |dx| must beat |dy| by this much
+  const SWIPE_LOCK_PX = 10;        // movement before the axis is judged at all
+  const SWIPE_LOCK_Y_PX = 18;      // vertical travel that settles an ambiguous drag
   const SWIPE_FLICK_PX = 30;       // a fast flick can commit below the distance
   const SWIPE_FLICK_VEL = 0.5;     // px per ms
   const SWIPE_EDGE_GUARD = 24;     // iOS owns edge swipes for back/forward
@@ -7601,9 +7603,27 @@ const UI = (() => {
       const dy = t.clientY - swipe.y0;
 
       if (!swipe.locked) {
-        if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
-        // Axis lock is permanent for the life of the gesture.
-        if (Math.abs(dx) <= Math.abs(dy) * SWIPE_AXIS_RATIO) { swipe.locked = "y"; return; }
+        // Touches sample at ~60Hz, so a quick thumb can cover 15-20px between
+        // events and the first reading carries real noise. This used to open on
+        // whichever axis passed 8px first and then decide immediately and
+        // permanently, so one slightly diagonal sample killed the gesture for
+        // good — a 15px/11px reading locked vertical, and no amount of sideways
+        // travel afterwards could recover it.
+        //
+        // Now an ambiguous sample decides nothing: horizontal takes ties and
+        // mild diagonals, a clearly vertical drag settles it, and anything in
+        // between waits for the next sample. The wait is bounded to a sample or
+        // two on purpose — once iOS commits to its own scroll a later
+        // preventDefault is ignored, so deferring longer would just make the
+        // horizontal lock useless.
+        const ax = Math.abs(dx), ay = Math.abs(dy);
+        if (ax < SWIPE_LOCK_PX && ay < SWIPE_LOCK_PX) return;
+        if (ax < ay * SWIPE_AXIS_RATIO) {
+          // Not horizontal. Only call it vertical once it really is one;
+          // otherwise keep watching rather than locking the gesture out.
+          if (ay >= SWIPE_LOCK_Y_PX) { swipe.locked = "y"; }
+          return;
+        }
         const dir0 = dx < 0 ? -1 : 1;
         if (swipeAbsorbedByRail(swipe.startTarget, dir0)) { swipe.dead = true; return; }
         swipe.stage = root.querySelector(".swipe-stage");
