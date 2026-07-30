@@ -713,7 +713,7 @@
 
 // Build version. Surfaced in Settings > HOUSEHOLD so a stale cache is diagnosable.
 // Bump every round.
-const APP_VERSION = "V44";
+const APP_VERSION = "V45";
 
 /* ============================================================
    FIREBASE INIT
@@ -2854,8 +2854,8 @@ const UI = (() => {
     }).join("");
 
     const personChips = isCouple ? `
-      <div data-learn="WHO PAID (COUPLE MODE). PICK A NAME OR JOINT. THE DASHBOARD SHOWS PER-PERSON SPENDING TOTALS.">
-        <div class="sub-label">WHO PAID</div>
+      <div data-learn="WHO (COUPLE MODE). PICK A NAME OR JOINT. THE DASHBOARD SHOWS PER-PERSON SPENDING TOTALS.">
+        <div class="sub-label">WHO</div>
         <div class="chips" data-scroll-key="log-person-chips">
           ${[s.settings.names[0], s.settings.names[1], "JOINT"].map(p => {
             const val = p.toUpperCase();
@@ -2942,9 +2942,13 @@ const UI = (() => {
                   : `<button class="link" style="padding:0;min-height:auto;text-decoration:none;border-bottom:1px solid rgba(26,58,140,0.4);font-size:15px;font-weight:400;letter-spacing:inherit;" data-action="inc-exp-edit" data-id="${Util.esc(i.id)}" data-learn="TAP TO CHANGE WHAT YOU EXPECT FROM THIS SOURCE. IT SAVES WHEN YOU PRESS ENTER OR TAP AWAY. IT ONLY MOVES THE EXPECTED FIGURE; IF THIS SOURCE IS ALREADY MARKED CLEARED, THE AMOUNT YOU ACTUALLY RECEIVED IS LEFT ALONE.">${Util.esc(Util.fmtMoney(expected, 0))}</button>`
               }</div>
               <button class="txn-check ${entry ? "checked" : ""}" data-action="inc-toggle" data-id="${Util.esc(i.id)}" aria-label="CLEARED" data-learn="MARK THIS INCOME AS RECEIVED FOR THIS MONTH. CHECKING IT RAISES SAFE TO SPEND BY THE AMOUNT MINUS YOUR TITHE PERCENTAGE. UNCHECKING UNDOES IT EXACTLY."></button>
-            </div>`;
+            </div>
+            <div style="margin-top:-4px;">
+              <button class="link" style="padding:0;min-height:auto;font-size:11px;letter-spacing:0.14em;" data-action="edit-item" data-kind="income" data-id="${Util.esc(i.id)}" data-learn="EDIT THIS INCOME SOURCE'S NAME, EXPECTED AMOUNT, OR DUE DAY. IT'S THE SAME RECORD SETTINGS EDITS, SO CHANGES SHOW IN BOTH PLACES.">EDIT →</button>
+            </div>
+            ${editStates["income_" + i.id] ? renderEditForm("income", i) : ""}`;
         }).join("")
-      : `<div class="meta">NO INCOME SOURCES; ADD THEM IN SETTINGS</div>`;
+      : `<div class="meta">NO INCOME SOURCES YET · ADD ONE BELOW</div>`;
 
     const incomeSectionHtml = `
       <div class="section-label" style="margin-top:16px;" data-learn="LOG INCOME BLOCK. RECORD MONEY YOU ACTUALLY RECEIVED, OR TICK AN EXPECTED SOURCE BELOW AS CLEARED.">→ LOG INCOME</div>
@@ -2963,13 +2967,17 @@ const UI = (() => {
         <button class="cta" data-action="inc-log-it" data-learn="RECORD THIS MONEY AS RECEIVED. SAFE TO SPEND GOES UP BY THE AMOUNT MINUS YOUR TITHE PERCENTAGE.">→ LOG IT</button>
       </div>
 
-      <div style="margin-top:32px;" data-learn="YOUR SET-UP INCOME SOURCES AND WHETHER EACH HAS ARRIVED THIS MONTH. ONLY CLEARED INCOME COUNTS TOWARD SAFE TO SPEND.">
+      <div class="section-label" style="margin-top:32px;" data-learn="YOUR SET-UP INCOME SOURCES AND WHETHER EACH HAS ARRIVED THIS MONTH. ONLY CLEARED INCOME COUNTS TOWARD SAFE TO SPEND. EDITING OR ADDING HERE CHANGES THE SAME RECORDS SETTINGS USES.">→ EXPECTED</div>
+      <div style="margin-top:16px;">
         <div class="inc-head">
           <div class="sub-label">SOURCE</div>
           <div class="sub-label">EXPECTED</div>
           <div class="sub-label">CLEARED?</div>
         </div>
         ${incExpectedRows}
+        <div style="margin-top:12px;">
+          ${addForms.income ? renderAddForm("income") : `<button class="link" data-action="show-add" data-kind="income" data-learn="ADD AN EXPECTED INCOME SOURCE. IT'S THE SAME LIST SETTINGS KEEPS, SO IT SHOWS UP IN BOTH PLACES.">* ADD INCOME →</button>`}
+        </div>
         <div class="sub-label" style="margin-top:16px;">RECEIVED ${Util.esc(Util.fmtMoney(received, 0))} OF ${Util.esc(Util.fmtMoney(expectedIncome, 0))} EXPECTED</div>
       </div>`;
 
@@ -2986,10 +2994,8 @@ const UI = (() => {
               <div class="sub-label">AMOUNT</div>
               <input class="underline big num-input" id="log-amount" inputmode="decimal" placeholder="$0.00" value="${Util.esc(logForm.amount)}" data-learn="ENTER THE PURCHASE AMOUNT IN DOLLARS. DECIMALS OPTIONAL.">
             </div>
-            <div data-learn="CATEGORY PICKER. TAP A CHIP TO ASSIGN THIS PURCHASE TO A SPENDING CATEGORY OR A BILL. DEBTS AREN'T LISTED HERE — LOG DEBT PAYMENTS FROM THE DEBTS TAB.">
-              <div class="sub-label">CATEGORY</div>
-              <div class="chips" data-scroll-key="log-cat-chips">${chipsHtml || `<div class="meta">NO CATEGORIES; ADD SOME IN SETTINGS</div>`}</div>
-            </div>
+            ${personChips}
+            ${bankChipsHtml}
             <div>
               <div class="sub-label">PAYMENT</div>
               <div class="toggle-row" data-learn="DEBIT SUBTRACTS FROM SAFE TO SPEND IMMEDIATELY. CREDIT LEAVES SAFE TO SPEND FLAT UNTIL YOU PAY THE CARD; UNPAID CREDIT IS TRACKED IN THE CREDIT THIS MONTH BLOCK ON THE DASHBOARD.">
@@ -2998,8 +3004,10 @@ const UI = (() => {
               </div>
             </div>
             ${cardChipsHtml}
-            ${bankChipsHtml}
-            ${personChips}
+            <div data-learn="CATEGORY PICKER. TAP A CHIP TO ASSIGN THIS PURCHASE TO A SPENDING CATEGORY OR A BILL. DEBTS AREN'T LISTED HERE — LOG DEBT PAYMENTS FROM THE DEBTS TAB.">
+              <div class="sub-label">CATEGORY</div>
+              <div class="chips" data-scroll-key="log-cat-chips">${chipsHtml || `<div class="meta">NO CATEGORIES; ADD SOME IN SETTINGS</div>`}</div>
+            </div>
             <div>
               <div class="sub-label">NOTE</div>
               <input class="underline" id="log-note" placeholder="NOTE (OPTIONAL)" value="${Util.esc(logForm.note)}" maxlength="60" data-learn="OPTIONAL SHORT NOTE FOR THE TRANSACTION LIST (E.G. 'HEB RUN').">
@@ -3208,6 +3216,19 @@ const UI = (() => {
     root.querySelectorAll("[data-action=receipt-cancel]").forEach(el => {
       el.addEventListener("click", () => { receiptScan = null; render(); });
     });
+
+    // The EXPECTED list edits and adds the same income records Settings does,
+    // so it reuses that machinery outright rather than duplicating it — one
+    // save path means the two screens can't drift.
+    root.querySelectorAll("[data-action=edit-item][data-kind=income]").forEach(el => {
+      el.addEventListener("click", () => {
+        const key = "income_" + el.dataset.id;
+        editStates[key] = !editStates[key];
+        render();
+      });
+    });
+    bindEditFormEvents(s);
+    bindAddFormEvents(s);
 
     // Import entry point
     root.querySelectorAll("[data-action=import-toggle]").forEach(el => {
@@ -4314,8 +4335,13 @@ const UI = (() => {
         ${addLink(kind, addLabel)}
       </div>`;
 
-    const listHtml = groupHtml("BILLS", billItems, "bill", "BILL", cardRowsHtml)
-      + groupHtml("SAVINGS", savingsItems, "savings", "SAVINGS");
+    // Same scroll box the transaction list uses, so a long bill list doesn't
+    // push the section totals off the screen.
+    const listHtml = `
+      <div class="txn-scroll" style="margin-top:8px;" data-scroll-key="bills-scroll" data-learn="YOUR BILLS AND SAVINGS FOR THIS MONTH. SCROLL WITHIN THIS BOX.">
+        ${groupHtml("BILLS", billItems, "bill", "BILL", cardRowsHtml)}
+        ${groupHtml("SAVINGS", savingsItems, "savings", "SAVINGS")}
+      </div>`;
 
     // The MONTH OF line and the "→ BILLS" section label used to open this block.
     // Both are redundant now that the shared lime block above carries the month
