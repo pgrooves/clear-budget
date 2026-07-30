@@ -713,7 +713,7 @@
 
 // Build version. Surfaced in Settings > HOUSEHOLD so a stale cache is diagnosable.
 // Bump every round.
-const APP_VERSION = "V41";
+const APP_VERSION = "V42";
 
 /* ============================================================
    FIREBASE INIT
@@ -4746,8 +4746,8 @@ const UI = (() => {
             <button class="cta" data-action="print-report" data-learn="OPENS YOUR DEVICE'S PRINT SHEET WITH A FORMATTED SUMMARY OF THIS MONTH. IT DOESN'T DOWNLOAD A FILE DIRECTLY — CHOOSE SAVE AS PDF FROM THE PRINT SHEET TO KEEP OR SHARE IT. ON IPHONE THAT'S THE SHARE ICON, THEN SAVE TO FILES.">→ SHAREABLE REPORT (PRINT → PDF)</button>
             <div class="meta" style="margin-top:8px;">OPENS YOUR PRINT SHEET — CHOOSE SAVE AS PDF THERE TO KEEP OR SHARE IT. A VISUAL SUMMARY OF THIS MONTH; NO TRANSACTIONS, NO HOUSEHOLD CODE.</div>
 
-            <button class="cta" data-action="ai-export" style="margin-top:20px;" data-learn="DOWNLOADS A PLAIN TEXT FILE OF YOUR NUMBERS WITH EVERY IDENTIFYING DETAIL REMOVED, SO YOU CAN HAND IT TO AN AI FOR DEBT ADVICE. OPEN IT IN ANY TEXT EDITOR FIRST IF YOU WANT TO SEE EXACTLY WHAT IT CONTAINS.">→ AI ANALYSIS FILE (.TXT)</button>
-            <div class="meta" style="margin-top:8px;">ANONYMIZED. NO NAMES, NO ACCOUNTS, NO TRANSACTIONS; NUMBERS ONLY.</div>
+            <button class="cta" data-action="ai-export" style="margin-top:20px;" data-learn="DOWNLOADS A PLAIN TEXT FILE OF YOUR NUMBERS WITH EVERY IDENTIFYING DETAIL REMOVED, SO YOU CAN HAND IT TO AN AI FOR DEBT ADVICE. YOUR TRANSACTIONS ARE LISTED ONE PER LINE BUT LABELLED BY CATEGORY, NOT BY MERCHANT, AND NOTES ARE NEVER INCLUDED. OPEN IT IN ANY TEXT EDITOR FIRST IF YOU WANT TO SEE EXACTLY WHAT IT CONTAINS.">→ AI ANALYSIS FILE (.TXT)</button>
+            <div class="meta" style="margin-top:8px;">ANONYMIZED. NO NAMES, NO ACCOUNTS, NO MERCHANTS, NO NOTES. TRANSACTIONS ARE LISTED BY CATEGORY AND AMOUNT ONLY.</div>
 
             <div class="meta" style="margin-top:20px;">PASTE THIS ALONGSIDE THE FILE</div>
             <div style="margin-top:8px;border:1px solid rgba(26,58,140,0.35);padding:12px;text-transform:none;letter-spacing:0.01em;font-size:12px;line-height:1.55;white-space:pre-wrap;" data-learn="THE PROMPT TO SEND WITH THE FILE. IT TELLS THE AI TO ANSWER AS A PROFESSIONAL BANKER OR ADVISOR WOULD: WHAT YOUR FIGURES SAY, WHAT YOU'RE MISSING, AND THE FASTEST REALISTIC ROUTE TO FINANCIAL FREEDOM, USING YOUR REAL NUMBERS.">${Util.esc(COACH_PROMPT)}</div>
@@ -5253,9 +5253,15 @@ const UI = (() => {
   // Nothing is copied wholesale and then scrubbed, because a deletion filter
   // silently starts leaking the moment a new field is added to the state.
   //
-  // Never written: names, the household code, any id, any individual
-  // transaction, any note, any merchant string, any absolute date, and the
-  // merchant/income/bill maps or import profiles.
+  // Never written: names, the household code, any id, any note, any merchant
+  // string, and the merchant/income/bill maps or import profiles.
+  //
+  // Transactions ARE itemized, but only as amount + the category/bill/debt the
+  // budget assigns them to + payment method. The identifying parts of a row are
+  // the merchant and the note, and neither is ever emitted — a note in
+  // particular routinely holds a merchant or a person's name. Dates appear as a
+  // day of the month, and since the month is stated in the preamble that is an
+  // absolute date; bill and income due days already were.
 
   // Bill labels that are generic utility words carry real analytical value and
   // identify nobody, so they survive as a canonical generic. Anything else
@@ -5290,7 +5296,10 @@ const UI = (() => {
     [/\bmortgage\b|\bhome loan\b|\bheloc\b/, "mortgage"],
     [/\bmedical\b|\bhospital\b|\bdental\b|\bdentist\b|\bdoctor\b|\bsurgery\b/, "medical"],
     [/\bpersonal\b|\bsignature loan\b/, "personal loan"],
-    [/\birs\b|\btax\b/, "tax debt"]
+    [/\birs\b|\btax\b/, "tax debt"],
+    // Last resort before "unspecified": knowing it's an installment loan rather
+    // than revolving credit still tells an advisor something useful.
+    [/\bloan\b|\bfinanc(e|ing)\b/, "loan, type not specified"]
   ];
 
   function anonNormalize(label) {
@@ -5305,8 +5314,13 @@ const UI = (() => {
     return "Bill " + index;
   }
 
-  function anonDebtType(label) {
-    const n = anonNormalize(label);
+  // Takes the debt, not just its label: a debt linked to a credit card in
+  // settings IS a credit card whatever the user called it, and that structural
+  // link beats guessing from text. "Chase Freedom" matches none of the patterns
+  // below and came out as "unspecified", which is no use to an advisor.
+  function anonDebtType(debt) {
+    if (debt && debt.cardId) return "credit card";
+    const n = anonNormalize(debt && debt.label);
     for (let i = 0; i < ANON_DEBT_TYPES.length; i++) {
       if (ANON_DEBT_TYPES[i][0].test(n)) return ANON_DEBT_TYPES[i][1];
     }
@@ -5355,9 +5369,10 @@ const UI = (() => {
     L.push("CLEAR - ANONYMIZED FINANCIAL SNAPSHOT");
     L.push("");
     L.push("This is an anonymized one-month snapshot exported from a personal budgeting app.");
-    L.push("Names, account identifiers, merchant names, and individual transaction descriptions");
-    L.push("have been removed. Only aggregate figures remain. All amounts are in USD and cover");
-    L.push("a single month: " + monthName + ".");
+    L.push("Names, account identifiers, merchant names, and transaction notes have been removed.");
+    L.push("Transactions are listed individually but described only by the category, bill, or");
+    L.push("debt each is assigned to. All amounts are in USD and cover a single month: "
+      + monthName + ".");
     L.push("");
 
     // --- Household shape (allow-list: settings.mode only)
@@ -5391,11 +5406,16 @@ const UI = (() => {
     L.push("BILLS AND FIXED EXPENSES");
     L.push("Total monthly bills and savings: " + anonMoney(B.totalBills(s)));
     L.push("Count: " + bills.length);
+    // Captured so the transaction list below describes a row with the very same
+    // generic label this section prints, rather than deriving its own.
+    const billAnonById = {};
     bills.forEach((b, idx) => {
       const due = Number(b.dueDateOfMonth) || 0;
       const kind = b.category === "savings" ? "savings" : "bill";
       const isPaid = !!(paidMap[b.id] && paidMap[b.id].paid);
-      L.push(anonBillLabel(b.label, idx + 1) + ": " + anonMoney(b.amount)
+      const label = anonBillLabel(b.label, idx + 1);
+      billAnonById[b.id] = label;
+      L.push(label + ": " + anonMoney(b.amount)
         + (due ? " (due day " + due + ")" : "")
         + " [" + kind + ", " + (isPaid ? "paid" : "unpaid") + "]");
     });
@@ -5406,11 +5426,13 @@ const UI = (() => {
     const householdNames = (s.settings && s.settings.names) || [];
     L.push("SPENDING CATEGORIES");
     L.push("Total budgeted for variable spending: " + anonMoney(B.spendingBudgetedTotal(s)));
+    const catAnonById = {};
     cats.forEach(c => {
       const spent = B.categorySpent(s, c.id);
       const roll = B.rolloverAmount(s, c.id);
       const budget = B.num(c.budgeted) + roll;
-      L.push(anonScrubNames(anonTitleCase(c.label), householdNames) + ": budgeted " + anonMoney(B.num(c.budgeted))
+      catAnonById[c.id] = anonScrubNames(anonTitleCase(c.label), householdNames);
+      L.push(catAnonById[c.id] + ": budgeted " + anonMoney(B.num(c.budgeted))
         + (roll ? ", rollover " + anonMoney(roll) : "")
         + ", spent " + anonMoney(spent)
         + ", remaining " + anonMoney(budget - spent));
@@ -5429,12 +5451,14 @@ const UI = (() => {
     L.push("Extra available for debt per month: " + anonMoney(extra));
     L.push("Projected debt-free date: " + (sim.debtFreeDate ? anonTitleCase(sim.debtFreeDate) : "not reachable at the current payment level"));
     L.push("Count: " + debts.length);
+    const debtAnonById = {};
     B.debtOrder(debts, strat).forEach((d, idx) => {
       const bal = B.num(d.balance);
       const orig = B.num(d.originalBalance);
       const rate = B.num(d.interestRate);
       const payoff = sim.payoffByDebt[d.id];
-      L.push("Debt " + (idx + 1) + " (" + anonDebtType(d.label) + "):"
+      debtAnonById[d.id] = "Debt " + (idx + 1) + " (" + anonDebtType(d) + ")";
+      L.push(debtAnonById[d.id] + ":"
         + " balance " + anonMoney(bal)
         + (orig > 0 ? ", original balance " + anonMoney(orig) : "")
         + ", minimum payment " + anonMoney(d.minimumPayment)
@@ -5454,7 +5478,7 @@ const UI = (() => {
     L.push("Progress through the month: day " + dayInfo.day + " of " + dayInfo.daysInMonth + " (" + dayInfo.pct + "%)");
     L.push("");
 
-    // --- Aggregate spending behavior (counts and sums only, never a row)
+    // --- Aggregate spending behavior
     const txns = (s.transactions || []).filter(t => t.month === month);
     let creditSpend = 0, debitSpend = 0, uncategorized = 0;
     txns.forEach(t => {
@@ -5473,6 +5497,68 @@ const UI = (() => {
       L.push("Spent by Person A: " + anonMoney(B.personSpent(s, names[0])));
       L.push("Spent by Person B: " + anonMoney(B.personSpent(s, names[1])));
       L.push("Spent jointly: " + anonMoney(B.personSpent(s, "JOINT")));
+    }
+    L.push("");
+
+    // --- Itemized transactions.
+    //
+    // Merchant strings and user notes are still never written — those are the
+    // identifying parts, and a note routinely holds a merchant or a person. What
+    // each row carries instead is the category, bill, or debt the budget already
+    // attributes it to, taken from the maps the sections above populated so the
+    // labels and numbering match exactly. That's the contextual clue: a row reads
+    // "Groceries" or "Debt 2 (credit card)", so the spending can be reasoned
+    // about without knowing where it was spent.
+    const cards = s.creditCards || [];
+    const cardAnonFor = (cardId) => {
+      if (!cardId) return null;
+      const idx = cards.findIndex(c => c.id === cardId);
+      return idx >= 0 ? "Card " + (idx + 1) : null;
+    };
+    const personAnonFor = (p) => {
+      const v = String(p || "").toUpperCase();
+      if (!v) return null;
+      if (v === "JOINT") return "Joint";
+      const n0 = String(householdNames[0] || "").toUpperCase();
+      const n1 = String(householdNames[1] || "").toUpperCase();
+      if (n0 && v === n0) return "Person A";
+      if (n1 && v === n1) return "Person B";
+      return null;
+    };
+    const txnAnonFor = (t) => {
+      if (!t.categoryId) return "Uncategorized";
+      return debtAnonById[t.categoryId]
+        || billAnonById[t.categoryId]
+        || catAnonById[t.categoryId]
+        || "Uncategorized";
+    };
+
+    L.push("TRANSACTIONS THIS MONTH");
+    L.push("Every purchase and payment logged this month, one per line, oldest first. Merchant");
+    L.push("names and notes are withheld. Each row is instead labelled with the category, bill,");
+    L.push("or debt it is assigned to in the budget — the same attribution the totals above are");
+    L.push("built from — so a row can be reasoned about without knowing the merchant.");
+    L.push("\"Uncategorized\" means it was imported and has not been assigned yet, so it counts");
+    L.push("toward the month's total but toward no category.");
+    L.push("Dates are the day of the month within " + monthName + ".");
+    L.push("");
+    if (!txns.length) {
+      L.push("No transactions logged this month.");
+    } else {
+      txns.slice()
+        .sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")))
+        .forEach(t => {
+          const day = Number(String(t.date || "").slice(8, 10)) || 0;
+          const parts = [t.paymentType === "credit" ? "credit" : "debit"];
+          const card = t.paymentType === "credit" ? cardAnonFor(t.cardId) : null;
+          if (card) parts.push(card);
+          const who = isCouple ? personAnonFor(t.person) : null;
+          if (who) parts.push(who);
+          if (t.source === "import") parts.push("imported");
+          L.push((day ? "Day " + day : "Day unknown") + ": " + anonMoney(B.num(t.amount))
+            + ", " + txnAnonFor(t)
+            + " [" + parts.join(", ") + "]");
+        });
     }
     L.push("");
 
