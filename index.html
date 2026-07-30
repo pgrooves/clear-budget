@@ -713,7 +713,7 @@
 
 // Build version. Surfaced in Settings > HOUSEHOLD so a stale cache is diagnosable.
 // Bump every round.
-const APP_VERSION = "V49";
+const APP_VERSION = "V50";
 
 /* ============================================================
    FIREBASE INIT
@@ -2140,6 +2140,7 @@ const UI = (() => {
           <div class="code-display">${Util.esc(Util.fmtCode(setupState.generatedCode))}</div>
           <div class="row" style="justify-content:center; flex-wrap:wrap;">
             <button class="copy-btn" data-action="copy-code" data-code="${Util.esc(setupState.generatedCode)}">COPY →</button>
+            <button class="copy-btn" data-action="text-code" data-code="${Util.esc(setupState.generatedCode)}" data-learn="OPENS YOUR MESSAGING APP WITH THE CODE AND A LINK TO THE APP ALREADY WRITTEN OUT. JUST PICK WHO TO SEND IT TO.">TEXT →</button>
             ${(typeof navigator !== "undefined" && navigator.share)
               ? `<button class="copy-btn" data-action="share-code" data-code="${Util.esc(setupState.generatedCode)}" data-learn="SEND YOUR CODE TO NOTES, MESSAGES, OR A PASSWORD MANAGER IN ONE TAP.">SHARE →</button>`
               : ""}
@@ -2249,6 +2250,16 @@ const UI = (() => {
       } catch (err) {
         el.textContent = "COPY FAILED";
       }
+    } else if (action === "text-code") {
+      // Opens the messaging app with the message already written; the recipient
+      // is left blank on purpose, since that's the one thing only you can fill in.
+      //
+      // The separator differs by platform and getting it wrong opens an empty
+      // message: iOS wants sms:&body=, everything else sms:?body=.
+      const link = location.origin + location.pathname;
+      const body = "Join our CLEAR budget. Household code: " + el.dataset.code
+        + "\nOpen " + link + " on your phone, tap JOIN, and enter the code.";
+      window.location.href = "sms:" + (isIOSDevice() ? "&" : "?") + "body=" + encodeURIComponent(body);
     } else if (action === "ack-code") {
       setupState.codeAcked = !setupState.codeAcked;
       setupState.error = "";
