@@ -713,7 +713,7 @@
 
 // Build version. Surfaced in Settings > HOUSEHOLD so a stale cache is diagnosable.
 // Bump every round.
-const APP_VERSION = "V50";
+const APP_VERSION = "V51";
 
 /* ============================================================
    FIREBASE INIT
@@ -2251,15 +2251,7 @@ const UI = (() => {
         el.textContent = "COPY FAILED";
       }
     } else if (action === "text-code") {
-      // Opens the messaging app with the message already written; the recipient
-      // is left blank on purpose, since that's the one thing only you can fill in.
-      //
-      // The separator differs by platform and getting it wrong opens an empty
-      // message: iOS wants sms:&body=, everything else sms:?body=.
-      const link = location.origin + location.pathname;
-      const body = "Join our CLEAR budget. Household code: " + el.dataset.code
-        + "\nOpen " + link + " on your phone, tap JOIN, and enter the code.";
-      window.location.href = "sms:" + (isIOSDevice() ? "&" : "?") + "body=" + encodeURIComponent(body);
+      textHouseholdCode(el.dataset.code);
     } else if (action === "ack-code") {
       setupState.codeAcked = !setupState.codeAcked;
       setupState.error = "";
@@ -3965,6 +3957,22 @@ const UI = (() => {
   const TESSERACT_SRC = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
   let tesseractLoad = null;
 
+  // Opens the messaging app with the invite already written; the recipient is
+  // left blank on purpose, since that's the one thing only the user can fill in.
+  // Shared by the setup code screen and the Settings household row.
+  //
+  // The separator differs by platform and getting it wrong opens an empty
+  // message: iOS wants sms:&body=, everything else sms:?body=. The raw code is
+  // sent rather than the dashed display form, matching SHARE, so nobody has to
+  // guess whether the dashes are part of it — and the link goes along because a
+  // code on its own doesn't say where to enter it.
+  function textHouseholdCode(code) {
+    const link = location.origin + location.pathname;
+    const body = "Join our CLEAR budget. Household code: " + code
+      + "\nOpen " + link + " on your phone, tap JOIN, and enter the code.";
+    window.location.href = "sms:" + (isIOSDevice() ? "&" : "?") + "body=" + encodeURIComponent(body);
+  }
+
   function isIOSDevice() {
     const ua = navigator.userAgent || "";
     // iPadOS 13+ reports itself as Macintosh; touch points disambiguate.
@@ -5068,7 +5076,7 @@ const UI = (() => {
 
           <div class="settings-group" id="sg-household" data-learn="HOUSEHOLD SETTINGS. YOUR SHARED CODE, MODE (SOLO OR COUPLE), NAMES, AND THE BUILD VERSION SO STALE CACHES ARE DIAGNOSABLE.">
             <h3>HOUSEHOLD</h3>
-            <div class="list-item"><span>CODE</span><span>${Util.esc(Util.fmtCode(householdCode))}</span><button class="copy-btn" data-action="copy-code" data-code="${Util.esc(householdCode)}">COPY →</button></div>
+            <div class="list-item"><span>CODE</span><span>${Util.esc(Util.fmtCode(householdCode))}</span><span style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;"><button class="copy-btn" data-action="copy-code" data-code="${Util.esc(householdCode)}">COPY →</button><button class="copy-btn" data-action="text-code" data-code="${Util.esc(householdCode)}" data-learn="OPENS YOUR MESSAGING APP WITH THE CODE AND A LINK TO THE APP ALREADY WRITTEN OUT. JUST PICK WHO TO SEND IT TO.">TEXT →</button></span></div>
             <div class="list-item"><span>MODE</span><span>${Util.esc((s.settings.mode||"").toUpperCase())}</span><span></span></div>
             <div class="list-item"><span>NAMES</span><span>${Util.esc((s.settings.names||[]).join(" · "))}</span><span></span></div>
             <div class="list-item"><span>BUILD</span><span>${Util.esc(APP_VERSION)}</span><span></span></div>
@@ -6123,6 +6131,9 @@ const UI = (() => {
       el.addEventListener("click", async () => {
         try { await navigator.clipboard.writeText(el.dataset.code); const t=el.textContent; el.textContent="COPIED"; setTimeout(()=>{el.textContent=t;},1000); } catch (e) {}
       });
+    });
+    root.querySelectorAll("[data-action=text-code]").forEach(el => {
+      el.addEventListener("click", () => textHouseholdCode(el.dataset.code));
     });
     root.querySelectorAll("[data-action=edit-tithe]").forEach(el => {
       el.addEventListener("click", () => {
