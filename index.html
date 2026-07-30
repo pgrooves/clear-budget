@@ -20,6 +20,9 @@
     --black: #000000;
     --cobalt: #1A3A8C;
     --danger: #CC2200;
+    /* Deep green: the palette's teal is unreadable as text on lime (1.8:1).
+       This clears AA at 5.5:1 while still reading as teal's darker sibling. */
+    --success: #1F6B4A;
     --warn: #C8A400;
   }
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -375,6 +378,32 @@
   .progress.danger > span { background: var(--danger); }
   .text-danger { color: var(--danger); }
   .text-warn { color: var(--warn); }
+  .text-success { color: var(--success); }
+
+  /* Label/value split inside a stat line. The distinction is emphasis, not
+     category: the caption recedes and the figure carries the weight, so colour
+     stays reserved for meaning (red = overdue, green = savings on track). */
+  .stat-lbl { opacity: 0.6; }
+  .stat-val { font-weight: 700; }
+
+  /* .sub-label is in the shimmer sheet's clip-to-text list, which paints its
+     glyphs from a background gradient and sets -webkit-text-fill-color to
+     transparent. Two consequences, both of which have to be undone here:
+       - `color` is never painted, so .text-danger on a .sub-label rendered
+         cobalt rather than red. The sheet already excludes .text-danger
+         elsewhere (.txn-amt, .cat-line > span); .sub-label was simply missed.
+       - a child <span> inherits the transparent fill but has no gradient of its
+         own, so it paints nothing at all and the line vanishes.
+     Opting these back out costs them the shimmer sweep, which is the right
+     trade: a decorative highlight shouldn't outrank a semantic colour. */
+  .sub-label .stat-lbl,
+  .sub-label .stat-val,
+  .sub-label.text-danger,
+  .sub-label.text-warn,
+  .sub-label.text-success {
+    background-image: none;
+    -webkit-text-fill-color: currentColor;
+  }
 
   .cat-row + .cat-row { margin-top: 16px; }
   .cat-line { display: flex; justify-content: space-between; align-items: baseline; font-size: 16px; font-weight: 600; letter-spacing: 0.06em; gap: 8px; }
@@ -713,7 +742,7 @@
 
 // Build version. Surfaced in Settings > HOUSEHOLD so a stale cache is diagnosable.
 // Bump every round.
-const APP_VERSION = "V54";
+const APP_VERSION = "V55";
 
 /* ============================================================
    FIREBASE INIT
@@ -2753,7 +2782,7 @@ const UI = (() => {
     if (isCouple) {
       const p1 = ((s.settings.names || [])[0] || "").toUpperCase();
       const p2 = ((s.settings.names || [])[1] || "").toUpperCase();
-      peopleHtml = `<div class="sub-label" style="margin-top:8px;" data-learn="HOW MUCH EACH OF YOU HAS SPENT THIS MONTH. SET WHO PAID WHEN YOU LOG A PURCHASE.">${Util.esc(p1)}: ${Util.esc(Util.fmtMoney(BudgetEngine.personSpent(s, p1), 0))} SPENT · ${Util.esc(p2)}: ${Util.esc(Util.fmtMoney(BudgetEngine.personSpent(s, p2), 0))} SPENT</div>`;
+      peopleHtml = `<div class="sub-label" style="margin-top:8px;" data-learn="HOW MUCH EACH OF YOU HAS SPENT THIS MONTH. SET WHO PAID WHEN YOU LOG A PURCHASE."><span class="stat-lbl">${Util.esc(p1)}</span> <span class="stat-val">${Util.esc(Util.fmtMoney(BudgetEngine.personSpent(s, p1), 0))}</span> <span class="stat-lbl">SPENT · ${Util.esc(p2)}</span> <span class="stat-val">${Util.esc(Util.fmtMoney(BudgetEngine.personSpent(s, p2), 0))}</span> <span class="stat-lbl">SPENT</span></div>`;
     }
 
     // Bills due or overdue (was Log-only).
@@ -2781,6 +2810,17 @@ const UI = (() => {
           : `${dueSoonBills.length} BILL${dueSoonBills.length===1?"":"S"} DUE IN 7 DAYS · ${Util.esc(Util.fmtMoney(sumOf(dueSoonBills),0))}`
       }</div>` : "";
 
+    // Savings get their own line rather than sharing the bills one. An unfunded
+    // pot isn't late in the way an unpaid bill is, so it reads as progress —
+    // how many are set aside and what's still to go — in green rather than red.
+    const savingsAll = (s.bills || []).filter(b => b.category === "savings");
+    const savingsDone = savingsAll.filter(b => paidThisMonth[b.id] && paidThisMonth[b.id].paid);
+    const savingsLeft = savingsAll
+      .filter(b => !(paidThisMonth[b.id] && paidThisMonth[b.id].paid))
+      .reduce((a, b) => a + (Number(b.amount) || 0), 0);
+    const savingsHtml = savingsAll.length ? `
+      <div class="sub-label text-success" style="margin-top:8px;" data-learn="HOW MANY OF YOUR SAVINGS TRANSFERS YOU'VE SET ASIDE THIS MONTH, AND WHAT'S LEFT TO GO. TICK THEM OFF ON THE SAVINGS TAB. THIS IS TRACKING ONLY — SAVINGS ARE ALREADY SUBTRACTED AS BUDGETED AMOUNTS."><span class="stat-val">${savingsDone.length}/${savingsAll.length}</span> <span class="stat-lbl">SAVINGS ALLOCATED</span>${savingsLeft > 0 ? ` <span class="stat-lbl">·</span> <span class="stat-val">${Util.esc(Util.fmtMoney(savingsLeft, 0))}</span> <span class="stat-lbl">LEFT</span>` : ``}</div>` : "";
+
     // Month-rollover nudge (was Log-only).
     const realMonth = Util.currentMonthYM();
     const monthStale = !!(s.currentMonth && realMonth > s.currentMonth);
@@ -2793,10 +2833,11 @@ const UI = (() => {
         <div class="meta" style="opacity:0.75; margin:12px 0;" data-learn="EVERY NUMBER IN THIS BLOCK IS FOR THIS MONTH ONLY. USE NEW MONTH IN SETTINGS TO ROLL FORWARD.">MONTH OF ${Util.esc(Util.fmtMonthLong(s.currentMonth))}</div>
         <div class="sub-label" data-learn="SUB-LABEL FOR THE SAFE TO SPEND NUMBER BELOW.">SAFE TO SPEND</div>
         <div class="hero ${heroDanger}" data-learn="WHAT'S TRULY LEFT TO SPEND THIS MONTH AFTER TITHE, BILLS, DEBT MINIMUMS, AND UNPAID CREDIT ARE SET ASIDE. GOES RED WHEN NEGATIVE.">${Util.esc(Util.fmtMoney(safe, 0))}</div>
-        <div class="sub-label" style="margin-top:8px;" data-learn="HOW MUCH OF YOUR EXPECTED INCOME HAS ACTUALLY ARRIVED THIS MONTH. ONLY RECEIVED INCOME COUNTS TOWARD SAFE TO SPEND. MARK INCOME AS RECEIVED ON THE LOG INCOME TAB.">RECEIVED ${Util.esc(Util.fmtMoney(received, 0))} OF ${Util.esc(Util.fmtMoney(expectedIncome, 0))} EXPECTED</div>
-        <div class="sub-label" style="margin-top:8px;" data-learn="TOTAL BUDGETED = TITHE + BILLS + DEBT MINIMUMS + SPENDING BUDGETS, FOR YOUR FULL EXPECTED MONTH, SO IT DOESN'T MOVE AS PAYCHECKS LAND. ON CREDIT = TOTAL OF THIS MONTH'S CREDIT TRANSACTIONS THAT AREN'T PAID OFF YET.">${Util.esc(Util.fmtMoney(budgeted, 0))} BUDGETED · ${Util.esc(Util.fmtMoney(credit, 0))} ON CREDIT</div>
+        <div class="sub-label" style="margin-top:8px;" data-learn="HOW MUCH OF YOUR EXPECTED INCOME HAS ACTUALLY ARRIVED THIS MONTH. ONLY RECEIVED INCOME COUNTS TOWARD SAFE TO SPEND. MARK INCOME AS RECEIVED ON THE LOG INCOME TAB."><span class="stat-lbl">RECEIVED</span> <span class="stat-val">${Util.esc(Util.fmtMoney(received, 0))}</span> <span class="stat-lbl">OF</span> <span class="stat-val">${Util.esc(Util.fmtMoney(expectedIncome, 0))}</span> <span class="stat-lbl">EXPECTED</span></div>
+        <div class="sub-label" style="margin-top:8px;" data-learn="TOTAL BUDGETED = TITHE + BILLS + DEBT MINIMUMS + SPENDING BUDGETS, FOR YOUR FULL EXPECTED MONTH, SO IT DOESN'T MOVE AS PAYCHECKS LAND. ON CREDIT = TOTAL OF THIS MONTH'S CREDIT TRANSACTIONS THAT AREN'T PAID OFF YET."><span class="stat-val">${Util.esc(Util.fmtMoney(budgeted, 0))}</span> <span class="stat-lbl">BUDGETED ·</span> <span class="stat-val">${Util.esc(Util.fmtMoney(credit, 0))}</span> <span class="stat-lbl">ON CREDIT</span></div>
         ${peopleHtml}
         ${dueSoonHtml}
+        ${savingsHtml}
         ${staleHtml}
       </section>`;
   }
