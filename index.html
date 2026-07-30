@@ -93,7 +93,30 @@
   }
 
   .section { padding: 32px 24px; max-width: 100%; overflow-x: hidden; }
-  .section.lime { background: var(--lime); }
+  .section.lime { background: var(--lime); position: relative; }
+
+  /* One-shot swipe-tab hint. Absolutely positioned in the open lime space to
+     the right of the tab title so it never shifts the real content, and
+     pointer-events:none so it can never eat a tap even if still mid-fade. */
+  .swipe-hint {
+    position: absolute; top: 88px; right: 24px;
+    pointer-events: none; z-index: 6; opacity: 0;
+    animation: swipe-hint-play 2.6s ease-in-out forwards;
+  }
+  @keyframes swipe-hint-play {
+    0%   { opacity: 0;    transform: translateX(0); }
+    8%   { opacity: 0.55; transform: translateX(0); }
+    20%  { opacity: 0.12; transform: translateX(-10px); }
+    32%  { opacity: 0.55; transform: translateX(10px); }
+    44%  { opacity: 0.12; transform: translateX(-10px); }
+    56%  { opacity: 0.55; transform: translateX(10px); }
+    68%  { opacity: 0.12; transform: translateX(0); }
+    82%  { opacity: 0.5;  transform: translateX(0); }
+    100% { opacity: 0;    transform: translateX(0); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .swipe-hint { display: none; }
+  }
   .section.gray { background: var(--gray); }
   .section.off-white { background: var(--gray-light); }
   .section.terracotta { background: var(--terracotta); }
@@ -1876,6 +1899,12 @@ const UI = (() => {
   let learnerMode = false;
   let learnerCalloutText = "";
 
+  // One-shot swipe hint: shown on the very first lime-block render of the
+  // page load only, then never again until the next reload. Guarded here
+  // (not in CSS alone) because every state change re-renders the block from
+  // scratch, which would otherwise restart the animation each time.
+  let swipeHintShown = false;
+
   // Clear-log inline two-step confirm.
   let clearLogConfirmOpen = false;
 
@@ -2765,6 +2794,26 @@ const UI = (() => {
       </div>`;
   }
 
+  // Flat black finger flanked by left/right chevrons — hints that the tab
+  // content can be swiped sideways. Overrides the no-SVG rule for this one
+  // icon, same as cogSvg/questSvg/soundSvg.
+  function swipeHintSvg() {
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="84" height="32" viewBox="0 0 84 32" fill="none" aria-hidden="true" focusable="false">`
+      + `<path d="M20 8 L10 16 L20 24" stroke="#000" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>`
+      + `<circle cx="42" cy="10" r="6" fill="#000"/>`
+      + `<rect x="37" y="13" width="10" height="15" rx="5" fill="#000"/>`
+      + `<path d="M64 8 L74 16 L64 24" stroke="#000" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>`
+      + `</svg>`;
+  }
+  // Renders once — the first time the lime block paints after a page load —
+  // then flags itself off so later re-renders (which happen on nearly every
+  // state change) don't keep bringing it back.
+  function swipeHintHtml() {
+    if (swipeHintShown) return "";
+    swipeHintShown = true;
+    return `<div class="swipe-hint" aria-hidden="true">${swipeHintSvg()}</div>`;
+  }
+
   // The one lime block, identical on all four tabs apart from the label line.
   // Merged from what LOG and DASHBOARD each used to render separately; every
   // figure reads from s.currentMonth so no tab can drift onto a different month.
@@ -2830,6 +2879,7 @@ const UI = (() => {
     return `
       <section class="section lime" style="padding-top:80px;" data-learn="SAFE TO SPEND BLOCK. THE BIG NUMBER IS WHAT'S TRULY LEFT TO SPEND THIS MONTH AFTER TITHE, BILLS, DEBT MINIMUMS, AND UNPAID CREDIT ARE SET ASIDE. IT STAYS PUT ON EVERY TAB SO THE FIGURE THAT MATTERS IS ALWAYS THE FIRST THING YOU SEE.">
         ${tabLineHtml(tab)}
+        ${swipeHintHtml()}
         <div class="meta" style="opacity:0.75; margin:12px 0;" data-learn="EVERY NUMBER IN THIS BLOCK IS FOR THIS MONTH ONLY. USE NEW MONTH IN SETTINGS TO ROLL FORWARD.">MONTH OF ${Util.esc(Util.fmtMonthLong(s.currentMonth))}</div>
         <div class="sub-label" data-learn="SUB-LABEL FOR THE SAFE TO SPEND NUMBER BELOW.">SAFE TO SPEND</div>
         <div class="hero ${heroDanger}" data-learn="WHAT'S TRULY LEFT TO SPEND THIS MONTH AFTER TITHE, BILLS, DEBT MINIMUMS, AND UNPAID CREDIT ARE SET ASIDE. GOES RED WHEN NEGATIVE.">${Util.esc(Util.fmtMoney(safe, 0))}</div>
