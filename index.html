@@ -713,7 +713,7 @@
 
 // Build version. Surfaced in Settings > HOUSEHOLD so a stale cache is diagnosable.
 // Bump every round.
-const APP_VERSION = "V48";
+const APP_VERSION = "V49";
 
 /* ============================================================
    FIREBASE INIT
@@ -5137,8 +5137,8 @@ const UI = (() => {
 
           <div class="settings-group" id="sg-export" data-learn="EXPORT. BUILDS A ONE-PAGE VISUAL SUMMARY OF THIS MONTH AND HANDS IT TO YOUR DEVICE'S PRINT SHEET, WHERE YOU CAN CHOOSE SAVE AS PDF AND SHARE IT. IT IS A HIGHLIGHTS DOCUMENT, NOT A LEDGER.">
             <h3>EXPORT</h3>
-            <button class="cta" data-action="print-report" data-learn="OPENS YOUR DEVICE'S PRINT SHEET WITH A FORMATTED SUMMARY OF THIS MONTH. IT DOESN'T DOWNLOAD A FILE DIRECTLY — CHOOSE SAVE AS PDF FROM THE PRINT SHEET TO KEEP OR SHARE IT. ON IPHONE THAT'S THE SHARE ICON, THEN SAVE TO FILES.">→ SHAREABLE REPORT (PRINT → PDF)</button>
-            <div class="meta" style="margin-top:8px;">OPENS YOUR PRINT SHEET — CHOOSE SAVE AS PDF THERE TO KEEP OR SHARE IT. A VISUAL SUMMARY OF THIS MONTH; NO TRANSACTIONS, NO HOUSEHOLD CODE.</div>
+            <button class="cta" data-action="print-report" data-learn="OPENS A FORMATTED SUMMARY OF THIS MONTH AS ITS OWN PAGE. TO KEEP OR SHARE IT AS A PDF, USE THE SHARE ICON IN THE BROWSER BAR, CHOOSE PRINT, THEN SAVE AS PDF. THE INSTRUCTION LINE AT THE TOP OF THE REPORT IS LEFT OUT OF THE SAVED FILE.">→ SHAREABLE REPORT</button>
+            <div class="meta" style="margin-top:8px;">OPENS THE REPORT AS ITS OWN PAGE. TO SAVE IT AS A PDF, USE THE SHARE ICON THEN PRINT. A VISUAL SUMMARY OF THIS MONTH; NO TRANSACTIONS, NO HOUSEHOLD CODE.</div>
 
             <button class="cta" data-action="ai-export" style="margin-top:20px;" data-learn="DOWNLOADS A PLAIN TEXT FILE OF YOUR NUMBERS WITH EVERY IDENTIFYING DETAIL REMOVED, SO YOU CAN HAND IT TO AN AI FOR DEBT ADVICE. YOUR TRANSACTIONS ARE LISTED ONE PER LINE BUT LABELLED BY CATEGORY, NOT BY MERCHANT, AND NOTES ARE NEVER INCLUDED. OPEN IT IN ANY TEXT EDITOR FIRST IF YOU WANT TO SEE EXACTLY WHAT IT CONTAINS.">→ AI ANALYSIS FILE (.TXT)</button>
             <div class="meta" style="margin-top:8px;">ANONYMIZED. NO NAMES, NO ACCOUNTS, NO MERCHANTS, NO NOTES. TRANSACTIONS ARE LISTED BY CATEGORY AND AMOUNT ONLY.</div>
@@ -5565,92 +5565,81 @@ const UI = (() => {
       + billsHtml + creditHtml + splitHtml + footHtml;
   }
 
-  let printTeardown = null;
+  // The report opens as its own page rather than going through window.print().
+  //
+  // window.print() is simply ignored by iOS Safari here: the diagnostic added in
+  // V35 confirmed the report builds without error, print() returns without
+  // throwing, and yet neither beforeprint nor the print media query ever fires,
+  // so the browser never enters print state at all. Nothing in script can force
+  // it to. Opening a real page sidesteps the whole question — Safari's own
+  // Share > Print > Save as PDF acts on it, which is the same print sheet as
+  // before, just reached through the browser's UI instead of a call it declines.
+  //
+  // The page carries a copy of this document's stylesheet so it renders exactly
+  // as the print layout always did, plus an on-screen override, since the report
+  // block is display:none here and only the print stylesheet reveals it.
+  function buildPrintDocument(s) {
+    const css = [...document.querySelectorAll("style")].map(el => el.textContent || "").join("\n");
+    return `<!doctype html><html><head><meta charset="utf-8">`
+      + `<meta name="viewport" content="width=device-width, initial-scale=1">`
+      + `<title>CLEAR REPORT</title>`
+      + `<style>${css}</style>`
+      + `<style>`
+      + `html,body{background:#fff;margin:0;padding:0;}`
+      + `#print-report{display:block !important;}`
+      + `.pr-howto{font-family:"Helvetica Neue",Arial,sans-serif;font-size:12px;letter-spacing:0.12em;`
+      + `text-transform:uppercase;padding:14px 26px;background:#1A3A8C;color:#DFFF5B;line-height:1.5;}`
+      /* The instructions are for the screen only; a saved PDF must not carry them. */
+      + `@media print{.pr-howto{display:none !important;}}`
+      + `</style></head><body>`
+      + `<div class="pr-howto">TAP THE SHARE ICON IN THE BROWSER BAR, CHOOSE PRINT, THEN SAVE AS PDF. THIS LINE WON'T APPEAR IN THE SAVED FILE.</div>`
+      + `<div id="print-report">${buildPrintReport(s)}</div>`
+      + `</body></html>`;
+  }
 
   function openPrintReport(s) {
-    // Never stack layers; a previous run that failed to tear down is replaced.
-    if (printTeardown) printTeardown();
-    const old = document.getElementById("print-report");
-    if (old) old.remove();
-
-    const layer = document.createElement("div");
-    layer.id = "print-report";
-    // A failure in here used to surface as the button doing nothing at all,
-    // because the exception escaped the click handler. Say so instead.
+    let doc;
     try {
-      layer.innerHTML = buildPrintReport(s);
+      doc = buildPrintDocument(s);
     } catch (err) {
       console.warn(err);
       alert("COULDN'T BUILD THE REPORT: " + ((err && err.message) || err));
       return;
     }
-    document.body.appendChild(layer);
 
-    // Teardown is deliberately NOT wired to afterprint or the print media query
-    // any more. On iOS both can fire the moment print() is called and flip
-    // straight back, which removed this layer before the sheet had rendered it.
-    // The tap then looked like it did nothing at all — and no diagnostic fired
-    // either, because the browser HAD reported entering print state, so the
-    // "didn't open" check below saw began === true and stayed quiet.
-    //
-    // A display:none subtree costs nothing to leave in the document, so it now
-    // lingers until the next report replaces it or the timer below fires.
-    // Racing the browser to remove it bought nothing and broke the feature.
-    let done = false;
-    // Whether the browser ever actually started printing. iOS Safari can ignore
-    // window.print() outright and report nothing, so this is the only way to
-    // tell "the sheet opened" from "the call did nothing".
-    let began = false;
-    const mql = window.matchMedia ? window.matchMedia("print") : null;
-    const onMql = (e) => { if (e && e.matches) began = true; };
-    const onBefore = () => { began = true; };
-    const failsafe = setTimeout(() => cleanup(), 30000);
-
-    function cleanup() {
-      if (done) return;
-      done = true;
-      clearTimeout(failsafe);
-      window.removeEventListener("beforeprint", onBefore);
-      if (mql) {
-        if (mql.removeEventListener) mql.removeEventListener("change", onMql);
-        else if (mql.removeListener) mql.removeListener(onMql);
-      }
-      const el = document.getElementById("print-report");
-      if (el) el.remove();
-      printTeardown = null;
-    }
-    printTeardown = cleanup;
-
-    window.addEventListener("beforeprint", onBefore);
-    if (mql) {
-      if (mql.addEventListener) mql.addEventListener("change", onMql);
-      else if (mql.addListener) mql.addListener(onMql);
+    // document.write into a blank window rather than a blob: URL — iOS Safari
+    // is unreliable about opening blob URLs in a new tab.
+    let w = null;
+    try { w = window.open("", "_blank"); } catch (e) { w = null; }
+    if (w && w.document) {
+      try {
+        w.document.open();
+        w.document.write(doc);
+        w.document.close();
+        return;
+      } catch (e) { console.warn(e); try { w.close(); } catch (e2) {} }
     }
 
-    // window.print() must run inside the user gesture that opened the report.
-    // iOS Safari silently ignores it from a timer or promise callback, which is
-    // why deferring here used to make the first tap do nothing at all (and why
-    // it appeared to "work" only after another button had granted the page
-    // sticky activation).
-    //
-    // (The layer is display:none on screen and only the print stylesheet makes
-    // it visible, so there's nothing useful to force a reflow on here.)
-    try { window.print(); }
-    catch (e) {
-      cleanup();
-      alert("THIS BROWSER WOULDN'T OPEN THE PRINT SHEET.");
-      return;
+    // New tab refused (blocked, or a home-screen app with no tabs). Hand the
+    // report over as a file instead — the same mechanism the .txt export uses,
+    // which is known to work where print() does not.
+    try {
+      const blob = new Blob([doc], { type: "text/html;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "clear-report-" + String(s.currentMonth || Util.currentMonthYM()) + ".html";
+      a.style.display = "none";
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => {
+        if (a.parentNode) a.parentNode.removeChild(a);
+        URL.revokeObjectURL(url);
+      }, 4000);
+    } catch (err) {
+      console.warn(err);
+      alert("COULDN'T OPEN THE REPORT. ALLOW POP-UPS FOR THIS SITE AND TRY AGAIN.");
     }
-
-    // print() returning tells us nothing on iOS — it doesn't block and doesn't
-    // throw when it declines. If nothing reported starting shortly after, the
-    // call was dropped; say so rather than leaving the tap looking like it did
-    // nothing. The layer is left in place either way: Safari's own Share > Print
-    // will pick it up, which is the workaround the message points at.
-    setTimeout(() => {
-      if (began || done) return;
-      alert("SAFARI DIDN'T OPEN THE PRINT SHEET. USE THE SHARE ICON IN THE BROWSER BAR, THEN PRINT, AND PICK SAVE AS PDF.");
-    }, 1500);
   }
 
   /* ------------- ANONYMIZED TEXT EXPORT FOR AI ANALYSIS ------------- */
