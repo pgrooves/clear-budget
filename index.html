@@ -713,7 +713,7 @@
 
 // Build version. Surfaced in Settings > HOUSEHOLD so a stale cache is diagnosable.
 // Bump every round.
-const APP_VERSION = "V47";
+const APP_VERSION = "V48";
 
 /* ============================================================
    FIREBASE INIT
@@ -1161,42 +1161,69 @@ const DebtEngine = (() => {
 /* ============================================================
    DEFAULT SEED DATA
    ============================================================ */
-function buildDefaultData(mode, names) {
-  const nowMonth = Util.currentMonthYM();
+// The starter framework a new household can opt into. Kept as functions rather
+// than constants because each call must mint fresh ids, and shared with the
+// Settings screen so "add the examples later" produces exactly the same list.
+function exampleIncome() {
   const uid = Util.uuid;
+  return [
+    { id: uid(), label: "Paycheck 1", amount: 0, dueDateOfMonth: 1 },
+    { id: uid(), label: "Paycheck 2", amount: 0, dueDateOfMonth: 15 }
+  ];
+}
+function exampleBills() {
+  const uid = Util.uuid;
+  return [
+    { id: uid(), label: "Rent", amount: 0, dueDateOfMonth: 10, category: "bill" },
+    { id: uid(), label: "Electric", amount: 0, dueDateOfMonth: 11, category: "bill" },
+    { id: uid(), label: "Gas + Water", amount: 0, dueDateOfMonth: 11, category: "bill" },
+    { id: uid(), label: "Internet", amount: 0, dueDateOfMonth: 29, category: "bill" },
+    { id: uid(), label: "Cell Phone", amount: 0, dueDateOfMonth: 10, category: "bill" },
+    { id: uid(), label: "Car Insurance", amount: 0, dueDateOfMonth: 7, category: "bill" },
+    { id: uid(), label: "Gym", amount: 0, dueDateOfMonth: 3, category: "bill" },
+    { id: uid(), label: "Student Loans", amount: 0, dueDateOfMonth: 10, category: "bill" },
+    { id: uid(), label: "Car Loan", amount: 0, dueDateOfMonth: 27, category: "bill" },
+    { id: uid(), label: "Emergency Fund", amount: 0, dueDateOfMonth: 1, category: "savings" },
+    { id: uid(), label: "Car Maintenance", amount: 0, dueDateOfMonth: 1, category: "savings" },
+    { id: uid(), label: "Vacation", amount: 0, dueDateOfMonth: 1, category: "savings" },
+    { id: uid(), label: "Roth IRA / Retirement", amount: 0, dueDateOfMonth: 1, category: "savings" }
+  ];
+}
+function exampleSpending() {
+  const uid = Util.uuid;
+  return [
+    { id: uid(), label: "Groceries & Household", budgeted: 500, type: "spending" },
+    { id: uid(), label: "Gas (Auto)", budgeted: 300, type: "spending" },
+    { id: uid(), label: "Eating Out", budgeted: 150, type: "spending" },
+    { id: uid(), label: "Date Night", budgeted: 150, type: "spending" },
+    { id: uid(), label: "His Personal", budgeted: 30, type: "spending" },
+    { id: uid(), label: "Hers Personal", budgeted: 30, type: "spending" },
+    { id: uid(), label: "Meds & Vitamins", budgeted: 120, type: "spending" },
+    { id: uid(), label: "Gifts for People", budgeted: 50, type: "spending" },
+    { id: uid(), label: "Vehicle Maintenance", budgeted: 40, type: "spending" },
+    { id: uid(), label: "Misc / All Others", budgeted: 200, type: "spending" }
+  ];
+}
+
+// withExamples === false starts the household completely empty: no income
+// sources, no bills, no savings pots, no spending categories, and a 0% tithe,
+// so nothing carries a figure the user didn't put there. Anything else keeps
+// the starter framework, which is what every household created before this
+// question existed got — RESET passes the household's stored answer, so an
+// existing one resets to exactly what it always did.
+function buildDefaultData(mode, names, withExamples) {
+  const nowMonth = Util.currentMonthYM();
+  const examples = withExamples !== false;
   return {
-    settings: { mode, names, tithePercent: 10, debtStrategy: "avalanche" },
-    income: [
-      { id: uid(), label: "Paycheck 1", amount: 0, dueDateOfMonth: 1 },
-      { id: uid(), label: "Paycheck 2", amount: 0, dueDateOfMonth: 15 }
-    ],
-    bills: [
-      { id: uid(), label: "Rent", amount: 0, dueDateOfMonth: 10, category: "bill" },
-      { id: uid(), label: "Electric", amount: 0, dueDateOfMonth: 11, category: "bill" },
-      { id: uid(), label: "Gas + Water", amount: 0, dueDateOfMonth: 11, category: "bill" },
-      { id: uid(), label: "Internet", amount: 0, dueDateOfMonth: 29, category: "bill" },
-      { id: uid(), label: "Cell Phone", amount: 0, dueDateOfMonth: 10, category: "bill" },
-      { id: uid(), label: "Car Insurance", amount: 0, dueDateOfMonth: 7, category: "bill" },
-      { id: uid(), label: "Gym", amount: 0, dueDateOfMonth: 3, category: "bill" },
-      { id: uid(), label: "Student Loans", amount: 0, dueDateOfMonth: 10, category: "bill" },
-      { id: uid(), label: "Car Loan", amount: 0, dueDateOfMonth: 27, category: "bill" },
-      { id: uid(), label: "Emergency Fund", amount: 0, dueDateOfMonth: 1, category: "savings" },
-      { id: uid(), label: "Car Maintenance", amount: 0, dueDateOfMonth: 1, category: "savings" },
-      { id: uid(), label: "Vacation", amount: 0, dueDateOfMonth: 1, category: "savings" },
-      { id: uid(), label: "Roth IRA / Retirement", amount: 0, dueDateOfMonth: 1, category: "savings" }
-    ],
-    spendingCategories: [
-      { id: uid(), label: "Groceries & Household", budgeted: 500, type: "spending" },
-      { id: uid(), label: "Gas (Auto)", budgeted: 300, type: "spending" },
-      { id: uid(), label: "Eating Out", budgeted: 150, type: "spending" },
-      { id: uid(), label: "Date Night", budgeted: 150, type: "spending" },
-      { id: uid(), label: "His Personal", budgeted: 30, type: "spending" },
-      { id: uid(), label: "Hers Personal", budgeted: 30, type: "spending" },
-      { id: uid(), label: "Meds & Vitamins", budgeted: 120, type: "spending" },
-      { id: uid(), label: "Gifts for People", budgeted: 50, type: "spending" },
-      { id: uid(), label: "Vehicle Maintenance", budgeted: 40, type: "spending" },
-      { id: uid(), label: "Misc / All Others", budgeted: 200, type: "spending" }
-    ],
+    settings: {
+      mode, names,
+      tithePercent: examples ? 10 : 0,
+      debtStrategy: "avalanche",
+      exampleFramework: examples
+    },
+    income: examples ? exampleIncome() : [],
+    bills: examples ? exampleBills() : [],
+    spendingCategories: examples ? exampleSpending() : [],
     transactions: [],
     debts: [],
     creditCards: [],
@@ -1703,7 +1730,9 @@ const UI = (() => {
 
   // Setup wizard local state
   const setupState = {
-    step: "who",   // who | names | code | join | joining
+    step: "who",   // who | names | examples | code | join | joining
+    // Whether to seed the starter framework. Null until asked.
+    useExamples: null,
     mode: null,
     names: ["", ""],
     generatedCode: "",
@@ -1768,6 +1797,8 @@ const UI = (() => {
 
   // Reset-app-data inline confirm.
   let resetConfirmOpen = false;
+  // Confirm step on the Settings "add the example framework" action.
+  let exampleAddConfirm = false;
   // Edit inline forms keyed by id
   const editStates = {};
 
@@ -2087,6 +2118,20 @@ const UI = (() => {
             <button class="cta big" data-action="setup-names-next">→ NEXT</button>
           </div>`;
       }
+    } else if (setupState.step === "examples") {
+      content = `
+        <div class="setup-inner">
+          <button class="link" data-action="setup-back">← BACK</button>
+          <h2>WANT AN EXAMPLE FRAMEWORK?</h2>
+          <div class="meta" style="margin-top:16px; line-height:1.6;">WE CAN PUT A STARTER SET IN PLACE FOR YOU — SPENDING CATEGORIES, BILLS, AND SAVINGS POTS LIKE RENT, GROCERIES AND AN EMERGENCY FUND. RENAME, CHANGE OR DELETE ANY OF IT.</div>
+          <div class="meta" style="margin-top:12px; line-height:1.6;">OR START COMPLETELY EMPTY, WITH EVERY LIST BLANK AND EVERY FIGURE AT ZERO, AND BUILD IT YOURSELF.</div>
+          <div style="flex:1"></div>
+          <div class="stack-16">
+            <button class="cta big" data-action="setup-examples" data-v="yes">→ YES, SET IT UP</button>
+            <button class="cta big ghost" data-action="setup-examples" data-v="no">× NO, START EMPTY</button>
+          </div>
+          <div class="meta" style="text-align:center; margin-top:16px; line-height:1.6;">NOT SURE? IT MAKES NO DIFFERENCE LATER — YOU CAN ADD THE WHOLE EXAMPLE SET, OR YOUR OWN ITEMS, FROM SETTINGS WHENEVER YOU LIKE.</div>
+        </div>`;
     } else if (setupState.step === "code") {
       content = `
         <div class="setup-inner">
@@ -2166,7 +2211,8 @@ const UI = (() => {
     } else if (action === "setup-back") {
       setupState.error = "";
       if (setupState.step === "names") setupState.step = "who";
-      else if (setupState.step === "code") setupState.step = "names";
+      else if (setupState.step === "examples") setupState.step = "names";
+      else if (setupState.step === "code") setupState.step = "examples";
       else if (setupState.step === "join") setupState.step = "who";
       renderSetup();
     } else if (action === "setup-names-next") {
@@ -2179,6 +2225,11 @@ const UI = (() => {
       }
       setupState.names[0] = n1.toUpperCase();
       setupState.names[1] = setupState.mode === "couple" ? n2.toUpperCase() : "";
+      setupState.step = "examples";
+      setupState.error = "";
+      renderSetup();
+    } else if (action === "setup-examples") {
+      setupState.useExamples = el.dataset.v === "yes";
       setupState.generatedCode = DataService.generateCode();
       // A newly generated code needs its own acknowledgement.
       setupState.codeAcked = false;
@@ -2220,7 +2271,7 @@ const UI = (() => {
         setupState.error = "";
         const id = setupState.generatedCode;
         const names = setupState.mode === "couple" ? [setupState.names[0], setupState.names[1]] : [setupState.names[0]];
-        const data = buildDefaultData(setupState.mode, names);
+        const data = buildDefaultData(setupState.mode, names, setupState.useExamples !== false);
         DataService.setHouseholdIdLocal(id);
         await DataService.set(data);
         // Offer the setup wizard as soon as the app comes up, so a new
@@ -4992,7 +5043,7 @@ const UI = (() => {
         ${appHeader("lime with-back", `<button class="settings-back" data-action="close-settings" data-learn="RETURN TO WHATEVER SCREEN YOU CAME FROM (LOG, DASHBOARD, BILLS, OR DEBTS).">\u2190 BACK</button>`, false)}
         <div class="settings-jump" data-learn="JUMP TO A SECTION OF SETTINGS WITHOUT SCROLLING. TAP A CHIP AND THE PAGE MOVES TO THAT GROUP. THIS BAR STAYS PINNED AS YOU SCROLL.">
           <div class="chips" data-scroll-key="settings-jump-chips">
-            ${[["household","HOUSEHOLD"],["tithing","TITHING"],["income","INCOME"],["bills","BILLS"],["spending","SPENDING"],["debts","DEBTS"],["cards","CARDS"],["banks","BANKS"],["export","EXPORT"],["shimmer","SHIMMER"],["newmonth","NEW MONTH"],["wizard","WIZARD"],["reset","RESET"]]
+            ${[["household","HOUSEHOLD"],["tithing","TITHING"],["income","INCOME"],["bills","BILLS"],["spending","SPENDING"],["debts","DEBTS"],["cards","CARDS"],["banks","BANKS"],["export","EXPORT"],["shimmer","SHIMMER"],["newmonth","NEW MONTH"],["wizard","WIZARD"],["examples","EXAMPLES"],["reset","RESET"]]
               .map(([id,label]) => `<button class="chip" data-action="settings-jump" data-target="sg-${id}">${label}</button>`).join("")}
           </div>
         </div>
@@ -5122,6 +5173,18 @@ const UI = (() => {
             <h3>SETUP WIZARD</h3>
             <div class="meta">BUILD OR REFRESH YOUR INCOME AND BILLS FROM BANK STATEMENTS. MERGES WITH WHAT'S ALREADY THERE; NOTHING IS DELETED.</div>
             <button class="link" style="margin-top:12px;" data-action="run-wizard">→ RE-RUN SETUP WIZARD</button>
+          </div>
+
+          <div class="settings-group" id="sg-examples" data-learn="EXAMPLE FRAMEWORK. THE STARTER SET OF CATEGORIES, BILLS AND SAVINGS POTS OFFERED WHEN A HOUSEHOLD IS FIRST CREATED. ADDING IT HERE ONLY FILLS IN WHAT YOU DON'T ALREADY HAVE; IT NEVER RENAMES, CHANGES OR DELETES ANYTHING OF YOURS.">
+            <h3>EXAMPLE FRAMEWORK</h3>
+            <div class="meta">A STARTER SET OF SPENDING CATEGORIES, BILLS AND SAVINGS POTS. ONLY ITEMS YOU DON'T ALREADY HAVE ARE ADDED, SO NOTHING OF YOURS IS TOUCHED OR DUPLICATED. AMOUNTS ARE YOURS TO FILL IN.</div>
+            ${exampleAddConfirm ? `
+              <div class="meta" style="margin-top:12px;">ADD THE EXAMPLE CATEGORIES, BILLS AND SAVINGS POTS?</div>
+              <div class="row-actions">
+                <button class="cta ghost" data-action="examples-add-cancel">× CANCEL</button>
+                <button class="cta" data-action="examples-add-yes">→ ADD THEM</button>
+              </div>
+            ` : `<button class="link" style="margin-top:12px;" data-action="examples-add-open">+ ADD THE EXAMPLE FRAMEWORK →</button>`}
           </div>
 
           <div class="settings-group" id="sg-reset" data-learn="START FROM SCRATCH. NUCLEAR RESET: WIPES ALL TRANSACTIONS, DEBTS, CARDS, AND AMOUNTS. KEEPS YOUR HOUSEHOLD CODE, NAMES, TITHE RATE, AND PAYOFF ORDER SETTING.">
@@ -6145,6 +6208,15 @@ const UI = (() => {
         render();
       });
     });
+    root.querySelectorAll("[data-action=examples-add-open]").forEach(el => {
+      el.addEventListener("click", () => { exampleAddConfirm = true; render(); });
+    });
+    root.querySelectorAll("[data-action=examples-add-cancel]").forEach(el => {
+      el.addEventListener("click", () => { exampleAddConfirm = false; render(); });
+    });
+    root.querySelectorAll("[data-action=examples-add-yes]").forEach(el => {
+      el.addEventListener("click", () => applyExampleFramework(s));
+    });
     root.querySelectorAll("[data-action=reset-open]").forEach(el => {
       el.addEventListener("click", () => { resetConfirmOpen = true; render(); });
     });
@@ -6156,12 +6228,42 @@ const UI = (() => {
     });
   }
 
+  // Add the starter framework to an existing household — the same set a new one
+  // is offered, for anyone who declined it or who wants the rest of it later.
+  //
+  // Purely additive, matched on label so it's safe to run twice: an item you
+  // already have (however you spell its case) is skipped, and nothing you own is
+  // renamed, re-costed or removed. Amounts on new items stay at their example
+  // values for spending and at zero for bills, exactly as at setup.
+  async function applyExampleFramework(s) {
+    const hasLabel = (arr, label) => (arr || []).some(x =>
+      String(x.label || "").trim().toLowerCase() === String(label || "").trim().toLowerCase());
+    const income = (s.income || []).slice();
+    exampleIncome().forEach(i => { if (!hasLabel(income, i.label)) income.push(i); });
+    const bills = (s.bills || []).slice();
+    exampleBills().forEach(b => { if (!hasLabel(bills, b.label)) bills.push(b); });
+    const cats = (s.spendingCategories || []).slice();
+    exampleSpending().forEach(c => { if (!hasLabel(cats, c.label)) cats.push(c); });
+    try {
+      await DataService.update({
+        income: income,
+        bills: bills,
+        spendingCategories: cats,
+        "settings.exampleFramework": true
+      });
+      exampleAddConfirm = false;
+      render();
+    } catch (e) { alert("COULDN'T SAVE; CHECK CONNECTION"); console.warn(e); }
+  }
+
   // Reset the household doc to seed data, KEEPING mode, names, tithePercent, debtStrategy,
   // and the same household code / doc ID. The snapshot listener re-renders both phones.
   async function resetHousehold(s) {
     const mode = s.settings && s.settings.mode ? s.settings.mode : "solo";
     const names = (s.settings && s.settings.names) ? s.settings.names.slice() : ["ME"];
-    const fresh = buildDefaultData(mode, names);
+    // Existing households have no stored answer, so they reset to the starter
+    // framework exactly as they always have.
+    const fresh = buildDefaultData(mode, names, !(s.settings && s.settings.exampleFramework === false));
     fresh.settings.tithePercent = BudgetEngine.tithePercent(s);
     fresh.settings.debtStrategy = BudgetEngine.debtStrategy(s);
     try {
