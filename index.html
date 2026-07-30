@@ -5167,15 +5167,18 @@ const UI = (() => {
       else if (mql.addListener) mql.addListener(onMql);
     }
 
-    // Let layout settle before handing off to the print sheet; iOS Safari can
-    // otherwise snapshot the page before the layer has been laid out.
-    setTimeout(() => {
-      // A second tap during this delay replaces the layer and runs this
-      // invocation's cleanup. Bail rather than opening a second print sheet.
-      if (done) return;
-      try { window.print(); }
-      catch (e) { cleanup(); }
-    }, 60);
+    // window.print() must run inside the user gesture that opened the report.
+    // iOS Safari silently ignores it from a timer or promise callback, which is
+    // why deferring here used to make the first tap do nothing at all (and why
+    // it appeared to "work" only after another button had granted the page
+    // sticky activation).
+    //
+    // The layer still has to be laid out before the print sheet snapshots the
+    // page. Reading offsetHeight forces a synchronous reflow, which gets that
+    // guarantee without leaving the gesture.
+    void layer.offsetHeight;
+    try { window.print(); }
+    catch (e) { cleanup(); }
   }
 
   /* ------------- ANONYMIZED TEXT EXPORT FOR AI ANALYSIS ------------- */
