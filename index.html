@@ -713,7 +713,7 @@
 
 // Build version. Surfaced in Settings > HOUSEHOLD so a stale cache is diagnosable.
 // Bump every round.
-const APP_VERSION = "V51";
+const APP_VERSION = "V52";
 
 /* ============================================================
    FIREBASE INIT
@@ -5597,17 +5597,46 @@ const UI = (() => {
   // The page carries a copy of this document's stylesheet so it renders exactly
   // as the print layout always did, plus an on-screen override, since the report
   // block is display:none here and only the print stylesheet reveals it.
+  // Every .pr-* rule lives inside @media print, so copying the stylesheet alone
+  // renders the report completely unstyled in an ordinary tab. Pull that block's
+  // contents out so the same rules also apply on screen. Brace-matched rather
+  // than regexed because the block contains a nested @page rule.
+  function extractPrintCss(css) {
+    const at = css.indexOf("@media print");
+    if (at < 0) return "";
+    const open = css.indexOf("{", at);
+    if (open < 0) return "";
+    let depth = 0;
+    for (let i = open; i < css.length; i++) {
+      const c = css[i];
+      if (c === "{") depth++;
+      else if (c === "}") {
+        depth--;
+        if (depth === 0) return css.slice(open + 1, i);
+      }
+    }
+    return "";
+  }
+
   function buildPrintDocument(s) {
     const css = [...document.querySelectorAll("style")].map(el => el.textContent || "").join("\n");
+    const printCss = extractPrintCss(css);
     return `<!doctype html><html><head><meta charset="utf-8">`
       + `<meta name="viewport" content="width=device-width, initial-scale=1">`
       + `<title>CLEAR REPORT</title>`
+      /* Original sheet first: it carries the :root colour variables the rules
+         below resolve against, and keeps @media print intact for real printing. */
       + `<style>${css}</style>`
+      /* The print rules again, un-gated, so the page looks the same on screen. */
+      + `<style>${printCss}</style>`
       + `<style>`
       + `html,body{background:#fff;margin:0;padding:0;}`
       + `#print-report{display:block !important;}`
-      + `.pr-howto{font-family:"Helvetica Neue",Arial,sans-serif;font-size:12px;letter-spacing:0.12em;`
-      + `text-transform:uppercase;padding:14px 26px;background:#1A3A8C;color:#DFFF5B;line-height:1.5;}`
+      /* The un-gated block includes "body > * { display:none }", which would
+         swallow the instruction bar. A class beats that selector on specificity. */
+      + `.pr-howto{display:block !important;font-family:"Helvetica Neue",Arial,sans-serif;`
+      + `font-size:12px;letter-spacing:0.12em;text-transform:uppercase;padding:14px 26px;`
+      + `background:#1A3A8C;color:#DFFF5B;line-height:1.5;}`
       /* The instructions are for the screen only; a saved PDF must not carry them. */
       + `@media print{.pr-howto{display:none !important;}}`
       + `</style></head><body>`
