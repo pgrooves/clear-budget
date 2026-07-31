@@ -1031,8 +1031,11 @@ const BudgetEngine = (() => {
   // Synthetic bill-shaped view of tithe for the Bills tab / import matching —
   // never stored in s.bills, so there's one source of truth (settings.tithePercent
   // + income) instead of a duplicated record that could drift from it.
+  // Plain "tithe", not "__tithe__" — Firestore reserves field names matching
+  // /^__.*__$/ and silently rejects writes that use one (this is why marking
+  // the tithe row paid failed with "COULDN'T SAVE").
   function titheBillView(s) {
-    return { id: "__tithe__", label: "TITHE", amount: tithe(s), dueDateOfMonth: 0, isTithe: true };
+    return { id: "tithe", label: "TITHE", amount: tithe(s), dueDateOfMonth: 0, isTithe: true };
   }
   function billsSubtotal(s) {
     return (s.bills || []).reduce((a, b) => a + num(b.amount), 0);
@@ -3041,7 +3044,7 @@ const UI = (() => {
     (s.spendingCategories||[]).forEach(c => catLookup[c.id] = c.label);
     (s.bills||[]).forEach(b => catLookup[b.id] = b.label);
     (s.debts||[]).forEach(d => catLookup[d.id] = d.label);
-    catLookup["__tithe__"] = "TITHE";
+    catLookup["tithe"] = "TITHE";
     // Clamp the viewed month: never past currentMonth (no future browsing) and
     // never earlier than the oldest transaction month in the doc.
     const allTxnMonths = (s.transactions||[])
@@ -4506,15 +4509,28 @@ const UI = (() => {
     // the list (not just zeroed) while the Settings on/off switch is off.
     const titheOn = BudgetEngine.titheEnabled(s);
     const titheAmt = BudgetEngine.tithe(s);
-    const titheRec = paidMap["__tithe__"];
+    const titheRec = paidMap["tithe"];
     const titheIsPaid = titheOn && !!(titheRec && titheRec.paid);
     const titheFromImport = titheIsPaid && titheRec.source === "import";
     // Per-income-source breakdown, shown only when the row is expanded. Each
-    // sub-row gets its own independent checkmark ("__tithe__:<incomeId>"),
+    // sub-row gets its own independent checkmark ("tithe:<incomeId>"),
     // separate from the total's own checkmark, which stays put either way.
     const titheSources = s.income || [];
+    const titheSubPaidTotal = titheSources.reduce((a, i) => {
+      const subRec = paidMap["tithe:" + i.id];
+      return a + (subRec && subRec.paid ? (Number(subRec.amount) || 0) : 0);
+    }, 0);
+    // The parent checkmark means "the whole thing, paid as one lump" and
+    // wins outright so a paid parent plus some ticked sub-rows never double
+    // counts; otherwise whatever sub-rows are ticked contribute their share.
+    const titheEffectivePaid = titheIsPaid ? titheAmt : titheSubPaidTotal;
+    const titheFullyCleared = titheOn && (titheIsPaid ||
+      (titheSources.length > 0 && titheSources.every(i => {
+        const r = paidMap["tithe:" + i.id];
+        return !!(r && r.paid);
+      })));
     const titheSubRowsHtml = (titheOn && titheExpanded) ? (titheSources.length ? titheSources.map(i => {
-      const subId = "__tithe__:" + i.id;
+      const subId = "tithe:" + i.id;
       const subRec = paidMap[subId];
       const subPaid = !!(subRec && subRec.paid);
       const subAmt = (Number(i.amount) || 0) * BudgetEngine.tithePercent(s) / 100;
@@ -4536,7 +4552,7 @@ const UI = (() => {
           ${Util.esc(Util.fmtMoney(titheAmt, 0))}
           <span style="opacity:0.75;">${BudgetEngine.tithePercent(s)}%</span>
         </div>
-        <button class="txn-check ${titheIsPaid ? "checked" : ""}" data-action="bill-toggle" data-id="__tithe__" aria-label="PAID" data-learn="MARK YOUR TITHE AS GIVEN FOR THIS MONTH. STATUS TRACKING ONLY — SAFE TO SPEND ALREADY ACCOUNTS FOR TITHE AUTOMATICALLY AS INCOME IS MARKED RECEIVED."></button>
+        <button class="txn-check ${titheIsPaid ? "checked" : ""}" data-action="bill-toggle" data-id="tithe" aria-label="PAID" data-learn="MARK YOUR TITHE AS GIVEN FOR THIS MONTH. STATUS TRACKING ONLY — SAFE TO SPEND ALREADY ACCOUNTS FOR TITHE AUTOMATICALLY AS INCOME IS MARKED RECEIVED."></button>
       </div>
       ${titheSubRowsHtml}
       <div style="margin-top:-4px;">
@@ -4627,13 +4643,13 @@ const UI = (() => {
     // A card's contribution is capped at its minimum: this line is progress
     // toward what's owed, so overpaying a card shouldn't push it past 100%.
     // The full amount paid still shows on the row and in the debt balance.
-    const headerPaidTotal = paidTotal + (titheIsPaid ? titheAmt : 0) + cardBillItems.reduce((a, c) => {
+    const headerPaidTotal = paidTotal + (titheOn ? titheEffectivePaid : 0) + cardBillItems.reduce((a, c) => {
       if (!c.paidTxn) return a;
       return a + Math.min(Number(c.paidTxn.amount) || 0, Number(c.amount) || 0);
     }, 0);
     const headerExpectedTotal = expectedTotal + titheAmt + cardBillItems.reduce(
       (a, c) => a + (Number(c.amount) || 0), 0);
-    const headerPaidCount = paidCount + (titheIsPaid ? 1 : 0) + cardBillItems.filter(c => c.paidTxn).length;
+    const headerPaidCount = paidCount + (titheFullyCleared ? 1 : 0) + cardBillItems.filter(c => c.paidTxn).length;
     const headerItemCount = bills.length + (titheOn ? 1 : 0) + cardBillItems.length;
 
     // Same add-form machinery Settings uses, surfaced at the end of each group.
@@ -4799,13 +4815,13 @@ const UI = (() => {
     } else {
       // Tithe isn't a stored bill (see BudgetEngine.titheBillView), so it needs
       // its own amount source instead of the s.bills lookup below. Its
-      // per-income-source breakdown rows use "__tithe__:<incomeId>" ids, each
+      // per-income-source breakdown rows use "tithe:<incomeId>" ids, each
       // independently trackable from the one total checkmark.
       let amount;
-      if (billId === "__tithe__") {
+      if (billId === "tithe") {
         amount = BudgetEngine.tithe(s);
-      } else if (billId.indexOf("__tithe__:") === 0) {
-        const incomeId = billId.slice("__tithe__:".length);
+      } else if (billId.indexOf("tithe:") === 0) {
+        const incomeId = billId.slice("tithe:".length);
         const src = (s.income || []).find(i => i.id === incomeId);
         if (!src) return;
         amount = (Number(src.amount) || 0) * BudgetEngine.tithePercent(s) / 100;
