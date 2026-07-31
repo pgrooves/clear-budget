@@ -1893,6 +1893,9 @@ const UI = (() => {
 
   // Inline tithe editor state (replaces prompt() dialog)
   const titheEdit = { open: false, value: "" };
+  // Whether the Bills tab's tithe row is expanded into its per-income-source
+  // breakdown. Pure UI state, not persisted — collapses again on next reload.
+  let titheExpanded = false;
 
   // New Month overlay state
   let newMonthOpen = false;
@@ -4506,10 +4509,27 @@ const UI = (() => {
     const titheRec = paidMap["__tithe__"];
     const titheIsPaid = titheOn && !!(titheRec && titheRec.paid);
     const titheFromImport = titheIsPaid && titheRec.source === "import";
+    // Per-income-source breakdown, shown only when the row is expanded. Each
+    // sub-row gets its own independent checkmark ("__tithe__:<incomeId>"),
+    // separate from the total's own checkmark, which stays put either way.
+    const titheSources = s.income || [];
+    const titheSubRowsHtml = (titheOn && titheExpanded) ? (titheSources.length ? titheSources.map(i => {
+      const subId = "__tithe__:" + i.id;
+      const subRec = paidMap[subId];
+      const subPaid = !!(subRec && subRec.paid);
+      const subAmt = (Number(i.amount) || 0) * BudgetEngine.tithePercent(s) / 100;
+      return `
+        <div class="inc-row" style="padding-left:16px;">
+          <div class="inc-label" style="font-size:13px; opacity:0.85;">${Util.esc(i.label)}</div>
+          <div class="inc-amt" style="font-size:13px;">${Util.esc(Util.fmtMoney(subAmt, 2))}</div>
+          <button class="txn-check ${subPaid ? "checked" : ""}" data-action="bill-toggle" data-id="${Util.esc(subId)}" aria-label="PAID" data-learn="MARK THIS INCOME SOURCE'S SHARE OF YOUR TITHE AS GIVEN. INDEPENDENT OF THE TOTAL CHECKMARK ABOVE — TRACKING ONLY, EITHER WAY."></button>
+        </div>`;
+    }).join("") : `<div class="meta" style="padding-left:16px;">NO INCOME SOURCES YET</div>`) : "";
+
     const titheRowHtml = titheOn ? `
       <div class="inc-row">
         <div>
-          <div class="inc-label">TITHE</div>
+          <button class="inc-label" style="background:none; border:0; padding:0; text-align:left; cursor:pointer; color:inherit; font:inherit;" data-action="tithe-expand-toggle" aria-label="${titheExpanded ? "COLLAPSE" : "EXPAND"} TITHE BREAKDOWN" data-learn="EXPAND TO SEE EACH INCOME SOURCE'S SHARE OF YOUR TITHE, EACH WITH ITS OWN CHECKMARK. TAP AGAIN TO COLLAPSE. THE TOTAL CHECKMARK ON THE RIGHT STAYS EITHER WAY.">${titheExpanded ? "▾" : "▸"} TITHE</button>
           ${titheFromImport ? `<div class="meta">PAID ${Util.esc(Util.fmtMoney(Number(titheRec.amount)||0, 2))} ON ${Util.esc(Util.fmtDateShort(titheRec.paidDate))} · FROM IMPORT</div>` : ""}
         </div>
         <div class="inc-amt">
@@ -4518,6 +4538,7 @@ const UI = (() => {
         </div>
         <button class="txn-check ${titheIsPaid ? "checked" : ""}" data-action="bill-toggle" data-id="__tithe__" aria-label="PAID" data-learn="MARK YOUR TITHE AS GIVEN FOR THIS MONTH. STATUS TRACKING ONLY — SAFE TO SPEND ALREADY ACCOUNTS FOR TITHE AUTOMATICALLY AS INCOME IS MARKED RECEIVED."></button>
       </div>
+      ${titheSubRowsHtml}
       <div style="margin-top:-4px;">
         <button class="link" style="padding:0;min-height:auto;font-size:11px;letter-spacing:0.14em;" data-action="edit-tithe" data-learn="EDIT YOUR TITHE RATE. IT'S THE SAME RATE SETTINGS EDITS, SO CHANGES SHOW IN BOTH PLACES.">EDIT →</button>
       </div>
@@ -4673,6 +4694,9 @@ const UI = (() => {
     root.querySelectorAll("[data-action=bill-toggle]").forEach(el => {
       el.addEventListener("click", () => toggleBillPaid(s, el.dataset.id));
     });
+    root.querySelectorAll("[data-action=tithe-expand-toggle]").forEach(el => {
+      el.addEventListener("click", () => { titheExpanded = !titheExpanded; render(); });
+    });
     bindCardMinEvents(s);
     // The ADD BILL / ADD SAVINGS links reuse Settings' add-form machinery, and
     // the tithe row's EDIT link reuses Settings' rate editor.
@@ -4774,10 +4798,17 @@ const UI = (() => {
       delete forMonth[billId];
     } else {
       // Tithe isn't a stored bill (see BudgetEngine.titheBillView), so it needs
-      // its own amount source instead of the s.bills lookup below.
+      // its own amount source instead of the s.bills lookup below. Its
+      // per-income-source breakdown rows use "__tithe__:<incomeId>" ids, each
+      // independently trackable from the one total checkmark.
       let amount;
       if (billId === "__tithe__") {
         amount = BudgetEngine.tithe(s);
+      } else if (billId.indexOf("__tithe__:") === 0) {
+        const incomeId = billId.slice("__tithe__:".length);
+        const src = (s.income || []).find(i => i.id === incomeId);
+        if (!src) return;
+        amount = (Number(src.amount) || 0) * BudgetEngine.tithePercent(s) / 100;
       } else {
         const bill = (s.bills || []).find(b => b.id === billId);
         if (!bill) return;
