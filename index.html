@@ -1005,8 +1005,21 @@ const BudgetEngine = (() => {
       .filter(e => e && e.month === m)
       .reduce((a, e) => a + num(e.amount), 0);
   }
+  // Only counts incomeLog entries not explicitly opted out via the LOG INCOME
+  // form's TITHE? chip (entry.tithe === false). Older/imported entries with no
+  // flag at all still count, same as before this existed.
   function titheOnReceived(s) {
-    return receivedIncome(s) * tithePercent(s) / 100;
+    const m = s.currentMonth;
+    const titheableReceived = (s.incomeLog || [])
+      .filter(e => e && e.month === m && e.tithe !== false)
+      .reduce((a, e) => a + num(e.amount), 0);
+    return titheableReceived * tithePercent(s) / 100;
+  }
+  // Synthetic bill-shaped view of tithe for the Bills tab / import matching —
+  // never stored in s.bills, so there's one source of truth (settings.tithePercent
+  // + income) instead of a duplicated record that could drift from it.
+  function titheBillView(s) {
+    return { id: "__tithe__", label: "TITHE", amount: tithe(s), dueDateOfMonth: 0, isTithe: true };
   }
   function billsSubtotal(s) {
     return (s.bills || []).reduce((a, b) => a + num(b.amount), 0);
@@ -1118,7 +1131,7 @@ const BudgetEngine = (() => {
 
   return {
     num,
-    totalIncome, receivedIncome, tithePercent, tithe, titheOnReceived,
+    totalIncome, receivedIncome, tithePercent, tithe, titheOnReceived, titheBillView,
     billsSubtotal, totalBills, totalDebtMins,
     totalUnpaidCredit, safeToSpend, spendingBudgetedTotal, totalBudgeted, extraForDebt,
     categorySpent, rolloverAmount, categoryRemaining, personSpent,
@@ -1823,7 +1836,7 @@ const UI = (() => {
   // switching never disturbs a half-filled add form on the other side.
   let billsSubTab = "bills"; // "bills" | "savings"
   // One-off income only; set-up paychecks are cleared from the expected list.
-  const incomeForm = { amount: "", person: "JOINT", note: "", bankId: null };
+  const incomeForm = { amount: "", person: "JOINT", note: "", bankId: null, tithe: "yes" };
   // Inline edit of an expected-income amount on the LOG INCOME sub-tab.
   // { id, value } while one row is open, otherwise null. Touches i.amount only;
   // a cleared entry's recorded actual lives in incomeLog and is never involved.
@@ -2829,6 +2842,8 @@ const UI = (() => {
     const credit = BudgetEngine.totalUnpaidCredit(s);
     const received = BudgetEngine.receivedIncome(s);
     const expectedIncome = BudgetEngine.totalIncome(s);
+    const titheExpected = BudgetEngine.tithe(s);
+    const titheReceived = BudgetEngine.titheOnReceived(s);
     const heroDanger = safe < 0 ? "danger" : "";
 
     // Per-person spend (was Dashboard-only).
@@ -2889,6 +2904,7 @@ const UI = (() => {
         <div class="sub-label" data-learn="SUB-LABEL FOR THE SAFE TO SPEND NUMBER BELOW.">SAFE TO SPEND</div>
         <div class="hero ${heroDanger}" data-learn="WHAT'S TRULY LEFT TO SPEND THIS MONTH AFTER TITHE, BILLS, DEBT MINIMUMS, AND UNPAID CREDIT ARE SET ASIDE. GOES RED WHEN NEGATIVE.">${Util.esc(Util.fmtMoney(safe, 0))}</div>
         <div class="sub-label" style="margin-top:8px;" data-learn="HOW MUCH OF YOUR EXPECTED INCOME HAS ACTUALLY ARRIVED THIS MONTH. ONLY RECEIVED INCOME COUNTS TOWARD SAFE TO SPEND. MARK INCOME AS RECEIVED ON THE LOG INCOME TAB."><span class="stat-lbl">RECEIVED</span> <span class="stat-val">${Util.esc(Util.fmtMoney(received, 0))}</span> <span class="stat-lbl">OF</span> <span class="stat-val">${Util.esc(Util.fmtMoney(expectedIncome, 0))}</span> <span class="stat-lbl">EXPECTED</span></div>
+        <div class="sub-label" style="margin-top:8px;" data-learn="HOW MUCH OF YOUR TITHE HAS BEEN SET ASIDE SO FAR, BASED ON INCOME MARKED RECEIVED THIS MONTH, OF THE FULL TITHE EXPECTED ON YOUR TOTAL EXPECTED INCOME."><span class="stat-lbl">TITHED</span> <span class="stat-val">${Util.esc(Util.fmtMoney(titheReceived, 0))}</span> <span class="stat-lbl">OF</span> <span class="stat-val">${Util.esc(Util.fmtMoney(titheExpected, 0))}</span></div>
         <div class="sub-label" style="margin-top:8px;" data-learn="TOTAL BUDGETED = TITHE + BILLS + DEBT MINIMUMS + SPENDING BUDGETS, FOR YOUR FULL EXPECTED MONTH, SO IT DOESN'T MOVE AS PAYCHECKS LAND. ON CREDIT = TOTAL OF THIS MONTH'S CREDIT TRANSACTIONS THAT AREN'T PAID OFF YET."><span class="stat-val">${Util.esc(Util.fmtMoney(budgeted, 0))}</span> <span class="stat-lbl">BUDGETED ·</span> <span class="stat-val">${Util.esc(Util.fmtMoney(credit, 0))}</span> <span class="stat-lbl">ON CREDIT</span></div>
         ${peopleHtml}
         ${dueSoonHtml}
@@ -2982,6 +2998,7 @@ const UI = (() => {
     (s.spendingCategories||[]).forEach(c => catLookup[c.id] = c.label);
     (s.bills||[]).forEach(b => catLookup[b.id] = b.label);
     (s.debts||[]).forEach(d => catLookup[d.id] = d.label);
+    catLookup["__tithe__"] = "TITHE";
     // Clamp the viewed month: never past currentMonth (no future browsing) and
     // never earlier than the oldest transaction month in the doc.
     const allTxnMonths = (s.transactions||[])
@@ -3094,11 +3111,14 @@ const UI = (() => {
                 <div class="inc-label">${Util.esc(i.label)}</div>
                 ${showActual ? `<div class="meta">RECEIVED ${Util.esc(Util.fmtMoney(actual, 2))}</div>` : ""}
               </div>
-              <div class="inc-amt">${
-                (incExpEdit && incExpEdit.id === i.id)
-                  ? `<input class="wiz-amt" id="inc-exp-input" data-action="inc-exp-input" data-id="${Util.esc(i.id)}" inputmode="decimal" value="${Util.esc(incExpEdit.value)}" aria-label="EXPECTED AMOUNT">`
-                  : `<button class="link" style="padding:0;min-height:auto;text-decoration:none;border-bottom:1px solid rgba(26,58,140,0.4);font-size:15px;font-weight:400;letter-spacing:inherit;" data-action="inc-exp-edit" data-id="${Util.esc(i.id)}" data-learn="TAP TO CHANGE WHAT YOU EXPECT FROM THIS SOURCE. IT SAVES WHEN YOU PRESS ENTER OR TAP AWAY. IT ONLY MOVES THE EXPECTED FIGURE; IF THIS SOURCE IS ALREADY MARKED CLEARED, THE AMOUNT YOU ACTUALLY RECEIVED IS LEFT ALONE.">${Util.esc(Util.fmtMoney(expected, 0))}</button>`
-              }</div>
+              <div>
+                <div class="inc-amt">${
+                  (incExpEdit && incExpEdit.id === i.id)
+                    ? `<input class="wiz-amt" id="inc-exp-input" data-action="inc-exp-input" data-id="${Util.esc(i.id)}" inputmode="decimal" value="${Util.esc(incExpEdit.value)}" aria-label="EXPECTED AMOUNT">`
+                    : `<button class="link" style="padding:0;min-height:auto;text-decoration:none;border-bottom:1px solid rgba(26,58,140,0.4);font-size:15px;font-weight:400;letter-spacing:inherit;" data-action="inc-exp-edit" data-id="${Util.esc(i.id)}" data-learn="TAP TO CHANGE WHAT YOU EXPECT FROM THIS SOURCE. IT SAVES WHEN YOU PRESS ENTER OR TAP AWAY. IT ONLY MOVES THE EXPECTED FIGURE; IF THIS SOURCE IS ALREADY MARKED CLEARED, THE AMOUNT YOU ACTUALLY RECEIVED IS LEFT ALONE.">${Util.esc(Util.fmtMoney(expected, 0))}</button>`
+                }</div>
+                <button class="link" style="padding:0;min-height:auto;display:block;font-size:11px;opacity:0.75;text-align:right;" data-action="goto-tithe-bill" data-learn="THIS SOURCE'S SHARE OF YOUR TITHE. TAP TO SEE IT ON THE BILLS TAB, WHERE THE RATE IS EDITABLE.">(TITHE: ${Util.esc(Util.fmtMoney(expected * BudgetEngine.tithePercent(s) / 100, 2))})</button>
+              </div>
               <button class="txn-check ${entry ? "checked" : ""}" data-action="inc-toggle" data-id="${Util.esc(i.id)}" aria-label="CLEARED" data-learn="MARK THIS INCOME AS RECEIVED FOR THIS MONTH. CHECKING IT RAISES SAFE TO SPEND BY THE AMOUNT MINUS YOUR TITHE PERCENTAGE. UNCHECKING UNDOES IT EXACTLY."></button>
             </div>
             <div style="margin-top:-4px;">
@@ -3117,6 +3137,13 @@ const UI = (() => {
         </div>
         ${incPersonChips}
         ${incBankChipsHtml}
+        <div data-learn="WHETHER THIS MONEY COUNTS TOWARD YOUR TITHE. DEFAULTS TO YES; PICK NO FOR SOMETHING LIKE A GIFT OR REIMBURSEMENT YOU DON'T TITHE ON.">
+          <div class="sub-label">TITHE?</div>
+          <div class="chips">
+            <button class="chip ${incomeForm.tithe !== "no" ? "active" : ""}" data-action="inc-pick-tithe" data-tithe="yes">YES</button>
+            <button class="chip ${incomeForm.tithe === "no" ? "active" : ""}" data-action="inc-pick-tithe" data-tithe="no">NO</button>
+          </div>
+        </div>
         <div>
           <div class="sub-label">NOTE</div>
           <input class="underline" id="inc-note" placeholder="WHERE DID IT COME FROM?" value="${Util.esc(incomeForm.note)}" maxlength="60" data-learn="WHERE THIS MONEY CAME FROM, LIKE 'BIRTHDAY GIFT' OR 'SIDE JOB'. THIS BECOMES THE LABEL ON THE ENTRY. YOUR SET-UP PAYCHECKS ARE TICKED OFF IN THE LIST BELOW INSTEAD.">
@@ -3137,6 +3164,7 @@ const UI = (() => {
           ${addForms.income ? renderAddForm("income") : `<button class="link" data-action="show-add" data-kind="income" data-learn="ADD AN EXPECTED INCOME SOURCE. IT'S THE SAME LIST SETTINGS KEEPS, SO IT SHOWS UP IN BOTH PLACES.">* ADD INCOME →</button>`}
         </div>
         <div class="sub-label" style="margin-top:16px;">RECEIVED ${Util.esc(Util.fmtMoney(received, 0))} OF ${Util.esc(Util.fmtMoney(expectedIncome, 0))} EXPECTED</div>
+        <div class="sub-label" style="margin-top:4px;">TITHED ${Util.esc(Util.fmtMoney(BudgetEngine.titheOnReceived(s), 0))} OF ${Util.esc(Util.fmtMoney(BudgetEngine.tithe(s), 0))}</div>
       </div>`;
 
     return `
@@ -3290,11 +3318,23 @@ const UI = (() => {
     root.querySelectorAll("[data-action=inc-pick-person]").forEach(el => {
       el.addEventListener("click", () => { incomeForm.person = el.dataset.person; render(); });
     });
+    root.querySelectorAll("[data-action=inc-pick-tithe]").forEach(el => {
+      el.addEventListener("click", () => { incomeForm.tithe = el.dataset.tithe; render(); });
+    });
     root.querySelectorAll("[data-action=inc-log-it]").forEach(el => {
       el.addEventListener("click", () => submitIncome(s));
     });
     root.querySelectorAll("[data-action=inc-toggle]").forEach(el => {
       el.addEventListener("click", () => toggleIncomeCleared(s, el.dataset.id));
+    });
+    // Each income row's "(TITHE: $X)" note links to the Bills tab, where the
+    // tithe row (and its EDIT link for the rate) lives.
+    root.querySelectorAll("[data-action=goto-tithe-bill]").forEach(el => {
+      el.addEventListener("click", () => {
+        currentTab = "bills";
+        billsSubTab = "bills";
+        render();
+      });
     });
 
     root.querySelectorAll("[data-action=pick-cat]").forEach(el => {
@@ -3934,12 +3974,14 @@ const UI = (() => {
       person: person,
       note: note.toUpperCase().slice(0, 60),
       bankId: incomeForm.bankId || null,
+      tithe: incomeForm.tithe !== "no",
       source: "manual"
     };
     try {
       await DataService.update({ incomeLog: DataService.appendTxns(entry) });
       incomeForm.amount = "";
       incomeForm.note = "";
+      incomeForm.tithe = "yes";
       formErrors.income = "";
       render();
     } catch (e) { alert("COULDN'T SAVE; CHECK CONNECTION"); console.warn(e); }
@@ -3970,6 +4012,7 @@ const UI = (() => {
           month: s.currentMonth,
           person: isCouple ? "JOINT" : (s.settings.names[0] || "ME").toUpperCase(),
           note: "",
+          tithe: true,
           source: "manual"
         };
         await DataService.update({ incomeLog: DataService.appendTxns(entry) });
@@ -4383,6 +4426,21 @@ const UI = (() => {
   // Status tracking only. Checking a bill off deliberately does NOT touch
   // Safe to Spend, Budgeted, or any category total — bills are already fully
   // subtracted as budgeted amounts, and nothing here writes a transaction.
+  // Shared by Settings and the Bills tab, so editing the rate from either
+  // place shows the same inline form and writes the same settings.tithePercent.
+  function renderTitheEditForm() {
+    return `
+      <div class="inline-form">
+        <div class="sub-label">EDIT TITHE RATE</div>
+        <div class="field"><label>PERCENT (0-100)</label><input id="tithe-input" value="${Util.esc(titheEdit.value)}" inputmode="decimal"></div>
+        ${formErrors.tithe ? `<div class="text-danger meta">${Util.esc(formErrors.tithe)}</div>` : ""}
+        <div class="row-actions">
+          <button class="cta ghost" data-action="cancel-tithe">× CANCEL</button>
+          <button class="cta" data-action="save-tithe">→ SAVE</button>
+        </div>
+      </div>`;
+  }
+
   function billsBodyHtml(s) {
     const month = s.currentMonth;
     const paidMap = (s.billsPaid || {})[month] || {};
@@ -4396,6 +4454,31 @@ const UI = (() => {
     }, 0);
     const paidCount = bills.filter(b => paidMap[b.id] && paidMap[b.id].paid).length;
     const expectedTotal = BudgetEngine.totalBills(s);
+
+    // Tithe rides along as the first row of the BILLS list — same idea as the
+    // credit-card rows below: synthesized on the fly, not a stored s.bills
+    // entry, so there's exactly one source of truth (settings.tithePercent +
+    // income) instead of a record that could drift from it.
+    const titheAmt = BudgetEngine.tithe(s);
+    const titheRec = paidMap["__tithe__"];
+    const titheIsPaid = !!(titheRec && titheRec.paid);
+    const titheFromImport = titheIsPaid && titheRec.source === "import";
+    const titheRowHtml = `
+      <div class="inc-row">
+        <div>
+          <div class="inc-label">TITHE</div>
+          ${titheFromImport ? `<div class="meta">PAID ${Util.esc(Util.fmtMoney(Number(titheRec.amount)||0, 2))} ON ${Util.esc(Util.fmtDateShort(titheRec.paidDate))} · FROM IMPORT</div>` : ""}
+        </div>
+        <div class="inc-amt">
+          ${Util.esc(Util.fmtMoney(titheAmt, 0))}
+          <span style="opacity:0.75;">${BudgetEngine.tithePercent(s)}%</span>
+        </div>
+        <button class="txn-check ${titheIsPaid ? "checked" : ""}" data-action="bill-toggle" data-id="__tithe__" aria-label="PAID" data-learn="MARK YOUR TITHE AS GIVEN FOR THIS MONTH. STATUS TRACKING ONLY — SAFE TO SPEND ALREADY ACCOUNTS FOR TITHE AUTOMATICALLY AS INCOME IS MARKED RECEIVED."></button>
+      </div>
+      <div style="margin-top:-4px;">
+        <button class="link" style="padding:0;min-height:auto;font-size:11px;letter-spacing:0.14em;" data-action="edit-tithe" data-learn="EDIT YOUR TITHE RATE. IT'S THE SAME RATE SETTINGS EDITS, SO CHANGES SHOW IN BOTH PLACES.">EDIT →</button>
+      </div>
+      ${titheEdit.open ? renderTitheEditForm() : ""}`;
 
     const rowFor = (b) => {
       const rec = paidMap[b.id];
@@ -4480,14 +4563,14 @@ const UI = (() => {
     // A card's contribution is capped at its minimum: this line is progress
     // toward what's owed, so overpaying a card shouldn't push it past 100%.
     // The full amount paid still shows on the row and in the debt balance.
-    const headerPaidTotal = paidTotal + cardBillItems.reduce((a, c) => {
+    const headerPaidTotal = paidTotal + (titheIsPaid ? titheAmt : 0) + cardBillItems.reduce((a, c) => {
       if (!c.paidTxn) return a;
       return a + Math.min(Number(c.paidTxn.amount) || 0, Number(c.amount) || 0);
     }, 0);
-    const headerExpectedTotal = expectedTotal + cardBillItems.reduce(
+    const headerExpectedTotal = expectedTotal + titheAmt + cardBillItems.reduce(
       (a, c) => a + (Number(c.amount) || 0), 0);
-    const headerPaidCount = paidCount + cardBillItems.filter(c => c.paidTxn).length;
-    const headerItemCount = bills.length + cardBillItems.length;
+    const headerPaidCount = paidCount + (titheIsPaid ? 1 : 0) + cardBillItems.filter(c => c.paidTxn).length;
+    const headerItemCount = bills.length + 1 + cardBillItems.length;
 
     // Same add-form machinery Settings uses, surfaced at the end of each group.
     const addLink = (kind, label) => addForms[kind]
@@ -4502,15 +4585,16 @@ const UI = (() => {
     // rather than as a heading above the rows. Only the rows scroll: the column
     // headings and the add link stay put, so the headings can't scroll away
     // from the rows they describe and the add link is always reachable.
-    const groupHtml = (title, items, kind, addLabel, extraRows) => `
+    const groupHtml = (title, items, kind, addLabel, extraRows, leadingRows) => `
       <div style="margin-top:24px;">
-        ${(items.length || extraRows) ? `
+        ${(items.length || extraRows || leadingRows) ? `
           <div class="inc-head">
             <div class="sub-label">NAME</div>
             <div class="sub-label">AMOUNT</div>
             <div class="sub-label">PAID?</div>
           </div>
           <div class="txn-scroll" data-scroll-key="bills-scroll-${Util.esc(kind)}" data-learn="${Util.esc(title)} FOR THIS MONTH. SCROLL WITHIN THIS BOX.">
+            ${leadingRows || ""}
             ${items.map(rowFor).join("")}
             ${extraRows || ""}
           </div>
@@ -4525,7 +4609,7 @@ const UI = (() => {
       </div>
       ${billsSubTab === "savings"
         ? groupHtml("SAVINGS", savingsItems, "savings", "SAVINGS")
-        : groupHtml("BILLS", billItems, "bill", "BILL", cardRowsHtml)}`;
+        : groupHtml("BILLS", billItems, "bill", "BILL", cardRowsHtml, titheRowHtml)}`;
 
     // The MONTH OF line and the "→ BILLS" section label used to open this block.
     // Both are redundant now that the shared lime block above carries the month
@@ -4547,8 +4631,44 @@ const UI = (() => {
       el.addEventListener("click", () => toggleBillPaid(s, el.dataset.id));
     });
     bindCardMinEvents(s);
-    // The ADD BILL / ADD SAVINGS links reuse Settings' add-form machinery.
+    // The ADD BILL / ADD SAVINGS links reuse Settings' add-form machinery, and
+    // the tithe row's EDIT link reuses Settings' rate editor.
     bindAddFormEvents(s);
+    bindTitheEvents(s);
+  }
+
+  // Shared by the Settings screen and the Bills tab so tithe is editable from
+  // wherever it shows up, against the same settings.tithePercent.
+  function bindTitheEvents(s) {
+    root.querySelectorAll("[data-action=edit-tithe]").forEach(el => {
+      el.addEventListener("click", () => {
+        titheEdit.open = true;
+        titheEdit.value = String(BudgetEngine.tithePercent(s));
+        formErrors.tithe = "";
+        render();
+      });
+    });
+    const titheInput = root.querySelector("#tithe-input");
+    if (titheInput) titheInput.addEventListener("input", e => { titheEdit.value = e.target.value; });
+    root.querySelectorAll("[data-action=cancel-tithe]").forEach(el => {
+      el.addEventListener("click", () => { titheEdit.open = false; formErrors.tithe = ""; render(); });
+    });
+    root.querySelectorAll("[data-action=save-tithe]").forEach(el => {
+      el.addEventListener("click", async () => {
+        formErrors.tithe = "";
+        const n = parseFloat(titheEdit.value);
+        if (!isFinite(n) || n < 0 || n > 100) {
+          formErrors.tithe = "ENTER A NUMBER 0-100";
+          render();
+          return;
+        }
+        try {
+          await DataService.update({ "settings.tithePercent": n });
+          titheEdit.open = false;
+          render();
+        } catch (e) { alert("COULDN'T SAVE"); console.warn(e); }
+      });
+    });
   }
 
   // Shared by the Settings screen and the Bills tab so both surface the same
@@ -4596,12 +4716,20 @@ const UI = (() => {
     if (forMonth[billId] && forMonth[billId].paid) {
       delete forMonth[billId];
     } else {
-      const bill = (s.bills || []).find(b => b.id === billId);
-      if (!bill) return;
+      // Tithe isn't a stored bill (see BudgetEngine.titheBillView), so it needs
+      // its own amount source instead of the s.bills lookup below.
+      let amount;
+      if (billId === "__tithe__") {
+        amount = BudgetEngine.tithe(s);
+      } else {
+        const bill = (s.bills || []).find(b => b.id === billId);
+        if (!bill) return;
+        amount = Number(bill.amount) || 0;
+      }
       forMonth[billId] = {
         paid: true,
         paidDate: Util.todayISO(),
-        amount: Math.round((Number(bill.amount) || 0) * 100) / 100,
+        amount: Math.round(amount * 100) / 100,
         source: "manual",
         txnId: null
       };
@@ -5218,10 +5346,10 @@ const UI = (() => {
 
           <div class="settings-group" id="sg-bills" data-learn="BILLS & FIXED EXPENSES. RECURRING PAYMENTS (RENT, INTERNET, ETC.) AND SAVINGS TRANSFERS. THESE ARE SUBTRACTED FROM SAFE TO SPEND EVERY MONTH.">
             <h3>BILLS &amp; FIXED EXPENSES</h3>
-            <div class="list-item locked">
-              <span>TITHE · 10% OF INCOME</span>
+            <div class="list-item">
+              <span>TITHE · ${BudgetEngine.tithePercent(s)}% OF INCOME</span>
               <span>${Util.esc(Util.fmtMoney(titheAmt,0))}</span>
-              <span class="locked-tag">GIVING · LOCKED</span>
+              <button class="link" data-action="edit-tithe" data-learn="EDIT YOUR TITHE RATE. SAME RATE AS THE TITHING SECTION ABOVE; THIS OPENS THAT SAME EDITOR.">EDIT →</button>
             </div>
             ${billItems}
             ${addForms.bill ? renderAddForm("bill") : `<button class="link" data-action="show-add" data-kind="bill">+ ADD BILL →</button>`}
@@ -6302,35 +6430,7 @@ const UI = (() => {
     root.querySelectorAll("[data-action=text-code]").forEach(el => {
       el.addEventListener("click", () => textHouseholdCode(el.dataset.code));
     });
-    root.querySelectorAll("[data-action=edit-tithe]").forEach(el => {
-      el.addEventListener("click", () => {
-        titheEdit.open = true;
-        titheEdit.value = String(BudgetEngine.tithePercent(s));
-        formErrors.tithe = "";
-        render();
-      });
-    });
-    const titheInput = root.querySelector("#tithe-input");
-    if (titheInput) titheInput.addEventListener("input", e => { titheEdit.value = e.target.value; });
-    root.querySelectorAll("[data-action=cancel-tithe]").forEach(el => {
-      el.addEventListener("click", () => { titheEdit.open = false; formErrors.tithe = ""; render(); });
-    });
-    root.querySelectorAll("[data-action=save-tithe]").forEach(el => {
-      el.addEventListener("click", async () => {
-        formErrors.tithe = "";
-        const n = parseFloat(titheEdit.value);
-        if (!isFinite(n) || n < 0 || n > 100) {
-          formErrors.tithe = "ENTER A NUMBER 0-100";
-          render();
-          return;
-        }
-        try {
-          await DataService.update({ "settings.tithePercent": n });
-          titheEdit.open = false;
-          render();
-        } catch (e) { alert("COULDN'T SAVE"); console.warn(e); }
-      });
-    });
+    bindTitheEvents(s);
     bindAddFormEvents(s);
     root.querySelectorAll("[data-action=show-add-debt]").forEach(el => {
       el.addEventListener("click", () => {
@@ -6872,15 +6972,20 @@ const UI = (() => {
       let rowCatType = categoryType;
       let rowCatAuto = !!mappedCat;
       if (!skipped && !isDeposit) {
+        // Tithe rides along as a matchable candidate here too (see
+        // BudgetEngine.titheBillView) so a bank transfer described like
+        // "TITHE" or "TITHE.LY" gets recognized the same way a real bill
+        // would, without tithe ever being stored as one.
+        const billsForMatch = (s.bills || []).concat([BudgetEngine.titheBillView(s)]);
         const learnedB = (s.billMap || {})[merchantKey];
         const learnedBill = learnedB && learnedB !== "__none__"
-          ? (s.bills || []).find(b => b.id === learnedB) : null;
+          ? billsForMatch.find(b => b.id === learnedB) : null;
         if (learnedBill) {
           const lbl = (learnedBill.label || "").toUpperCase();
           billMatch = { billId: learnedBill.id, label: lbl, tier: "exact", learned: true };
           if (!rowCatId) { rowCatId = learnedBill.id; rowCatType = "bill"; rowCatAuto = true; }
         } else if (learnedB !== "__none__") {
-          const m = matchSettingsItem({ merchantKey, amount: absAmt }, s.bills);
+          const m = matchSettingsItem({ merchantKey, amount: absAmt }, billsForMatch);
           if (m) {
             const lbl = (m.item.label || "").toUpperCase();
             if (m.tier === "exact") {
@@ -7116,6 +7221,7 @@ const UI = (() => {
         month: monthYM,
         person: r.person,
         note: "",
+        tithe: true,
         source: "import"
       };
       if (r.merchantKey) entry.merchantKey = r.merchantKey;
