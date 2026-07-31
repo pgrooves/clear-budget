@@ -993,7 +993,19 @@ const BudgetEngine = (() => {
   function tithePercent(s) {
     return num(s.settings && s.settings.tithePercent != null ? s.settings.tithePercent : 10);
   }
+  // Master on/off switch, set during setup or flipped later in Settings.
+  // Defaults true so existing households (from before this switch existed)
+  // keep behaving exactly as they always have.
+  function titheEnabled(s) {
+    return !(s.settings && s.settings.titheEnabled === false);
+  }
+  // Returns 0 while disabled — a single choke point so every caller (Safe To
+  // Spend, Budgeted, the Bills row, every display line) automatically drops
+  // tithe without each one needing its own titheEnabled check. The rate
+  // itself (tithePercent) is left untouched so turning this back on restores
+  // the exact same math instantly.
   function tithe(s) {
+    if (!titheEnabled(s)) return 0;
     return totalIncome(s) * tithePercent(s) / 100;
   }
   // Money actually received this month, per the income log. This is the basis
@@ -1009,6 +1021,7 @@ const BudgetEngine = (() => {
   // form's TITHE? chip (entry.tithe === false). Older/imported entries with no
   // flag at all still count, same as before this existed.
   function titheOnReceived(s) {
+    if (!titheEnabled(s)) return 0;
     const m = s.currentMonth;
     const titheableReceived = (s.incomeLog || [])
       .filter(e => e && e.month === m && e.tithe !== false)
@@ -1131,7 +1144,7 @@ const BudgetEngine = (() => {
 
   return {
     num,
-    totalIncome, receivedIncome, tithePercent, tithe, titheOnReceived, titheBillView,
+    totalIncome, receivedIncome, tithePercent, titheEnabled, tithe, titheOnReceived, titheBillView,
     billsSubtotal, totalBills, totalDebtMins,
     totalUnpaidCredit, safeToSpend, spendingBudgetedTotal, totalBudgeted, extraForDebt,
     categorySpent, rolloverAmount, categoryRemaining, personSpent,
@@ -1276,13 +1289,18 @@ function exampleSpending() {
 // the starter framework, which is what every household created before this
 // question existed got — RESET passes the household's stored answer, so an
 // existing one resets to exactly what it always did.
-function buildDefaultData(mode, names, withExamples) {
+function buildDefaultData(mode, names, withExamples, titheOn) {
   const nowMonth = Util.currentMonthYM();
   const examples = withExamples !== false;
   return {
     settings: {
       mode, names,
-      tithePercent: examples ? 10 : 0,
+      tithePercent: 10,
+      // Independent of the example framework: a household can start empty and
+      // still tithe, or take the starter framework and not. Existing
+      // households (created before this switch existed) default to true via
+      // BudgetEngine.titheEnabled, same as this explicit true does here.
+      titheEnabled: titheOn !== false,
       debtStrategy: "avalanche",
       exampleFramework: examples
     },
@@ -1795,9 +1813,11 @@ const UI = (() => {
 
   // Setup wizard local state
   const setupState = {
-    step: "who",   // who | names | examples | code | join | joining
+    step: "who",   // who | names | tithe | examples | code | join | joining
     // Whether to seed the starter framework. Null until asked.
     useExamples: null,
+    // Whether this household tithes at all. Null until asked.
+    titheEnabled: null,
     mode: null,
     names: ["", ""],
     generatedCode: "",
@@ -2189,6 +2209,20 @@ const UI = (() => {
             <button class="cta big" data-action="setup-names-next">→ NEXT</button>
           </div>`;
       }
+    } else if (setupState.step === "tithe") {
+      content = `
+        <div class="setup-inner">
+          <button class="link" data-action="setup-back">← BACK</button>
+          <h2>DO YOU TITHE?</h2>
+          <div class="meta" style="margin-top:16px; line-height:1.6;">IF YES, WE SET ASIDE A PERCENTAGE OF YOUR INCOME FIRST — BEFORE BILLS OR SPENDING — AND SUBTRACT IT FROM SAFE TO SPEND. YOU CAN CHANGE THE RATE ANY TIME.</div>
+          <div class="meta" style="margin-top:12px; line-height:1.6;">IF NO, WE SKIP IT ENTIRELY — NOTHING IS SET ASIDE AND NOTHING SHOWS UP ABOUT IT. YOU CAN TURN IT ON LATER FROM SETTINGS.</div>
+          <div style="flex:1"></div>
+          <div class="stack-16">
+            <button class="cta big" data-action="setup-tithe" data-v="yes">→ YES, I TITHE</button>
+            <button class="cta big ghost" data-action="setup-tithe" data-v="no">× NO, SKIP IT</button>
+          </div>
+          <div class="meta" style="text-align:center; margin-top:16px; line-height:1.6;">NOT SURE? IT MAKES NO DIFFERENCE LATER — TURN IT ON OR OFF FROM SETTINGS WHENEVER YOU LIKE.</div>
+        </div>`;
     } else if (setupState.step === "examples") {
       content = `
         <div class="setup-inner">
@@ -2283,7 +2317,8 @@ const UI = (() => {
     } else if (action === "setup-back") {
       setupState.error = "";
       if (setupState.step === "names") setupState.step = "who";
-      else if (setupState.step === "examples") setupState.step = "names";
+      else if (setupState.step === "tithe") setupState.step = "names";
+      else if (setupState.step === "examples") setupState.step = "tithe";
       else if (setupState.step === "code") setupState.step = "examples";
       else if (setupState.step === "join") setupState.step = "who";
       renderSetup();
@@ -2297,6 +2332,11 @@ const UI = (() => {
       }
       setupState.names[0] = n1.toUpperCase();
       setupState.names[1] = setupState.mode === "couple" ? n2.toUpperCase() : "";
+      setupState.step = "tithe";
+      setupState.error = "";
+      renderSetup();
+    } else if (action === "setup-tithe") {
+      setupState.titheEnabled = el.dataset.v === "yes";
       setupState.step = "examples";
       setupState.error = "";
       renderSetup();
@@ -2345,7 +2385,7 @@ const UI = (() => {
         setupState.error = "";
         const id = setupState.generatedCode;
         const names = setupState.mode === "couple" ? [setupState.names[0], setupState.names[1]] : [setupState.names[0]];
-        const data = buildDefaultData(setupState.mode, names, setupState.useExamples !== false);
+        const data = buildDefaultData(setupState.mode, names, setupState.useExamples !== false, setupState.titheEnabled !== false);
         DataService.setHouseholdIdLocal(id);
         await DataService.set(data);
         // Offer the setup wizard as soon as the app comes up, so a new
@@ -2904,7 +2944,7 @@ const UI = (() => {
         <div class="sub-label" data-learn="SUB-LABEL FOR THE SAFE TO SPEND NUMBER BELOW.">SAFE TO SPEND</div>
         <div class="hero ${heroDanger}" data-learn="WHAT'S TRULY LEFT TO SPEND THIS MONTH AFTER TITHE, BILLS, DEBT MINIMUMS, AND UNPAID CREDIT ARE SET ASIDE. GOES RED WHEN NEGATIVE.">${Util.esc(Util.fmtMoney(safe, 0))}</div>
         <div class="sub-label" style="margin-top:8px;" data-learn="HOW MUCH OF YOUR EXPECTED INCOME HAS ACTUALLY ARRIVED THIS MONTH. ONLY RECEIVED INCOME COUNTS TOWARD SAFE TO SPEND. MARK INCOME AS RECEIVED ON THE LOG INCOME TAB."><span class="stat-lbl">RECEIVED</span> <span class="stat-val">${Util.esc(Util.fmtMoney(received, 0))}</span> <span class="stat-lbl">OF</span> <span class="stat-val">${Util.esc(Util.fmtMoney(expectedIncome, 0))}</span> <span class="stat-lbl">EXPECTED</span></div>
-        <div class="sub-label" style="margin-top:8px;" data-learn="HOW MUCH OF YOUR TITHE HAS BEEN SET ASIDE SO FAR, BASED ON INCOME MARKED RECEIVED THIS MONTH, OF THE FULL TITHE EXPECTED ON YOUR TOTAL EXPECTED INCOME."><span class="stat-lbl">TITHED</span> <span class="stat-val">${Util.esc(Util.fmtMoney(titheReceived, 0))}</span> <span class="stat-lbl">OF</span> <span class="stat-val">${Util.esc(Util.fmtMoney(titheExpected, 0))}</span></div>
+        ${BudgetEngine.titheEnabled(s) ? `<div class="sub-label" style="margin-top:8px;" data-learn="HOW MUCH OF YOUR TITHE HAS BEEN SET ASIDE SO FAR, BASED ON INCOME MARKED RECEIVED THIS MONTH, OF THE FULL TITHE EXPECTED ON YOUR TOTAL EXPECTED INCOME."><span class="stat-lbl">TITHED</span> <span class="stat-val">${Util.esc(Util.fmtMoney(titheReceived, 0))}</span> <span class="stat-lbl">OF</span> <span class="stat-val">${Util.esc(Util.fmtMoney(titheExpected, 0))}</span></div>` : ""}
         <div class="sub-label" style="margin-top:8px;" data-learn="TOTAL BUDGETED = TITHE + BILLS + DEBT MINIMUMS + SPENDING BUDGETS, FOR YOUR FULL EXPECTED MONTH, SO IT DOESN'T MOVE AS PAYCHECKS LAND. ON CREDIT = TOTAL OF THIS MONTH'S CREDIT TRANSACTIONS THAT AREN'T PAID OFF YET."><span class="stat-val">${Util.esc(Util.fmtMoney(budgeted, 0))}</span> <span class="stat-lbl">BUDGETED ·</span> <span class="stat-val">${Util.esc(Util.fmtMoney(credit, 0))}</span> <span class="stat-lbl">ON CREDIT</span></div>
         ${peopleHtml}
         ${dueSoonHtml}
@@ -3117,7 +3157,7 @@ const UI = (() => {
                     ? `<input class="wiz-amt" id="inc-exp-input" data-action="inc-exp-input" data-id="${Util.esc(i.id)}" inputmode="decimal" value="${Util.esc(incExpEdit.value)}" aria-label="EXPECTED AMOUNT">`
                     : `<button class="link" style="padding:0;min-height:auto;text-decoration:none;border-bottom:1px solid rgba(26,58,140,0.4);font-size:15px;font-weight:400;letter-spacing:inherit;" data-action="inc-exp-edit" data-id="${Util.esc(i.id)}" data-learn="TAP TO CHANGE WHAT YOU EXPECT FROM THIS SOURCE. IT SAVES WHEN YOU PRESS ENTER OR TAP AWAY. IT ONLY MOVES THE EXPECTED FIGURE; IF THIS SOURCE IS ALREADY MARKED CLEARED, THE AMOUNT YOU ACTUALLY RECEIVED IS LEFT ALONE.">${Util.esc(Util.fmtMoney(expected, 0))}</button>`
                 }</div>
-                <button class="link" style="padding:0;min-height:auto;display:block;font-size:11px;opacity:0.75;text-align:right;" data-action="goto-tithe-bill" data-learn="THIS SOURCE'S SHARE OF YOUR TITHE. TAP TO SEE IT ON THE BILLS TAB, WHERE THE RATE IS EDITABLE.">(TITHE: ${Util.esc(Util.fmtMoney(expected * BudgetEngine.tithePercent(s) / 100, 2))})</button>
+                ${BudgetEngine.titheEnabled(s) ? `<button class="link" style="padding:0;min-height:auto;display:block;font-size:11px;opacity:0.75;text-align:right;" data-action="goto-tithe-bill" data-learn="THIS SOURCE'S SHARE OF YOUR TITHE. TAP TO SEE IT ON THE BILLS TAB, WHERE THE RATE IS EDITABLE.">(TITHE: ${Util.esc(Util.fmtMoney(expected * BudgetEngine.tithePercent(s) / 100, 2))})</button>` : ""}
               </div>
               <button class="txn-check ${entry ? "checked" : ""}" data-action="inc-toggle" data-id="${Util.esc(i.id)}" aria-label="CLEARED" data-learn="MARK THIS INCOME AS RECEIVED FOR THIS MONTH. CHECKING IT RAISES SAFE TO SPEND BY THE AMOUNT MINUS YOUR TITHE PERCENTAGE. UNCHECKING UNDOES IT EXACTLY."></button>
             </div>
@@ -3137,13 +3177,14 @@ const UI = (() => {
         </div>
         ${incPersonChips}
         ${incBankChipsHtml}
+        ${BudgetEngine.titheEnabled(s) ? `
         <div data-learn="WHETHER THIS MONEY COUNTS TOWARD YOUR TITHE. DEFAULTS TO YES; PICK NO FOR SOMETHING LIKE A GIFT OR REIMBURSEMENT YOU DON'T TITHE ON.">
           <div class="sub-label">TITHE?</div>
           <div class="chips">
             <button class="chip ${incomeForm.tithe !== "no" ? "active" : ""}" data-action="inc-pick-tithe" data-tithe="yes">YES</button>
             <button class="chip ${incomeForm.tithe === "no" ? "active" : ""}" data-action="inc-pick-tithe" data-tithe="no">NO</button>
           </div>
-        </div>
+        </div>` : ""}
         <div>
           <div class="sub-label">NOTE</div>
           <input class="underline" id="inc-note" placeholder="WHERE DID IT COME FROM?" value="${Util.esc(incomeForm.note)}" maxlength="60" data-learn="WHERE THIS MONEY CAME FROM, LIKE 'BIRTHDAY GIFT' OR 'SIDE JOB'. THIS BECOMES THE LABEL ON THE ENTRY. YOUR SET-UP PAYCHECKS ARE TICKED OFF IN THE LIST BELOW INSTEAD.">
@@ -3164,7 +3205,7 @@ const UI = (() => {
           ${addForms.income ? renderAddForm("income") : `<button class="link" data-action="show-add" data-kind="income" data-learn="ADD AN EXPECTED INCOME SOURCE. IT'S THE SAME LIST SETTINGS KEEPS, SO IT SHOWS UP IN BOTH PLACES.">* ADD INCOME →</button>`}
         </div>
         <div class="sub-label" style="margin-top:16px;">RECEIVED ${Util.esc(Util.fmtMoney(received, 0))} OF ${Util.esc(Util.fmtMoney(expectedIncome, 0))} EXPECTED</div>
-        <div class="sub-label" style="margin-top:4px;">TITHED ${Util.esc(Util.fmtMoney(BudgetEngine.titheOnReceived(s), 0))} OF ${Util.esc(Util.fmtMoney(BudgetEngine.tithe(s), 0))}</div>
+        ${BudgetEngine.titheEnabled(s) ? `<div class="sub-label" style="margin-top:4px;">TITHED ${Util.esc(Util.fmtMoney(BudgetEngine.titheOnReceived(s), 0))} OF ${Util.esc(Util.fmtMoney(BudgetEngine.tithe(s), 0))}</div>` : ""}
       </div>`;
 
     return `
@@ -4458,12 +4499,14 @@ const UI = (() => {
     // Tithe rides along as the first row of the BILLS list — same idea as the
     // credit-card rows below: synthesized on the fly, not a stored s.bills
     // entry, so there's exactly one source of truth (settings.tithePercent +
-    // income) instead of a record that could drift from it.
+    // income) instead of a record that could drift from it. Fully absent from
+    // the list (not just zeroed) while the Settings on/off switch is off.
+    const titheOn = BudgetEngine.titheEnabled(s);
     const titheAmt = BudgetEngine.tithe(s);
     const titheRec = paidMap["__tithe__"];
-    const titheIsPaid = !!(titheRec && titheRec.paid);
+    const titheIsPaid = titheOn && !!(titheRec && titheRec.paid);
     const titheFromImport = titheIsPaid && titheRec.source === "import";
-    const titheRowHtml = `
+    const titheRowHtml = titheOn ? `
       <div class="inc-row">
         <div>
           <div class="inc-label">TITHE</div>
@@ -4478,7 +4521,7 @@ const UI = (() => {
       <div style="margin-top:-4px;">
         <button class="link" style="padding:0;min-height:auto;font-size:11px;letter-spacing:0.14em;" data-action="edit-tithe" data-learn="EDIT YOUR TITHE RATE. IT'S THE SAME RATE SETTINGS EDITS, SO CHANGES SHOW IN BOTH PLACES.">EDIT →</button>
       </div>
-      ${titheEdit.open ? renderTitheEditForm() : ""}`;
+      ${titheEdit.open ? renderTitheEditForm() : ""}` : "";
 
     const rowFor = (b) => {
       const rec = paidMap[b.id];
@@ -4570,7 +4613,7 @@ const UI = (() => {
     const headerExpectedTotal = expectedTotal + titheAmt + cardBillItems.reduce(
       (a, c) => a + (Number(c.amount) || 0), 0);
     const headerPaidCount = paidCount + (titheIsPaid ? 1 : 0) + cardBillItems.filter(c => c.paidTxn).length;
-    const headerItemCount = bills.length + 1 + cardBillItems.length;
+    const headerItemCount = bills.length + (titheOn ? 1 : 0) + cardBillItems.length;
 
     // Same add-form machinery Settings uses, surfaced at the end of each group.
     const addLink = (kind, label) => addForms[kind]
@@ -4665,6 +4708,20 @@ const UI = (() => {
         try {
           await DataService.update({ "settings.tithePercent": n });
           titheEdit.open = false;
+          render();
+        } catch (e) { alert("COULDN'T SAVE"); console.warn(e); }
+      });
+    });
+    // Master on/off switch — Settings only, per the tithing group. Off hides
+    // tithe everywhere else and zeroes it out of Safe To Spend; the rate
+    // itself (settings.tithePercent) is untouched, so flipping back to ON
+    // restores the exact same numbers instantly.
+    root.querySelectorAll("[data-action=tithe-enable-toggle]").forEach(el => {
+      el.addEventListener("click", async () => {
+        const on = el.dataset.v === "on";
+        if (on === BudgetEngine.titheEnabled(s)) return;
+        try {
+          await DataService.update({ "settings.titheEnabled": on });
           render();
         } catch (e) { alert("COULDN'T SAVE"); console.warn(e); }
       });
@@ -5274,6 +5331,7 @@ const UI = (() => {
     activeView = "settings";
     const isCouple = s.settings && s.settings.mode === "couple";
     const income = BudgetEngine.totalIncome(s);
+    const titheOn = BudgetEngine.titheEnabled(s);
     const titheAmt = BudgetEngine.tithe(s);
 
     const householdCode = DataService.getId() || "";
@@ -5314,28 +5372,26 @@ const UI = (() => {
 
           <div class="settings-group" id="sg-tithing" data-learn="TITHING. THE 10% (OR YOUR CHOSEN RATE) OF INCOME THAT'S RESERVED FIRST — BEFORE ANY OTHER BUDGET CATEGORY. AUTO-COMPUTED FROM YOUR INCOME LIST BELOW.">
             <h3>TITHING</h3>
-            <div class="list-item">
-              <span>TITHE RATE</span>
-              <span>${BudgetEngine.tithePercent(s)}%</span>
-              <button class="link" data-action="edit-tithe">EDIT →</button>
+            <div class="toggle-row" data-learn="TURN TITHING ON OR OFF. WHEN OFF, IT'S HIDDEN EVERYWHERE IT NORMALLY SHOWS UP AND NO LONGER SUBTRACTED FROM SAFE TO SPEND. YOUR RATE IS REMEMBERED, SO TURNING IT BACK ON RESTORES EVERYTHING EXACTLY AS IT WAS.">
+              <button class="toggle ${titheOn ? "active" : ""}" data-action="tithe-enable-toggle" data-v="on">ON</button>
+              <button class="toggle ${titheOn ? "" : "active"}" data-action="tithe-enable-toggle" data-v="off">OFF</button>
             </div>
-            ${titheEdit.open ? `
-              <div class="inline-form">
-                <div class="sub-label">EDIT TITHE RATE</div>
-                <div class="field"><label>PERCENT (0-100)</label><input id="tithe-input" value="${Util.esc(titheEdit.value)}" inputmode="decimal"></div>
-                ${formErrors.tithe ? `<div class="text-danger meta">${Util.esc(formErrors.tithe)}</div>` : ""}
-                <div class="row-actions">
-                  <button class="cta ghost" data-action="cancel-tithe">× CANCEL</button>
-                  <button class="cta" data-action="save-tithe">→ SAVE</button>
-                </div>
+            ${titheOn ? `
+              <div class="list-item" style="margin-top:12px;">
+                <span>TITHE RATE</span>
+                <span>${BudgetEngine.tithePercent(s)}%</span>
+                <button class="link" data-action="edit-tithe">EDIT →</button>
               </div>
-            ` : ""}
-            <div class="list-item locked">
-              <span>CURRENT AMOUNT</span>
-              <span>${Util.esc(Util.fmtMoney(titheAmt,0))}</span>
-              <span class="locked-tag">AUTO</span>
-            </div>
-            <div class="meta" style="margin-top:12px; opacity:0.8;">AUTO-CALCULATED FROM TOTAL INCOME EACH MONTH · FIRST LINE ITEM TAKEN FROM INCOME; CANNOT BE DELETED</div>
+              ${titheEdit.open ? renderTitheEditForm() : ""}
+              <div class="list-item locked">
+                <span>CURRENT AMOUNT</span>
+                <span>${Util.esc(Util.fmtMoney(titheAmt,0))}</span>
+                <span class="locked-tag">AUTO</span>
+              </div>
+              <div class="meta" style="margin-top:12px; opacity:0.8;">AUTO-CALCULATED FROM TOTAL INCOME EACH MONTH · FIRST LINE ITEM TAKEN FROM INCOME; CANNOT BE DELETED</div>
+            ` : `
+              <div class="meta" style="margin-top:12px; opacity:0.8;">TITHING IS OFF. NOTHING IS SET ASIDE AND IT WON'T SHOW UP ON THE BILLS TAB, THE LOG SCREEN, OR SAFE TO SPEND. TURN IT BACK ON ANY TIME — YOUR RATE IS REMEMBERED.</div>
+            `}
           </div>
 
           <div class="settings-group" id="sg-income" data-learn="INCOME. YOUR EXPECTED PAYCHECKS AND OTHER INCOME EACH MONTH WITH DUE DAYS. TOTAL FLOWS INTO SAFE TO SPEND AND THE TITHE CALCULATION.">
@@ -5346,11 +5402,13 @@ const UI = (() => {
 
           <div class="settings-group" id="sg-bills" data-learn="BILLS & FIXED EXPENSES. RECURRING PAYMENTS (RENT, INTERNET, ETC.) AND SAVINGS TRANSFERS. THESE ARE SUBTRACTED FROM SAFE TO SPEND EVERY MONTH.">
             <h3>BILLS &amp; FIXED EXPENSES</h3>
-            <div class="list-item">
-              <span>TITHE · ${BudgetEngine.tithePercent(s)}% OF INCOME</span>
-              <span>${Util.esc(Util.fmtMoney(titheAmt,0))}</span>
-              <button class="link" data-action="edit-tithe" data-learn="EDIT YOUR TITHE RATE. SAME RATE AS THE TITHING SECTION ABOVE; THIS OPENS THAT SAME EDITOR.">EDIT →</button>
-            </div>
+            ${titheOn ? `
+              <div class="list-item">
+                <span>TITHE · ${BudgetEngine.tithePercent(s)}% OF INCOME</span>
+                <span>${Util.esc(Util.fmtMoney(titheAmt,0))}</span>
+                <button class="link" data-action="edit-tithe" data-learn="EDIT YOUR TITHE RATE. SAME RATE AS THE TITHING SECTION ABOVE; THIS OPENS THAT SAME EDITOR.">EDIT →</button>
+              </div>
+            ` : ""}
             ${billItems}
             ${addForms.bill ? renderAddForm("bill") : `<button class="link" data-action="show-add" data-kind="bill">+ ADD BILL →</button>`}
             <div class="divider-line"></div>
@@ -5634,7 +5692,7 @@ const UI = (() => {
     const allocHtml = `
       <div class="pr-block pr-gray">
         <div class="pr-label">WHERE THE MONEY IS ALLOCATED</div>
-        ${printRow("TITHE (" + tithePct + "%)", Util.fmtMoney(B.tithe(s), 0))}
+        ${B.titheEnabled(s) ? printRow("TITHE (" + tithePct + "%)", Util.fmtMoney(B.tithe(s), 0)) : ""}
         ${printRow("BILLS & FIXED", Util.fmtMoney(B.billsSubtotal(s), 0))}
         ${printRow("DEBT MINIMUMS", Util.fmtMoney(B.totalDebtMins(s), 0))}
         ${printRow("SPENDING BUDGETED", Util.fmtMoney(B.spendingBudgetedTotal(s), 0))}
@@ -6104,10 +6162,12 @@ const UI = (() => {
     L.push("");
 
     // --- Tithe (allow-list: derived only)
-    L.push("TITHE");
-    L.push("Rate: " + B.tithePercent(s) + "%");
-    L.push("Amount on expected income: " + anonMoney(B.tithe(s)));
-    L.push("");
+    if (B.titheEnabled(s)) {
+      L.push("TITHE");
+      L.push("Rate: " + B.tithePercent(s) + "%");
+      L.push("Amount on expected income: " + anonMoney(B.tithe(s)));
+      L.push("");
+    }
 
     // --- Bills (allow-list: amount, dueDateOfMonth, category; label genericized)
     const bills = s.bills || [];
@@ -6543,6 +6603,7 @@ const UI = (() => {
     // framework exactly as they always have.
     const fresh = buildDefaultData(mode, names, !(s.settings && s.settings.exampleFramework === false));
     fresh.settings.tithePercent = BudgetEngine.tithePercent(s);
+    fresh.settings.titheEnabled = BudgetEngine.titheEnabled(s);
     fresh.settings.debtStrategy = BudgetEngine.debtStrategy(s);
     try {
       // Clear any transient UI state that could leak across the reset
@@ -6975,8 +7036,11 @@ const UI = (() => {
         // Tithe rides along as a matchable candidate here too (see
         // BudgetEngine.titheBillView) so a bank transfer described like
         // "TITHE" or "TITHE.LY" gets recognized the same way a real bill
-        // would, without tithe ever being stored as one.
-        const billsForMatch = (s.bills || []).concat([BudgetEngine.titheBillView(s)]);
+        // would, without tithe ever being stored as one. Left out entirely
+        // while tithing is switched off in Settings.
+        const billsForMatch = BudgetEngine.titheEnabled(s)
+          ? (s.bills || []).concat([BudgetEngine.titheBillView(s)])
+          : (s.bills || []);
         const learnedB = (s.billMap || {})[merchantKey];
         const learnedBill = learnedB && learnedB !== "__none__"
           ? billsForMatch.find(b => b.id === learnedB) : null;
