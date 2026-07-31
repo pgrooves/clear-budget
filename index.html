@@ -117,6 +117,29 @@
   @media (prefers-reduced-motion: reduce) {
     .swipe-hint { display: none; }
   }
+  /* One-shot vertical-scroll hint, centered over a scroll box the first time
+     it's actually scrolled into view (see ensureScrollHintObserver). Same
+     sizing/opacity/fade timing as .swipe-hint, just translateY instead of
+     translateX, and centered instead of corner-anchored. */
+  .scroll-hint {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    pointer-events: none; z-index: 6; opacity: 0;
+    animation: scroll-hint-play 2.6s ease-in-out forwards;
+  }
+  @keyframes scroll-hint-play {
+    0%   { opacity: 0;    transform: translate(-50%, -50%) translateY(0); }
+    8%   { opacity: 0.55; transform: translate(-50%, -50%) translateY(0); }
+    20%  { opacity: 0.12; transform: translate(-50%, -50%) translateY(-10px); }
+    32%  { opacity: 0.55; transform: translate(-50%, -50%) translateY(10px); }
+    44%  { opacity: 0.12; transform: translate(-50%, -50%) translateY(-10px); }
+    56%  { opacity: 0.55; transform: translate(-50%, -50%) translateY(10px); }
+    68%  { opacity: 0.12; transform: translate(-50%, -50%) translateY(0); }
+    82%  { opacity: 0.5;  transform: translate(-50%, -50%) translateY(0); }
+    100% { opacity: 0;    transform: translate(-50%, -50%) translateY(0); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .scroll-hint { display: none; }
+  }
   .section.gray { background: var(--gray); }
   .section.off-white { background: var(--gray-light); }
   .section.terracotta { background: var(--terracotta); }
@@ -375,6 +398,7 @@
   .txn-check.checked::before { content: "×"; display: block; text-align: center; }
   .txn-check.disabled { opacity: 0.25; }
   .txn-scroll {
+    position: relative;
     max-height: 392px; /* 7 rows × 56px */
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
@@ -1944,6 +1968,17 @@ const UI = (() => {
   // scratch, which would otherwise restart the animation each time.
   let swipeHintShown = false;
 
+  // One-shot scroll hints: each scroll box gets its own hand-hint the first
+  // time it's actually scrolled into view this page load (not just present
+  // in the DOM), never again after that. `shown` gates it permanently once
+  // triggered; `pending` is the one-render bridge between the
+  // IntersectionObserver callback (which can't itself produce markup) and
+  // the next render actually including it.
+  const scrollHints = {
+    txn: { shown: false, pending: false, observer: null },
+    bills: { shown: false, pending: false, observer: null }
+  };
+
   // Clear-log inline two-step confirm.
   let clearLogConfirmOpen = false;
 
@@ -2872,10 +2907,62 @@ const UI = (() => {
   // Renders once — the first time the lime block paints after a page load —
   // then flags itself off so later re-renders (which happen on nearly every
   // state change) don't keep bringing it back.
+  // Vertical-scroll hand glyph for the one-shot hint centered over a scroll
+  // box the first time it's actually scrolled into view. Same potrace-traced
+  // origin as swipeHintSvg — a hand with folded fingers and a hooked
+  // "scroll up" arrow above it (74563-200.png).
+  function scrollHintSvg() {
+    const arrowPath = "M1175 6390 c-4 -6 -22 -18 -40 -28 -77 -39 -217 -127 -387 -244 -227 -155 -196 -224 126 -282 102 -19 107 -30 70 -181 -9 -33 -22 -98 -30 -145 -7 -47 -18 -110 -23 -140 -68 -388 -86 -630 -86 -1165 0 -511 7 -623 65 -1035 31 -227 104 -584 151 -749 11 -35 19 -72 19 -82 0 -10 9 -41 20 -69 11 -28 20 -60 20 -71 0 -63 61 -148 121 -169 121 -43 193 89 140 255 -34 103 -61 199 -61 213 0 7 -9 45 -19 85 -43 159 -80 352 -120 612 -19 120 -27 188 -51 415 -27 249 -20 1122 10 1280 6 30 14 102 20 160 5 58 16 146 25 195 8 50 25 144 37 210 49 285 57 302 124 282 43 -13 71 -19 185 -43 86 -18 114 62 58 163 -114 206 -214 402 -229 448 -21 65 -121 123 -145 85z";
+    const handPath = "M4680 5880 c-160 -42 -300 -206 -318 -374 l-7 -59 -125 -1 c-318 -4 -501 -234 -458 -575 2 -18 -3 -26 -22 -31 -106 -32 -165 -53 -188 -67 -164 -103 -242 -250 -242 -458 l0 -115 -25 0 c-14 0 -42 7 -63 16 -20 9 -55 22 -77 29 -22 7 -71 25 -110 40 -38 14 -84 30 -102 36 -18 5 -45 16 -60 24 -15 8 -34 15 -41 15 -8 0 -28 7 -45 15 -18 8 -52 21 -77 29 -69 22 -132 45 -167 61 -17 8 -37 15 -45 15 -7 1 -31 9 -53 20 -22 11 -47 19 -55 20 -8 0 -32 9 -53 20 -20 11 -45 20 -54 20 -10 0 -30 6 -45 14 -129 68 -404 68 -478 1 -9 -8 -21 -15 -26 -15 -76 0 -188 -235 -182 -382 9 -225 137 -355 456 -467 17 -6 47 -16 65 -22 17 -7 52 -19 77 -29 57 -22 103 -38 160 -56 25 -8 59 -21 77 -29 17 -8 37 -15 45 -15 7 0 30 -9 51 -20 20 -11 44 -20 53 -20 9 0 30 -7 47 -15 18 -8 52 -21 77 -29 47 -15 107 -37 225 -81 39 -14 88 -32 110 -40 22 -7 72 -25 110 -40 39 -14 84 -30 100 -34 17 -5 46 -15 65 -23 19 -9 50 -20 68 -27 83 -29 100 -35 142 -51 42 -16 65 -24 143 -51 17 -6 51 -20 75 -30 23 -11 49 -19 58 -19 8 0 32 -9 54 -20 22 -11 47 -20 57 -20 10 0 35 -9 56 -20 20 -11 45 -20 55 -20 9 0 34 -9 55 -20 20 -11 45 -20 54 -20 10 -1 36 -9 58 -20 22 -11 47 -20 55 -20 8 0 33 -9 55 -20 22 -11 47 -20 55 -20 8 0 27 -6 42 -14 15 -8 51 -21 81 -30 72 -21 86 -76 19 -76 -8 0 -26 -6 -40 -14 -42 -23 -140 -66 -149 -66 -4 0 -28 -10 -53 -21 -25 -12 -64 -30 -87 -40 -24 -11 -64 -29 -90 -41 -476 -228 -398 -913 116 -1029 121 -27 276 -11 342 35 13 9 30 16 39 16 8 0 33 9 55 19 22 11 65 29 95 41 52 21 85 35 170 73 19 8 64 28 100 42 36 15 83 36 105 46 156 72 216 99 220 99 4 0 143 63 220 100 42 20 165 76 250 115 193 88 428 209 583 300 454 266 738 675 883 1270 33 131 33 457 1 555 -12 36 -22 73 -22 83 0 9 -9 34 -20 54 -11 21 -20 42 -20 48 0 39 -137 253 -238 372 -124 148 -301 299 -402 346 -8 4 -37 20 -65 36 -106 61 -468 238 -615 300 -103 44 -139 60 -182 82 -20 11 -42 19 -49 19 -6 0 -30 8 -53 19 -23 10 -63 28 -91 39 -27 11 -75 30 -105 42 -30 12 -77 31 -105 42 -27 11 -69 29 -93 39 -23 10 -48 19 -55 19 -6 1 -30 9 -52 20 -22 11 -47 19 -55 20 -8 0 -33 9 -55 21 -44 24 -203 35 -265 19z m222 -221 c21 -11 43 -19 49 -19 6 0 30 -8 53 -19 23 -10 57 -24 76 -31 19 -7 53 -19 75 -26 22 -8 54 -21 70 -28 28 -13 64 -28 188 -77 28 -11 69 -29 89 -40 20 -10 42 -19 49 -19 6 0 33 -9 58 -21 43 -20 66 -30 176 -79 104 -46 134 -60 215 -97 47 -22 96 -45 110 -51 14 -7 32 -16 40 -20 22 -13 67 -36 145 -76 658 -339 914 -969 644 -1584 -11 -23 -19 -47 -19 -52 0 -9 -90 -198 -112 -235 -79 -130 -174 -249 -281 -352 -46 -44 -97 -89 -113 -99 -16 -10 -47 -33 -69 -50 -22 -17 -53 -39 -70 -48 -16 -9 -43 -25 -60 -36 -16 -11 -43 -27 -60 -36 -16 -9 -66 -35 -110 -60 -44 -24 -91 -49 -105 -55 -14 -7 -63 -30 -110 -52 -279 -131 -398 -187 -467 -218 -24 -10 -64 -29 -90 -40 -27 -12 -66 -30 -88 -39 -22 -10 -62 -28 -90 -41 -27 -12 -70 -32 -95 -42 -142 -62 -189 -83 -261 -116 -25 -12 -52 -21 -58 -21 -7 0 -29 -9 -49 -19 -20 -11 -62 -29 -92 -41 -30 -12 -69 -28 -85 -36 -258 -122 -539 47 -522 314 10 168 75 243 292 336 61 26 130 57 155 68 25 11 63 29 85 38 45 19 88 38 155 68 25 11 74 32 110 47 208 88 246 152 142 238 -19 15 -43 27 -54 27 -11 0 -34 7 -51 15 -18 8 -52 21 -77 29 -47 15 -107 37 -225 81 -38 14 -88 32 -110 40 -22 7 -71 25 -110 40 -38 14 -83 30 -100 34 -16 5 -46 15 -65 23 -19 9 -50 20 -67 27 -84 29 -101 35 -143 51 -42 16 -65 24 -142 51 -18 6 -52 20 -76 30 -23 11 -49 19 -58 19 -8 0 -32 9 -54 20 -22 11 -47 20 -57 20 -10 0 -35 9 -56 20 -20 11 -45 20 -55 20 -9 0 -34 9 -55 20 -20 11 -45 20 -54 20 -10 1 -36 9 -58 20 -22 11 -47 20 -55 20 -8 0 -33 9 -55 20 -22 11 -46 19 -53 20 -8 0 -28 7 -45 15 -18 8 -52 21 -77 29 -25 8 -76 26 -115 41 -38 14 -88 32 -110 40 -22 7 -71 25 -110 40 -38 14 -88 32 -110 40 -22 7 -71 25 -110 40 -38 14 -83 30 -100 34 -16 4 -44 15 -62 24 -18 10 -39 17 -48 17 -9 0 -33 9 -55 20 -22 11 -47 20 -56 20 -9 0 -38 10 -63 21 -25 12 -56 26 -69 32 -197 91 -196 375 2 441 80 26 147 14 341 -58 39 -15 88 -33 110 -41 22 -7 72 -25 110 -40 39 -14 84 -30 102 -36 18 -5 45 -16 60 -24 15 -8 34 -15 41 -15 8 0 28 -7 45 -15 18 -8 52 -21 77 -29 69 -22 132 -45 167 -61 17 -8 37 -15 45 -15 7 -1 31 -9 53 -20 22 -11 47 -19 55 -20 8 0 32 -9 53 -20 20 -11 45 -20 54 -20 10 -1 36 -9 58 -20 22 -11 47 -20 55 -20 8 0 33 -9 55 -20 22 -11 47 -20 55 -20 8 0 33 -9 55 -20 22 -11 47 -19 55 -20 8 0 32 -9 53 -20 20 -11 45 -20 54 -20 10 -1 36 -9 58 -20 22 -11 47 -20 55 -20 8 0 33 -9 55 -20 23 -11 62 -19 92 -20 129 -1 134 163 6 203 -27 9 -79 27 -118 42 -38 14 -82 30 -96 34 -251 81 -267 462 -25 570 74 32 176 22 281 -29 11 -6 40 -16 65 -24 25 -8 77 -26 115 -41 134 -52 205 -28 205 69 0 57 -102 136 -175 136 -6 0 -33 12 -60 26 -325 170 -106 612 235 475 42 -17 61 -24 143 -52 17 -6 51 -20 75 -30 23 -11 49 -19 58 -19 8 0 32 -9 54 -20 126 -64 241 72 134 160 -16 14 -34 22 -114 50 -19 7 -60 23 -90 36 l-55 23 -3 68 c-7 183 178 303 340 222z";
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="54" height="40" viewBox="0 0 664 487" aria-hidden="true" focusable="false">`
+      + `<g transform="translate(-60.08,640.21) scale(0.1,-0.1)" fill="#000">`
+      + `<path d="${arrowPath}"/>`
+      + `<path d="${handPath}"/>`
+      + `</g>`
+      + `</svg>`;
+  }
+
   function swipeHintHtml() {
     if (swipeHintShown) return "";
     swipeHintShown = true;
     return `<div class="swipe-hint" aria-hidden="true">${swipeHintSvg()}</div>`;
+  }
+
+  // Renders the centered scroll-hint for one scroll box, exactly once, and
+  // only once that box's IntersectionObserver (see ensureScrollHintObserver)
+  // has actually reported it on screen — `pending` is what that observer
+  // sets before calling render(). Flips `shown` permanently on the render
+  // that consumes it, same one-shot pattern as swipeHintHtml.
+  function scrollHintHtml(key) {
+    const st = scrollHints[key];
+    if (st.shown || !st.pending) return "";
+    st.shown = true;
+    return `<div class="scroll-hint" aria-hidden="true">${scrollHintSvg()}</div>`;
+  }
+
+  // Watches one scroll box for the moment it first becomes visible on
+  // screen, then triggers its one-shot hint. Re-attaches on every render
+  // while not yet shown, because the app replaces the whole DOM subtree on
+  // each render — an observer bound to a prior render's now-detached node
+  // would never fire again.
+  function ensureScrollHintObserver(key, selector) {
+    const st = scrollHints[key];
+    if (st.observer) { st.observer.disconnect(); st.observer = null; }
+    if (st.shown) return;
+    const el = root.querySelector(selector);
+    if (!el) return;
+    const obs = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting && !st.shown && !st.pending) {
+          st.pending = true;
+          obs.disconnect();
+          if (st.observer === obs) st.observer = null;
+          render();
+        }
+      });
+    }, { threshold: 0.4 });
+    obs.observe(el);
+    st.observer = obs;
   }
 
   // The one lime block, identical on all four tabs apart from the label line.
@@ -3276,7 +3363,7 @@ const UI = (() => {
           ` : ""}
           ${needsCounterHtml}
           ${renderBulkBar(s)}
-          <div class="txn-scroll" style="margin-top:16px;" data-scroll-key="txn-scroll" data-learn="TRANSACTION LIST FOR THE VIEWED MONTH. SCROLL WITHIN THIS BOX. EACH ROW SHOWS DATE, DESCRIPTION, PAYMENT TAG, CATEGORY, AND AMOUNT.">${txnRowsHtml}</div>
+          <div class="txn-scroll" style="margin-top:16px;" data-scroll-key="txn-scroll" data-learn="TRANSACTION LIST FOR THE VIEWED MONTH. SCROLL WITHIN THIS BOX. EACH ROW SHOWS DATE, DESCRIPTION, PAYMENT TAG, CATEGORY, AND AMOUNT.">${txnRowsHtml}${scrollHintHtml("txn")}</div>
           <div style="text-align:center; margin-top:16px;">
               ${clearLogConfirmOpen ? `
               <div class="inline-form" style="text-align:left;">
@@ -3317,6 +3404,7 @@ const UI = (() => {
   }
 
   function bindLogEvents(s) {
+    ensureScrollHintObserver("txn", '[data-scroll-key="txn-scroll"]');
     const amt = root.querySelector("#log-amount");
     if (amt) amt.addEventListener("input", e => { logForm.amount = e.target.value; });
     const note = root.querySelector("#log-note");
@@ -4677,6 +4765,7 @@ const UI = (() => {
             ${leadingRows || ""}
             ${items.map(rowFor).join("")}
             ${extraRows || ""}
+            ${kind === "bill" ? scrollHintHtml("bills") : ""}
           </div>
         ` : `<div class="meta">NOTHING HERE YET · ADD ONE BELOW</div>`}
         ${addLink(kind, addLabel)}
@@ -4704,6 +4793,7 @@ const UI = (() => {
   }
 
   function bindBillsEvents(s) {
+    ensureScrollHintObserver("bills", '[data-scroll-key="bills-scroll-bill"]');
     root.querySelectorAll("[data-action=bills-subtab]").forEach(el => {
       el.addEventListener("click", () => { billsSubTab = el.dataset.sub; render(); });
     });
