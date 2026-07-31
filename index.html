@@ -4452,10 +4452,9 @@ const UI = (() => {
           <div style="margin-top:24px;">${catRows}</div>
         </section>
 
-        <section class="section lavender" data-learn="CREDIT THIS MONTH. UNPAID = SUM OF CREDIT TRANSACTIONS NOT YET PAID OFF. AVAILABLE TO COVER = WHAT WOULD BE LEFT IN CHECKING IF YOU PAID EVERY CREDIT PURCHASE TODAY. SHORTFALL WARNS WHEN IT CAN'T COVER.">
+        <section class="section lavender" data-learn="CREDIT THIS MONTH. UNPAID = SUM OF CREDIT TRANSACTIONS NOT YET PAID OFF. SHORTFALL WARNS WHEN CHECKING CAN'T COVER IT.">
           <div class="section-label">→ CREDIT THIS MONTH</div>
           <div class="sub-label" style="margin-top:12px;" data-learn="TOTAL CREDIT TRANSACTIONS THIS MONTH THAT HAVEN'T BEEN PAID OFF.">UNPAID: ${Util.esc(Util.fmtMoney(unpaid,0))}</div>
-          <div class="sub-label" style="margin-top:4px;" data-learn="WHAT SAFE TO SPEND WOULD BE IF THE UNPAID CREDIT WAS PAID OFF TODAY. IF THIS IS LESS THAN UNPAID, YOU HAVE A SHORTFALL.">AVAILABLE TO COVER: ${Util.esc(Util.fmtMoney(Math.max(0,cashCover),0))}</div>
           ${cardRowsHtml ? `<div style="margin-top:12px;" data-learn="PER-CARD BREAKDOWN OF UNPAID CREDIT THIS MONTH. IF A CARD IS LINKED TO A DEBT, THE DEBT BALANCE SHOWS IN PARENTHESES.">${cardRowsHtml}</div>` : ""}
           ${covered ? "" : `
           <div class="sub-label text-danger" style="margin-top:12px;" data-learn="SHORTFALL MEANS CHECKING CAN'T FULLY COVER YOUR UNPAID CREDIT — YOU'LL CARRY A BALANCE.">
