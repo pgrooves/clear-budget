@@ -92,18 +92,8 @@
     pointer-events: none;
   }
 
-  /* Bleed each section's own color a good way past its own box via box-shadow
-     spread (0 offset = seamless, no gap against the element's real edge —
-     unlike background, a box-shadow paints with the element so it can't lag
-     a frame behind during momentum-scroll). iOS Safari can open a sliver of
-     the page's black background right at a section seam during an elastic
-     overscroll or a fast fling; later sections paint over earlier ones'
-     bleed under normal layout, so it's invisible until that sliver actually
-     opens, at which point whichever section is really nearby shows through
-     instead of black. The sideways bleed is harmless — .screen's
-     overflow-x:hidden clips it right back to each section's own width. */
   .section { padding: 32px 24px; max-width: 100%; overflow-x: hidden; }
-  .section.lime { background: var(--lime); position: relative; box-shadow: 0 0 0 80px var(--lime); }
+  .section.lime { background: var(--lime); position: relative; }
 
   /* One-shot swipe-tab hint. Absolutely positioned in the open lime space to
      the right of the tab title so it never shifts the real content, and
@@ -127,12 +117,12 @@
   @media (prefers-reduced-motion: reduce) {
     .swipe-hint { display: none; }
   }
-  .section.gray { background: var(--gray); box-shadow: 0 0 0 80px var(--gray); }
-  .section.off-white { background: var(--gray-light); box-shadow: 0 0 0 80px var(--gray-light); }
-  .section.terracotta { background: var(--terracotta); box-shadow: 0 0 0 80px var(--terracotta); }
-  .section.teal { background: var(--teal); box-shadow: 0 0 0 80px var(--teal); }
-  .section.lavender { background: var(--lavender); box-shadow: 0 0 0 80px var(--lavender); }
-  .section.charcoal { background: var(--charcoal); box-shadow: 0 0 0 80px var(--charcoal); }
+  .section.gray { background: var(--gray); }
+  .section.off-white { background: var(--gray-light); }
+  .section.terracotta { background: var(--terracotta); }
+  .section.teal { background: var(--teal); }
+  .section.lavender { background: var(--lavender); }
+  .section.charcoal { background: var(--charcoal); }
 
   .sub-label { font-size: 13px; font-weight: 600; letter-spacing: 0.12em; }
   .hero { font-size: 64px; font-weight: 500; line-height: 1.05; letter-spacing: 0.01em; }
@@ -161,9 +151,6 @@
     position: fixed; top: 0; left: 50%; transform: translateX(-50%);
     width: 100%; max-width: 480px; height: 72px; z-index: 30;
   }
-  /* Overrides only top/height/pointer-events; the tone backgrounds and
-     centering above are shared with the real header. See appHeader(). */
-  .app-header.top-guard { top: -100px; height: 100px; pointer-events: none; }
   /* Settings jump bar: pinned directly beneath the header so it reads as one
      block with it. Compact chips keep it to a single shallow row. */
   .settings-jump {
@@ -2048,14 +2035,7 @@ const UI = (() => {
   // Fixed header bar carrying the wordmark and the icon cluster. `tone` picks
   // the background so it matches the screen it sits over.
   function appHeader(tone, rightHtml, showDate) {
-    // A plain color patch sitting just above the header, off-screen at rest.
-    // Fixed elements ignore an ancestor's overflow:hidden (their containing
-    // block is the viewport, not .screen), so unlike a section's own
-    // box-shadow bleed, this is what actually shows through if iOS's elastic
-    // overscroll reveals space above the true top of the page — the header's
-    // own tone instead of the page's black background.
-    const topTone = (tone || "").split(" ")[0];
-    return `<div class="app-header top-guard ${topTone}"></div><div class="app-header ${tone}">${brandMark(showDate)}${soundBtn()}${learnerBtn()}${rightHtml === undefined ? gear() : rightHtml}</div>`;
+    return `<div class="app-header ${tone}">${brandMark(showDate)}${soundBtn()}${learnerBtn()}${rightHtml === undefined ? gear() : rightHtml}</div>`;
   }
   // Question-mark icon matching cogSvg — outline circle by default; when
   // learner mode is on, .learner-btn.on flips to a filled cobalt disk with
