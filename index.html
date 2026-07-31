@@ -4664,7 +4664,7 @@ const UI = (() => {
           </div>
           <div class="inc-amt">
             ${Util.esc(Util.fmtMoney(Number(b.amount) || 0, 0))}
-            <span class="${overdue ? "text-danger" : ""}" style="opacity:0.75;">DUE ${due || "-"}</span>
+            ${b.category === "savings" ? "" : `<span class="${overdue ? "text-danger" : ""}" style="opacity:0.75;">DUE ${due || "-"}</span>`}
           </div>
           <button class="txn-check ${isPaid ? "checked" : ""}" data-action="bill-toggle" data-id="${Util.esc(b.id)}" aria-label="PAID" data-learn="MARK THIS BILL AS PAID FOR THIS MONTH. THIS IS STATUS TRACKING ONLY; IT DOES NOT CHANGE SAFE TO SPEND, BUDGETED, OR ANY CATEGORY, BECAUSE BILLS ARE ALREADY SUBTRACTED AS BUDGETED AMOUNTS."></button>
         </div>`;
