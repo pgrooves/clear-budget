@@ -5740,18 +5740,24 @@ const UI = (() => {
       /* The un-gated block includes "body > * { display:none }", which would
          swallow the instruction bar. A class beats that selector on specificity. */
       + `.pr-howto{display:block !important;font-family:"Helvetica Neue",Arial,sans-serif;`
-      + `font-size:11px;letter-spacing:0.12em;text-transform:uppercase;padding:14px 20px;`
-      + `background:#1A3A8C;color:#DFFF5B;line-height:1.5;text-align:center;}`
+      + `font-size:11px;letter-spacing:0.12em;text-transform:uppercase;padding:14px 20px 52px;`
+      + `background:#1A3A8C;color:#DFFF5B;line-height:1.5;text-align:center;position:relative;}`
       + `.pr-dl{font:inherit;font-size:13px;font-weight:700;letter-spacing:0.14em;`
       + `text-transform:uppercase;background:#DFFF5B;color:#1A3A8C;border:0;cursor:pointer;`
       + `padding:14px 28px;min-height:48px;width:100%;max-width:340px;margin:0 auto 10px;display:block;}`
       + `.pr-howto-text{opacity:0.85;max-width:520px;margin:0 auto;}`
+      /* Bottom-right of the bar, not inline with the centered copy above, so it
+         reads as "leave this page" rather than another step in the how-to. */
+      + `.pr-back{position:absolute;bottom:12px;right:16px;font:inherit;`
+      + `font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;`
+      + `background:none;border:0;color:#DFFF5B;cursor:pointer;padding:8px 4px;min-height:44px;}`
       /* The instructions are for the screen only; a saved PDF must not carry them. */
       + `@media print{.pr-howto{display:none !important;}}`
       + `</style></head><body>`
       + `<div class="pr-howto">`
       + `<button class="pr-dl" onclick="clearDownloadReport()">\u2913 DOWNLOAD</button>`
       + `<div class="pr-howto-text">SAVES THIS REPORT AS A FILE YOU CAN KEEP OR SEND. FOR A PDF INSTEAD, USE THE SHARE ICON IN THE BROWSER BAR, THEN PRINT. THIS BAR ISN'T INCLUDED EITHER WAY.</div>`
+      + `<button class="pr-back" onclick="clearCloseReport()">\u2190 BACK</button>`
       + `</div>`
       + `<div id="print-report">${buildPrintReport(s)}</div>`
       /* The page saves a copy of itself, minus this bar and this script, so the
@@ -5769,6 +5775,10 @@ const UI = (() => {
       + `a.style.display="none";document.body.appendChild(a);a.click();`
       + `setTimeout(function(){if(a.parentNode){a.parentNode.removeChild(a);}URL.revokeObjectURL(u);},4000);`
       + `}`
+      /* Closes the tab this report opened in, returning focus to the app tab
+         behind it. window.close() only works on script-opened windows, which
+         this always is (see openPrintReport below) — no fallback needed. */
+      + `function clearCloseReport(){try{window.close();}catch(e){}}`
       + `<\/script>`
       + `</body></html>`;
   }
