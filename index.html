@@ -2220,28 +2220,28 @@ const UI = (() => {
         <div class="setup-inner">
           <button class="link" data-action="setup-back">← BACK</button>
           <h2>DO YOU TITHE?</h2>
-          <div class="meta" style="margin-top:16px; line-height:1.6;">IF YES, WE SET ASIDE A PERCENTAGE OF YOUR INCOME FIRST — BEFORE BILLS OR SPENDING — AND SUBTRACT IT FROM SAFE TO SPEND. YOU CAN CHANGE THE RATE ANY TIME.</div>
-          <div class="meta" style="margin-top:12px; line-height:1.6;">IF NO, WE SKIP IT ENTIRELY — NOTHING IS SET ASIDE AND NOTHING SHOWS UP ABOUT IT. YOU CAN TURN IT ON LATER FROM SETTINGS.</div>
+          <div class="meta" style="margin-top:16px; line-height:1.6;">IF YES, WE SET ASIDE A PERCENTAGE OF YOUR INCOME FIRST, BEFORE BILLS OR SPENDING, AND SUBTRACT IT FROM SAFE TO SPEND. YOU CAN CHANGE THE RATE ANY TIME.</div>
+          <div class="meta" style="margin-top:12px; line-height:1.6;">IF NO, WE SKIP IT ENTIRELY; NOTHING IS SET ASIDE AND NOTHING SHOWS UP ABOUT IT. YOU CAN TURN IT ON LATER FROM SETTINGS.</div>
           <div style="flex:1"></div>
           <div class="stack-16">
             <button class="cta big" data-action="setup-tithe" data-v="yes">→ YES, I TITHE</button>
             <button class="cta big ghost" data-action="setup-tithe" data-v="no">× NO, SKIP IT</button>
           </div>
-          <div class="meta" style="text-align:center; margin-top:16px; line-height:1.6;">NOT SURE? IT MAKES NO DIFFERENCE LATER — TURN IT ON OR OFF FROM SETTINGS WHENEVER YOU LIKE.</div>
+          <div class="meta" style="text-align:center; margin-top:16px; line-height:1.6;">NOT SURE? IT MAKES NO DIFFERENCE LATER; TURN IT ON OR OFF FROM SETTINGS WHENEVER YOU LIKE.</div>
         </div>`;
     } else if (setupState.step === "examples") {
       content = `
         <div class="setup-inner">
           <button class="link" data-action="setup-back">← BACK</button>
           <h2>WANT AN EXAMPLE FRAMEWORK?</h2>
-          <div class="meta" style="margin-top:16px; line-height:1.6;">WE CAN PUT A STARTER SET IN PLACE FOR YOU — SPENDING CATEGORIES, BILLS, AND SAVINGS POTS LIKE RENT, GROCERIES AND AN EMERGENCY FUND. RENAME, CHANGE OR DELETE ANY OF IT.</div>
+          <div class="meta" style="margin-top:16px; line-height:1.6;">WE CAN PUT A STARTER SET IN PLACE FOR YOU; SPENDING CATEGORIES, BILLS, AND SAVINGS POTS LIKE RENT, GROCERIES AND AN EMERGENCY FUND. RENAME, CHANGE OR DELETE ANY OF IT.</div>
           <div class="meta" style="margin-top:12px; line-height:1.6;">OR START COMPLETELY EMPTY, WITH EVERY LIST BLANK AND EVERY FIGURE AT ZERO, AND BUILD IT YOURSELF.</div>
           <div style="flex:1"></div>
           <div class="stack-16">
             <button class="cta big" data-action="setup-examples" data-v="yes">→ YES, SET IT UP</button>
             <button class="cta big ghost" data-action="setup-examples" data-v="no">× NO, START EMPTY</button>
           </div>
-          <div class="meta" style="text-align:center; margin-top:16px; line-height:1.6;">NOT SURE? IT MAKES NO DIFFERENCE LATER — YOU CAN ADD THE WHOLE EXAMPLE SET, OR YOUR OWN ITEMS, FROM SETTINGS WHENEVER YOU LIKE.</div>
+          <div class="meta" style="text-align:center; margin-top:16px; line-height:1.6;">NOT SURE? IT MAKES NO DIFFERENCE LATER; YOU CAN ADD THE WHOLE EXAMPLE SET, OR YOUR OWN ITEMS, FROM SETTINGS WHENEVER YOU LIKE.</div>
         </div>`;
     } else if (setupState.step === "code") {
       content = `
@@ -2934,7 +2934,7 @@ const UI = (() => {
       .filter(b => !(paidThisMonth[b.id] && paidThisMonth[b.id].paid))
       .reduce((a, b) => a + (Number(b.amount) || 0), 0);
     const savingsHtml = savingsAll.length ? `
-      <div class="sub-label text-success" style="margin-top:8px;" data-learn="HOW MANY OF YOUR SAVINGS TRANSFERS YOU'VE SET ASIDE THIS MONTH, AND WHAT'S LEFT TO GO. TICK THEM OFF ON THE SAVINGS TAB. THIS IS TRACKING ONLY — SAVINGS ARE ALREADY SUBTRACTED AS BUDGETED AMOUNTS."><span class="stat-val">${savingsDone.length}/${savingsAll.length}</span> <span class="stat-lbl">SAVINGS ALLOCATED</span>${savingsLeft > 0 ? ` <span class="stat-lbl">·</span> <span class="stat-val">${Util.esc(Util.fmtMoney(savingsLeft, 0))}</span> <span class="stat-lbl">LEFT</span>` : ``}</div>` : "";
+      <div class="sub-label text-success" style="margin-top:8px;" data-learn="HOW MANY OF YOUR SAVINGS TRANSFERS YOU'VE SET ASIDE THIS MONTH, AND WHAT'S LEFT TO GO. TICK THEM OFF ON THE SAVINGS TAB. THIS IS TRACKING ONLY; SAVINGS ARE ALREADY SUBTRACTED AS BUDGETED AMOUNTS."><span class="stat-val">${savingsDone.length}/${savingsAll.length}</span> <span class="stat-lbl">SAVINGS ALLOCATED</span>${savingsLeft > 0 ? ` <span class="stat-lbl">·</span> <span class="stat-val">${Util.esc(Util.fmtMoney(savingsLeft, 0))}</span> <span class="stat-lbl">LEFT</span>` : ``}</div>` : "";
 
     // Month-rollover nudge (was Log-only).
     const realMonth = Util.currentMonthYM();
@@ -3237,7 +3237,7 @@ const UI = (() => {
               </div>
             </div>
             ${cardChipsHtml}
-            <div data-learn="CATEGORY PICKER. TAP A CHIP TO ASSIGN THIS PURCHASE TO A SPENDING CATEGORY OR A BILL. DEBTS AREN'T LISTED HERE — LOG DEBT PAYMENTS FROM THE DEBTS TAB.">
+            <div data-learn="CATEGORY PICKER. TAP A CHIP TO ASSIGN THIS PURCHASE TO A SPENDING CATEGORY OR A BILL. DEBTS AREN'T LISTED HERE; LOG DEBT PAYMENTS FROM THE DEBTS TAB.">
               <div class="sub-label">CATEGORY</div>
               <div class="chips" data-scroll-key="log-cat-chips">${chipsHtml || `<div class="meta">NO CATEGORIES; ADD SOME IN SETTINGS</div>`}</div>
             </div>
@@ -3719,7 +3719,7 @@ const UI = (() => {
         <div class="txn-date">${Util.esc(Util.fmtDateShort(t.date))}</div>
         <div class="txn-note">
           ${Util.esc(displayNote || catLabel)}
-          <span class="txn-tag ${needsCat ? 'needs' : ''}" data-learn="${Util.esc(needsCat ? "THIS IMPORTED TRANSACTION HAS NO CATEGORY YET. TAP THE ROW TO PICK ONE — DASHBOARD BARS AND SAFE TO SPEND WILL UPDATE ONCE ASSIGNED." : (t.paymentType === "credit" ? "PAID WITH CREDIT. IF A CARD IS LINKED THE CARD LABEL SHOWS HERE INSTEAD OF 'CREDIT'." : "PAID WITH PAID FROM CHECKING. IN COUPLE MODE THIS TAG SHOWS WHO PAID."))}">${Util.esc(tag)}</span>
+          <span class="txn-tag ${needsCat ? 'needs' : ''}" data-learn="${Util.esc(needsCat ? "THIS IMPORTED TRANSACTION HAS NO CATEGORY YET. TAP THE ROW TO PICK ONE; DASHBOARD BARS AND SAFE TO SPEND WILL UPDATE ONCE ASSIGNED." : (t.paymentType === "credit" ? "PAID WITH CREDIT. IF A CARD IS LINKED THE CARD LABEL SHOWS HERE INSTEAD OF 'CREDIT'." : "PAID WITH PAID FROM CHECKING. IN COUPLE MODE THIS TAG SHOWS WHO PAID."))}">${Util.esc(tag)}</span>
         </div>
         <div class="txn-cat ${staged ? 'staged' : ''}">${Util.esc(staged ? stagedCatLabel : catLabel)}</div>
         <div class="txn-amt">-${Util.esc(Util.fmtMoney(Number(t.amount)||0, 2))}</div>
@@ -4463,7 +4463,7 @@ const UI = (() => {
           <div class="sub-label" style="margin-top:12px;" data-learn="TOTAL CREDIT TRANSACTIONS THIS MONTH THAT HAVEN'T BEEN PAID OFF.">UNPAID: ${Util.esc(Util.fmtMoney(unpaid,0))}</div>
           ${cardRowsHtml ? `<div style="margin-top:12px;" data-learn="PER-CARD BREAKDOWN OF UNPAID CREDIT THIS MONTH. IF A CARD IS LINKED TO A DEBT, THE DEBT BALANCE SHOWS IN PARENTHESES.">${cardRowsHtml}</div>` : ""}
           ${covered ? "" : `
-          <div class="sub-label text-danger" style="margin-top:12px;" data-learn="SHORTFALL MEANS CHECKING CAN'T FULLY COVER YOUR UNPAID CREDIT — YOU'LL CARRY A BALANCE.">
+          <div class="sub-label text-danger" style="margin-top:12px;" data-learn="SHORTFALL MEANS CHECKING CAN'T FULLY COVER YOUR UNPAID CREDIT; YOU'LL CARRY A BALANCE.">
             ← SHORTFALL: ${Util.esc(Util.fmtMoney(shortfall,0))}
           </div>`}
         </section>`;
@@ -4538,7 +4538,7 @@ const UI = (() => {
         <div class="inc-row" style="padding-left:16px;">
           <div class="inc-label" style="font-size:13px; opacity:0.85;">${Util.esc(i.label)}</div>
           <div class="inc-amt" style="font-size:13px;">${Util.esc(Util.fmtMoney(subAmt, 2))}</div>
-          <button class="txn-check ${subPaid ? "checked" : ""}" data-action="bill-toggle" data-id="${Util.esc(subId)}" aria-label="PAID" data-learn="MARK THIS INCOME SOURCE'S SHARE OF YOUR TITHE AS GIVEN. INDEPENDENT OF THE TOTAL CHECKMARK ABOVE — TRACKING ONLY, EITHER WAY."></button>
+          <button class="txn-check ${subPaid ? "checked" : ""}" data-action="bill-toggle" data-id="${Util.esc(subId)}" aria-label="PAID" data-learn="MARK THIS INCOME SOURCE'S SHARE OF YOUR TITHE AS GIVEN. INDEPENDENT OF THE TOTAL CHECKMARK ABOVE; TRACKING ONLY, EITHER WAY."></button>
         </div>`;
     }).join("") : `<div class="meta" style="padding-left:16px;">NO INCOME SOURCES YET</div>`) : "";
 
@@ -4552,7 +4552,7 @@ const UI = (() => {
           ${Util.esc(Util.fmtMoney(titheAmt, 0))}
           <span style="opacity:0.75;">${BudgetEngine.tithePercent(s)}%</span>
         </div>
-        <button class="txn-check ${titheIsPaid ? "checked" : ""}" data-action="bill-toggle" data-id="tithe" aria-label="PAID" data-learn="MARK YOUR TITHE AS GIVEN FOR THIS MONTH. STATUS TRACKING ONLY — SAFE TO SPEND ALREADY ACCOUNTS FOR TITHE AUTOMATICALLY AS INCOME IS MARKED RECEIVED."></button>
+        <button class="txn-check ${titheIsPaid ? "checked" : ""}" data-action="bill-toggle" data-id="tithe" aria-label="PAID" data-learn="MARK YOUR TITHE AS GIVEN FOR THIS MONTH. STATUS TRACKING ONLY; SAFE TO SPEND ALREADY ACCOUNTS FOR TITHE AUTOMATICALLY AS INCOME IS MARKED RECEIVED."></button>
       </div>
       ${titheSubRowsHtml}
       <div style="margin-top:-4px;">
@@ -4576,7 +4576,7 @@ const UI = (() => {
           </div>
           <div class="inc-amt">
             ${Util.esc(Util.fmtMoney(Number(b.amount) || 0, 0))}
-            <span class="${overdue ? "text-danger" : ""}" style="opacity:0.75;">DUE ${due || "—"}</span>
+            <span class="${overdue ? "text-danger" : ""}" style="opacity:0.75;">DUE ${due || "-"}</span>
           </div>
           <button class="txn-check ${isPaid ? "checked" : ""}" data-action="bill-toggle" data-id="${Util.esc(b.id)}" aria-label="PAID" data-learn="MARK THIS BILL AS PAID FOR THIS MONTH. THIS IS STATUS TRACKING ONLY; IT DOES NOT CHANGE SAFE TO SPEND, BUDGETED, OR ANY CATEGORY, BECAUSE BILLS ARE ALREADY SUBTRACTED AS BUDGETED AMOUNTS."></button>
         </div>`;
@@ -4627,7 +4627,7 @@ const UI = (() => {
           </div>
           <div class="inc-amt">
             ${Util.esc(Util.fmtMoney(c.amount, 0))}
-            <span class="${overdue ? "text-danger" : ""}" style="opacity:0.75;">DUE ${due || "—"}</span>
+            <span class="${overdue ? "text-danger" : ""}" style="opacity:0.75;">DUE ${due || "-"}</span>
           </div>
           <button class="txn-check ${paid ? "checked" : ""} ${canPay ? "" : "disabled"}"${canPay ? "" : " disabled"} data-action="card-min-toggle" data-id="${Util.esc(c.debt.id)}" aria-label="PAID" data-learn="TICK TO LOG A PAYMENT AGAINST THIS CARD. IT ASKS WHETHER YOU PAID THE MINIMUM OR A DIFFERENT AMOUNT, THEN RECORDS A DEBIT TRANSACTION AND REDUCES THE DEBT BALANCE. IT TICKS ON THE DEBTS TAB TOO; UNTICK TO UNDO BOTH."></button>
         </div>
@@ -5076,7 +5076,7 @@ const UI = (() => {
           <div class="progress" data-learn="PROGRESS BAR. FILL SHOWS HOW MUCH OF THE ORIGINAL BALANCE IS PAID OFF."><span style="width:${paidPct}%"></span></div>
           <div class="debt-meta">${paidPct.toFixed(0)}% PAID · PAYOFF: ${Util.esc(payoff)}</div>
           <div class="debt-meta">MIN: ${Util.esc(Util.fmtMoney(Number(d.minimumPayment)||0,0))}/MO · RATE: ${(Number(d.interestRate)||0).toFixed(1)}%</div>
-          ${linkedCard ? `<div class="debt-meta" data-learn="THIS DEBT IS LINKED TO A CREDIT CARD YOU SET UP IN SETTINGS. LINKING IS INFORMATIONAL — BALANCES STAY INDEPENDENT.">LINKED CARD: ${Util.esc(linkedCard.label)}</div>` : ""}
+          ${linkedCard ? `<div class="debt-meta" data-learn="THIS DEBT IS LINKED TO A CREDIT CARD YOU SET UP IN SETTINGS. LINKING IS INFORMATIONAL; BALANCES STAY INDEPENDENT.">LINKED CARD: ${Util.esc(linkedCard.label)}</div>` : ""}
           ${minRowHtml}
           <button class="link" data-action="debt-pay-open" data-id="${Util.esc(d.id)}" style="margin-top:8px;" data-learn="LOG A PAYMENT AGAINST THIS DEBT. OPENS A FORM (AMOUNT, NOTE). ON SAVE THE BALANCE DECREASES AND A DEBIT TRANSACTION IS RECORDED.">${payForm && payForm.open ? "× CANCEL PAYMENT" : "→ LOG PAYMENT"}</button>
           ${payHtml}
@@ -5115,7 +5115,7 @@ const UI = (() => {
           ${extraPreview>0 ? `<div class="sub-label" style="margin-top:12px;">WITH EXTRA: ${Util.esc(Util.fmtMoney(baseExtra+extraPreview,0))}/MO</div>` : ""}
         </section>
 
-        <section class="section off-white" style="padding:0;" data-learn="DEBT LIST, SORTED BY PAYOFF ORDER. EACH CARD SHOWS THE BALANCE, PROGRESS BAR, PROJECTED PAYOFF MONTH, MINIMUM, AND INTEREST RATE. TAP → LOG PAYMENT TO RECORD A PAYMENT — IT DEBITS THE BALANCE AND WRITES A TRANSACTION IN ONE STEP.">
+        <section class="section off-white" style="padding:0;" data-learn="DEBT LIST, SORTED BY PAYOFF ORDER. EACH CARD SHOWS THE BALANCE, PROGRESS BAR, PROJECTED PAYOFF MONTH, MINIMUM, AND INTEREST RATE. TAP → LOG PAYMENT TO RECORD A PAYMENT; IT DEBITS THE BALANCE AND WRITES A TRANSACTION IN ONE STEP.">
           <div class="section-label" style="padding:32px 24px 0;">→ ORDER</div>
           ${cardsHtml}
           <div style="padding:24px;">
@@ -5318,7 +5318,7 @@ const UI = (() => {
         <div class="field"><label>BALANCE</label><input data-action="add-form-input" data-kind="debt" data-field="balance" value="${Util.esc(f.balance)}" placeholder="0" inputmode="decimal"></div>
         <div class="field"><label>MINIMUM PAYMENT</label><input data-action="add-form-input" data-kind="debt" data-field="minimumPayment" value="${Util.esc(f.minimumPayment)}" placeholder="0" inputmode="decimal"></div>
         <div class="field"><label>INTEREST RATE (%)</label><input data-action="add-form-input" data-kind="debt" data-field="interestRate" value="${Util.esc(f.interestRate)}" placeholder="0" inputmode="decimal"></div>
-        <div class="field"><label>DUE DAY OF MONTH</label><input data-action="add-form-input" data-kind="debt" data-field="dueDateOfMonth" value="${Util.esc(f.dueDateOfMonth==null?'':f.dueDateOfMonth)}" placeholder="—" inputmode="numeric"></div>
+        <div class="field"><label>DUE DAY OF MONTH</label><input data-action="add-form-input" data-kind="debt" data-field="dueDateOfMonth" value="${Util.esc(f.dueDateOfMonth==null?'':f.dueDateOfMonth)}" placeholder="-" inputmode="numeric"></div>
         ${err ? `<div class="text-danger meta">${Util.esc(err)}</div>` : ""}
         ${pm ? `
           <div class="text-danger meta" style="margin-top:8px;">IS THIS THE SAME AS YOUR '${Util.esc(pm.targetLabel)}' CARD?</div>
@@ -5417,7 +5417,7 @@ const UI = (() => {
             <div class="list-item"><span>SIGN OUT OF HOUSEHOLD</span><span></span><button class="link" data-action="signout">× SIGN OUT</button></div>
           </div>
 
-          <div class="settings-group" id="sg-tithing" data-learn="TITHING. THE 10% (OR YOUR CHOSEN RATE) OF INCOME THAT'S RESERVED FIRST — BEFORE ANY OTHER BUDGET CATEGORY. AUTO-COMPUTED FROM YOUR INCOME LIST BELOW.">
+          <div class="settings-group" id="sg-tithing" data-learn="TITHING. THE 10% (OR YOUR CHOSEN RATE) OF INCOME THAT'S RESERVED FIRST, BEFORE ANY OTHER BUDGET CATEGORY. AUTO-COMPUTED FROM YOUR INCOME LIST BELOW.">
             <h3>TITHING</h3>
             <div class="toggle-row" data-learn="TURN TITHING ON OR OFF. WHEN OFF, IT'S HIDDEN EVERYWHERE IT NORMALLY SHOWS UP AND NO LONGER SUBTRACTED FROM SAFE TO SPEND. YOUR RATE IS REMEMBERED, SO TURNING IT BACK ON RESTORES EVERYTHING EXACTLY AS IT WAS.">
               <button class="toggle ${titheOn ? "active" : ""}" data-action="tithe-enable-toggle" data-v="on">ON</button>
@@ -5437,7 +5437,7 @@ const UI = (() => {
               </div>
               <div class="meta" style="margin-top:12px; opacity:0.8;">AUTO-CALCULATED FROM TOTAL INCOME EACH MONTH · FIRST LINE ITEM TAKEN FROM INCOME; CANNOT BE DELETED</div>
             ` : `
-              <div class="meta" style="margin-top:12px; opacity:0.8;">TITHING IS OFF. NOTHING IS SET ASIDE AND IT WON'T SHOW UP ON THE BILLS TAB, THE LOG SCREEN, OR SAFE TO SPEND. TURN IT BACK ON ANY TIME — YOUR RATE IS REMEMBERED.</div>
+              <div class="meta" style="margin-top:12px; opacity:0.8;">TITHING IS OFF. NOTHING IS SET ASIDE AND IT WON'T SHOW UP ON THE BILLS TAB, THE LOG SCREEN, OR SAFE TO SPEND. TURN IT BACK ON ANY TIME; YOUR RATE IS REMEMBERED.</div>
             `}
           </div>
 
@@ -5470,7 +5470,7 @@ const UI = (() => {
             ${addForms.spending ? renderAddForm("spending") : `<button class="link" data-action="show-add" data-kind="spending">+ ADD CATEGORY →</button>`}
           </div>
 
-          <div class="settings-group" id="sg-debts" data-learn="DEBTS. MIRROR OF THE DEBTS SCREEN LIST — EDIT LABEL, BALANCE, MINIMUM, INTEREST RATE. LINKING A DEBT TO A CARD IS INFORMATIONAL ONLY.">
+          <div class="settings-group" id="sg-debts" data-learn="DEBTS. MIRROR OF THE DEBTS SCREEN LIST; EDIT LABEL, BALANCE, MINIMUM, INTEREST RATE. LINKING A DEBT TO A CARD IS INFORMATIONAL ONLY.">
             <h3>DEBTS</h3>
             ${debtItems || `<div class="meta">NO DEBTS</div>`}
             ${addForms.debt ? renderAddDebtForm() : `<button class="link" data-action="show-add-debt">+ ADD DEBT →</button>`}
@@ -5645,7 +5645,7 @@ const UI = (() => {
         ${isDebt ? `
           <div class="field"><label>MIN PAYMENT</label><input data-edit-field="minimumPayment" value="${Util.esc(item.minimumPayment==null?'':item.minimumPayment)}" inputmode="decimal"></div>
           <div class="field"><label>INTEREST %</label><input data-edit-field="interestRate" value="${Util.esc(item.interestRate==null?'':item.interestRate)}" inputmode="decimal"></div>
-          <div class="field"><label>DUE DAY</label><input data-edit-field="dueDateOfMonth" value="${Util.esc(item.dueDateOfMonth==null?'':item.dueDateOfMonth)}" inputmode="numeric" placeholder="—"></div>
+          <div class="field"><label>DUE DAY</label><input data-edit-field="dueDateOfMonth" value="${Util.esc(item.dueDateOfMonth==null?'':item.dueDateOfMonth)}" inputmode="numeric" placeholder="-"></div>
         ` : ""}
         <div class="row-actions">
           <button class="cta ghost" data-action="cancel-edit" data-kind="${kind}" data-id="${Util.esc(item.id)}">× CANCEL</button>
@@ -6352,8 +6352,8 @@ const UI = (() => {
     L.push("TRANSACTIONS THIS MONTH");
     L.push("Every purchase and payment logged this month, one per line, oldest first. Merchant");
     L.push("names and notes are withheld. Each row is instead labelled with the category, bill,");
-    L.push("or debt it is assigned to in the budget — the same attribution the totals above are");
-    L.push("built from — so a row can be reasoned about without knowing the merchant.");
+    L.push("or debt it is assigned to in the budget, the same attribution the totals above are");
+    L.push("built from, so a row can be reasoned about without knowing the merchant.");
     L.push("\"Uncategorized\" means it was imported and has not been assigned yet, so it counts");
     L.push("toward the month's total but toward no category.");
     L.push("Dates are the day of the month within " + monthName + ".");
@@ -6406,7 +6406,7 @@ const UI = (() => {
     "Then give me the fastest realistic route to financial freedom: which debt to attack",
     "first and why, exactly where every spare dollar should go and what it buys me in months",
     "saved, what to cut, what to protect, and what a realistic debt-free date looks like.",
-    "Quantify the trade-offs — where one path pays less interest and another finishes",
+    "Quantify the trade-offs, where one path pays less interest and another finishes",
     "sooner, show me both and tell me which you'd advise.",
     "",
     "Use my actual figures throughout. Tell me plainly where my thinking is wrong or where",
@@ -6719,7 +6719,7 @@ const UI = (() => {
           originalBalance: Number(d.originalBalance) || (isFinite(newBal) ? newBal : d.balance),
           minimumPayment: parseFloat(values.minimumPayment) || 0,
           interestRate: parseFloat(values.interestRate) || 0,
-          // Blank stays unset so the bills list shows "—" rather than a made-up day.
+          // Blank stays unset so the bills list shows "-" rather than a made-up day.
           dueDateOfMonth: parseInt(values.dueDateOfMonth, 10) || null
         };
       });
