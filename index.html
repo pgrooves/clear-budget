@@ -8298,23 +8298,16 @@ const UI = (() => {
 
     const order = swipeTabOrder();
     const i = order.indexOf(currentTab);
-    if (i < 0) return; // shouldn't happen; nothing sane to build against
     const nextIndex = dir < 0 ? i + 1 : i - 1;
-    const hasNeighbor = nextIndex >= 0 && nextIndex < order.length;
+    // No neighbour that way: nothing to build, the drag rubber-bands instead.
+    if (i < 0 || nextIndex < 0 || nextIndex >= order.length) return;
     const s = DataService.get();
     if (!s || !swipe.stage) return;
 
-    // No neighbour that way (first tab dragged further right, or last tab
-    // further left): clone the CURRENT tab instead of building nothing. The
-    // rubber-band (see the 0.25 damping in the touchmove handler) still only
-    // reveals a sliver, but now it's the same colors continuing rather than
-    // a bare background peeking through underneath .swipe-body. swipe.nextTab
-    // stays null below either way, so release always settles back — this
-    // is purely a stand-in to look at, never a committable tab.
-    const buildTab = hasNeighbor ? order[nextIndex] : currentTab;
+    const nextTab = order[nextIndex];
     const panel = document.createElement("div");
     panel.className = "swipe-incoming";
-    panel.innerHTML = swipeBodyInner(s, buildTab);
+    panel.innerHTML = swipeBodyInner(s, nextTab);
 
     // Pin the panel's top to whatever the viewport top is showing, so the
     // incoming tab is seen from ITS top while the outgoing one keeps the
@@ -8332,11 +8325,11 @@ const UI = (() => {
     if (swipe.line && swipe.line.parentNode) {
       const li = document.createElement("div");
       li.className = "tabline-layer tabline-incoming";
-      li.innerHTML = `<div class="section-label">${Util.esc(tabLabelText(buildTab))}</div>`;
+      li.innerHTML = `<div class="section-label">${Util.esc(tabLabelText(nextTab))}</div>`;
       swipe.line.parentNode.appendChild(li);
       swipe.lineIncoming = li;
     }
-    if (hasNeighbor) swipe.nextTab = buildTab;
+    swipe.nextTab = nextTab;
   }
 
   // Move the pair as one unit. The incoming panel is always parked exactly one
