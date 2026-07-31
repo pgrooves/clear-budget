@@ -4651,22 +4651,24 @@ const UI = (() => {
     const rowFor = (b) => {
       const rec = paidMap[b.id];
       const isPaid = !!(rec && rec.paid);
+      const isSavings = b.category === "savings";
       const due = Number(b.dueDateOfMonth) || 0;
       // Overdue styling only for unpaid rows whose due day has already passed
       // in the month we're actually looking at.
       const overdue = !isPaid && sameMonth && due > 0 && due < todayDay;
       const fromImport = isPaid && rec.source === "import";
+      const verb = isSavings ? "SAVED" : "PAID";
       return `
         <div class="inc-row">
           <div>
             <div class="inc-label">${Util.esc(b.label)}</div>
-            ${fromImport ? `<div class="meta">PAID ${Util.esc(Util.fmtMoney(Number(rec.amount)||0, 2))} ON ${Util.esc(Util.fmtDateShort(rec.paidDate))} · FROM IMPORT</div>` : ""}
+            ${fromImport ? `<div class="meta">${verb} ${Util.esc(Util.fmtMoney(Number(rec.amount)||0, 2))} ON ${Util.esc(Util.fmtDateShort(rec.paidDate))} · FROM IMPORT</div>` : ""}
           </div>
           <div class="inc-amt">
             ${Util.esc(Util.fmtMoney(Number(b.amount) || 0, 0))}
-            ${b.category === "savings" ? "" : `<span class="${overdue ? "text-danger" : ""}" style="opacity:0.75;">DUE ${due || "-"}</span>`}
+            ${isSavings ? "" : `<span class="${overdue ? "text-danger" : ""}" style="opacity:0.75;">DUE ${due || "-"}</span>`}
           </div>
-          <button class="txn-check ${isPaid ? "checked" : ""}" data-action="bill-toggle" data-id="${Util.esc(b.id)}" aria-label="PAID" data-learn="MARK THIS BILL AS PAID FOR THIS MONTH. THIS IS STATUS TRACKING ONLY; IT DOES NOT CHANGE SAFE TO SPEND, BUDGETED, OR ANY CATEGORY, BECAUSE BILLS ARE ALREADY SUBTRACTED AS BUDGETED AMOUNTS."></button>
+          <button class="txn-check ${isPaid ? "checked" : ""}" data-action="bill-toggle" data-id="${Util.esc(b.id)}" aria-label="${verb}" data-learn="${isSavings ? "MARK THIS SAVINGS TRANSFER AS SAVED FOR THIS MONTH. THIS IS STATUS TRACKING ONLY; IT DOES NOT CHANGE SAFE TO SPEND, BUDGETED, OR ANY CATEGORY, BECAUSE SAVINGS ARE ALREADY SUBTRACTED AS BUDGETED AMOUNTS." : "MARK THIS BILL AS PAID FOR THIS MONTH. THIS IS STATUS TRACKING ONLY; IT DOES NOT CHANGE SAFE TO SPEND, BUDGETED, OR ANY CATEGORY, BECAUSE BILLS ARE ALREADY SUBTRACTED AS BUDGETED AMOUNTS."}"></button>
         </div>`;
     };
 
@@ -4759,7 +4761,7 @@ const UI = (() => {
           <div class="inc-head">
             <div class="sub-label">NAME</div>
             <div class="sub-label">AMOUNT</div>
-            <div class="sub-label">PAID?</div>
+            <div class="sub-label">${kind === "savings" ? "SAVED?" : "PAID?"}</div>
           </div>
           <div class="txn-scroll" data-scroll-key="bills-scroll-${Util.esc(kind)}" data-learn="${Util.esc(title)} FOR THIS MONTH. SCROLL WITHIN THIS BOX.">
             ${leadingRows || ""}
