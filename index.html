@@ -4298,6 +4298,36 @@ const UI = (() => {
       const key = old.merchantKey || ImportEngine.normalizeMerchantKey(old.note || updated.note || "");
       if (key) patch.merchantMap = { ...(s.merchantMap || {}), [key]: updated.categoryId };
     }
+    // Filing a transaction under a bill is the clearest statement there is that
+    // this payment IS that bill, so treat it as one: mark the bill paid for the
+    // month the payment lands in, linked to this transaction so the balance
+    // counts it once, and teach billMap so the next import matches it without
+    // asking. This is the same learning the import review does, reached from
+    // the transaction instead of from the statement.
+    if (edCategoryType === "bill") {
+      const targetBill = (s.bills || []).find(b => b.id === edCategoryId);
+      if (targetBill) {
+        const monthYM = String(updated.date || "").slice(0, 7) || s.currentMonth;
+        const allPaid = { ...(s.billsPaid || {}) };
+        const forMonth = { ...(allPaid[monthYM] || {}) };
+        const existing = forMonth[targetBill.id];
+        // Don't stomp a record that already points at a different payment.
+        if (!existing || !existing.paid || existing.txnId === updated.id || !existing.txnId) {
+          forMonth[targetBill.id] = {
+            paid: true,
+            paidDate: updated.date || Util.todayISO(),
+            amount: Math.round((Number(updated.amount) || 0) * 100) / 100,
+            createdAt: (existing && existing.createdAt) || Date.now(),
+            source: "manual",
+            txnId: updated.id
+          };
+          allPaid[monthYM] = forMonth;
+          patch.billsPaid = allPaid;
+        }
+        const bkey = old.merchantKey || ImportEngine.normalizeMerchantKey(old.note || updated.note || "");
+        if (bkey) patch.billMap = { ...(s.billMap || {}), [bkey]: targetBill.id };
+      }
+    }
     try {
       await DataService.update(patch);
       closeTxnEditor(id);
@@ -4918,12 +4948,19 @@ const UI = (() => {
       // in the month we're actually looking at.
       const overdue = !isPaid && sameMonth && due > 0 && due < todayDay;
       const fromImport = isPaid && rec.source === "import";
+      // Ticking a bill can silently link it to a transaction already in the
+      // ledger, which is what stops the same payment being counted twice.
+      // Silent is fine; invisible is not — say which payment it found.
+      const linkedTxn = (isPaid && rec.txnId && !fromImport)
+        ? (s.transactions || []).find(t => t && t.id === rec.txnId)
+        : null;
       const verb = isSavings ? "SAVED" : "PAID";
       return `
         <div class="inc-row">
           <div>
             <div class="inc-label">${Util.esc(b.label)}</div>
             ${fromImport ? `<div class="meta">${verb} ${Util.esc(Util.fmtMoney(Number(rec.amount)||0, 2))} ON ${Util.esc(Util.fmtDateShort(rec.paidDate))} · FROM IMPORT</div>` : ""}
+            ${linkedTxn ? `<div class="meta" data-learn="THIS TICK WAS MATCHED TO A TRANSACTION ALREADY IN YOUR LOG, SO THE PAYMENT IS ONLY COUNTED ONCE AGAINST YOUR BALANCE. UNTICK AND RE-TICK IF IT PICKED THE WRONG ONE.">${verb} ${Util.esc(Util.fmtMoney(Number(rec.amount)||0, 2))} ON ${Util.esc(Util.fmtDateShort(rec.paidDate))} · MATCHED ${Util.esc((linkedTxn.note || "A LOGGED PAYMENT").slice(0, 24))}</div>` : ""}
           </div>
           <div class="inc-amt">
             ${Util.esc(Util.fmtMoney(Number(b.amount) || 0, 0))}
@@ -5156,6 +5193,61 @@ const UI = (() => {
     });
   }
 
+  // Every transaction already claimed by some paid record, so one payment can't
+  // be linked to two bills.
+  function linkedTxnIds(s) {
+    const linked = {};
+    const all = s.billsPaid || {};
+    Object.keys(all).forEach(m => {
+      const forMonth = all[m] || {};
+      Object.keys(forMonth).forEach(id => {
+        const rec = forMonth[id];
+        if (rec && rec.txnId) linked[rec.txnId] = true;
+      });
+    });
+    return linked;
+  }
+
+  // Which already-logged transaction, if any, IS this bill's payment?
+  //
+  // This is not just convenience. A paid record with no txnId counts as money
+  // leaving the account, so ticking a bill whose payment is ALREADY in the
+  // ledger would subtract it twice and read Safe To Spend low by the whole
+  // bill. Finding the link is what prevents that.
+  //
+  // Scoring is the same matcher the import review uses, run backwards: each
+  // candidate transaction is scored against this one bill. "exact" means the
+  // name AND the amount agree — confident enough to learn the merchant from.
+  // "fuzzy" is close enough to link (which fixes the double-count) but not to
+  // teach billMap, since a merchant learned wrong would auto-tick the wrong
+  // bill on every future import.
+  function findTxnForBill(s, bill) {
+    if (!bill || !bill.id) return null;
+    const linked = linkedTxnIds(s);
+    // Bills recur monthly, so a payment much older than this belongs to an
+    // earlier cycle and is not what's being ticked now.
+    const cutoff = new Date(Date.now() - 45 * 86400000).toISOString().slice(0, 10);
+    let best = null;
+    for (const t of (s.transactions || [])) {
+      if (!t || t.paymentType === "credit") continue;   // never touched checking
+      if (t.categoryType === "debt" || t.tickPay) continue; // debt payments have their own tick
+      if (linked[t.id]) continue;
+      if (String(t.date || "") < cutoff) continue;
+      const key = t.merchantKey || ImportEngine.normalizeMerchantKey(t.note || "");
+      const m = matchSettingsItem({ merchantKey: key, amount: t.amount }, [bill]);
+      if (!m) continue;
+      const delta = Math.abs((Number(t.amount) || 0) - (Number(bill.amount) || 0));
+      // A transaction already filed under this bill is the answer outright.
+      const direct = t.categoryId === bill.id;
+      const cand = { txn: t, tier: direct ? "exact" : m.tier, delta, direct };
+      if (!best) { best = cand; continue; }
+      if (best.direct !== cand.direct) { if (cand.direct) best = cand; continue; }
+      if (best.tier !== "exact" && cand.tier === "exact") { best = cand; continue; }
+      if (best.tier === cand.tier && cand.delta < best.delta) best = cand;
+    }
+    return best ? { txn: best.txn, tier: best.tier } : null;
+  }
+
   // Clone the whole billsPaid map, mutate only the current month's key, and send
   // the whole map. A nested partial patch would replace the map and destroy
   // sibling months — same pattern monthlyRollover uses in confirmNewMonth.
@@ -5163,6 +5255,7 @@ const UI = (() => {
     const month = s.currentMonth;
     const all = { ...(s.billsPaid || {}) };
     const forMonth = { ...(all[month] || {}) };
+    let billLearnPatch = {};
     if (forMonth[billId] && forMonth[billId].paid) {
       delete forMonth[billId];
     } else {
@@ -5171,6 +5264,7 @@ const UI = (() => {
       // per-income-source breakdown rows use "tithe:<incomeId>" ids, each
       // independently trackable from the one total checkmark.
       let amount;
+      let bill = null;
       if (billId === "tithe") {
         amount = BudgetEngine.tithe(s);
       } else if (billId.indexOf("tithe:") === 0) {
@@ -5179,24 +5273,37 @@ const UI = (() => {
         if (!src) return;
         amount = (Number(src.amount) || 0) * BudgetEngine.tithePercent(s) / 100;
       } else {
-        const bill = (s.bills || []).find(b => b.id === billId);
+        bill = (s.bills || []).find(b => b.id === billId);
         if (!bill) return;
         amount = Number(bill.amount) || 0;
       }
+      // If this payment is already sitting in the ledger, link to it rather
+      // than recording a second, independent outflow of the same money.
+      const link = bill ? findTxnForBill(s, bill) : null;
       forMonth[billId] = {
         paid: true,
-        paidDate: Util.todayISO(),
-        amount: Math.round(amount * 100) / 100,
+        // The transaction's own date beats "today" when we found one — it's
+        // when the money actually moved.
+        paidDate: link ? (link.txn.date || Util.todayISO()) : Util.todayISO(),
+        // Likewise the real amount paid, which may differ from the budgeted one.
+        amount: Math.round((link ? (Number(link.txn.amount) || amount) : amount) * 100) / 100,
         // Lets the balance tell a tick made after confirming today's balance
         // from one made before it; see billPaymentsSinceAnchor.
         createdAt: Date.now(),
         source: "manual",
-        txnId: null
+        txnId: link ? link.txn.id : null
       };
+      // Learn the merchant only from a confident match. A wrong one would
+      // silently auto-tick this bill from the wrong merchant on every future
+      // import, which is far worse than being asked again next month.
+      if (link && link.tier === "exact") {
+        const key = link.txn.merchantKey || ImportEngine.normalizeMerchantKey(link.txn.note || "");
+        if (key) billLearnPatch = { billMap: { ...(s.billMap || {}), [key]: billId } };
+      }
     }
     all[month] = forMonth;
     try {
-      await DataService.update({ billsPaid: all });
+      await DataService.update({ billsPaid: all, ...billLearnPatch });
       render();
     } catch (e) { alert("COULDN'T SAVE; CHECK CONNECTION"); console.warn(e); }
   }
