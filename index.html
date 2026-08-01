@@ -889,6 +889,15 @@ const Util = (() => {
   function currentMonthYM() {
     return todayISO().slice(0,7);
   }
+  // Whole days between an ISO date and today. Used to age the balance anchor:
+  // a confirmed balance is exact on the day it's taken and drifts from there,
+  // so how old it is belongs on screen next to it.
+  function daysSince(iso) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(iso || ""))) return 0;
+    const then = new Date(iso + "T00:00:00");
+    const now = new Date(todayISO() + "T00:00:00");
+    return Math.max(0, Math.round((now - then) / 86400000));
+  }
   function uuid() {
     return "id-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 9);
   }
@@ -900,7 +909,7 @@ const Util = (() => {
     if (s.length === 10) return s.slice(0, 5) + "-" + s.slice(5);
     return s;
   }
-  return { esc, fmtMoney, fmtMonthShort, fmtMonthLong, fmtDateShort, todayISO, currentMonthYM, uuid, fmtCode };
+  return { esc, fmtMoney, fmtMonthShort, fmtMonthLong, fmtDateShort, todayISO, currentMonthYM, daysSince, uuid, fmtCode };
 })();
 
 /* ============================================================
@@ -1078,11 +1087,147 @@ const BudgetEngine = (() => {
       .filter(t => t.paymentType === "credit" && t.month === m)
       .reduce((a, t) => a + num(t.amount), 0);
   }
-  // Received-income basis: only money marked as actually received counts toward
-  // what is safe to spend. Deliberately NOT the expected-income basis used by
-  // totalBudgeted / extraForDebt / DebtEngine, which must stay stable all month.
+  /* ---------- BANK BALANCE ANCHOR ----------
+     Safe To Spend used to be derived purely from flows: received income minus
+     obligations. That could never see money the app was not told about, so it
+     drifted from the account silently — and it started every month at zero
+     regardless of what was actually sitting in checking.
+
+     It is now anchored to a real observed balance instead. The account is the
+     most accurate thing available, so the anchor is the basis and the ledger
+     only carries it forward from the moment it was taken. Re-anchoring wipes
+     any accumulated logging error; there is deliberately no drift-reconciling
+     machinery, because typing today's balance IS the reconciliation. */
+
+  // Most recent observation. Sorted by date, then by when the row was written,
+  // so two checks on the same day resolve to the later one.
+  function latestAnchor(s) {
+    const list = (s.balanceChecks || []).filter(b => b && b.date);
+    if (!list.length) return null;
+    return list.slice().sort((a, b) => {
+      if (a.date !== b.date) return a.date < b.date ? -1 : 1;
+      return num(a.createdAt) - num(b.createdAt);
+    })[list.length - 1];
+  }
+  function hasAnchor(s) { return !!latestAnchor(s); }
+
+  // Has this ledger row happened since the anchor was taken — i.e. is it money
+  // the observed balance could NOT already know about?
+  //
+  // Date decides it in the normal case. Same-day rows fall back to creation
+  // time because the intended flow is import → confirm balance → carry on
+  // logging: anything created after the anchor is genuinely new activity, and
+  // anything created before it (including everything an import just wrote) has
+  // already cleared and is baked into the number the user typed. Rows with no
+  // createdAt — everything logged before this existed — count as already
+  // absorbed, which errs toward never subtracting the same money twice.
+  function isAfterAnchor(row, anchor) {
+    if (!anchor || !row) return false;
+    const d = String(row.date || "");
+    if (!d) return false;
+    if (d > anchor.date) return true;
+    if (d < anchor.date) return false;
+    return num(row.createdAt) > num(anchor.createdAt);
+  }
+
+  // Debit spending the balance has not seen yet. Credit is excluded on purpose:
+  // a card purchase does not touch checking until the card is paid, and it is
+  // already reserved separately as unpaid credit.
+  function debitSinceAnchor(s, anchor) {
+    return (s.transactions || [])
+      .filter(t => t && t.paymentType !== "credit" && isAfterAnchor(t, anchor))
+      .reduce((a, t) => a + num(t.amount), 0);
+  }
+  function incomeSinceAnchor(s, anchor) {
+    return (s.incomeLog || [])
+      .filter(e => isAfterAnchor(e, anchor))
+      .reduce((a, e) => a + num(e.amount), 0);
+  }
+
+  // Ticking a bill, savings transfer or tithe writes a paid record but NO
+  // ledger transaction, so without this the money would leave the account in
+  // real life and never leave the projected balance — the reservation would
+  // drop while the balance stayed put, overstating what's spendable by exactly
+  // the amount just paid.
+  //
+  // Records carrying a txnId came from an import, where a real transaction was
+  // written alongside; those are already counted as debit spending and would
+  // otherwise be subtracted twice.
+  function billPaymentsSinceAnchor(s, anchor) {
+    if (!anchor) return 0;
+    let total = 0;
+    const all = s.billsPaid || {};
+    Object.keys(all).forEach(month => {
+      const forMonth = all[month] || {};
+      Object.keys(forMonth).forEach(id => {
+        const rec = forMonth[id];
+        if (!rec || !rec.paid || rec.txnId) return;
+        if (!isAfterAnchor({ date: rec.paidDate, createdAt: rec.createdAt }, anchor)) return;
+        total += num(rec.amount);
+      });
+    });
+    return total;
+  }
+
+  // What the account should hold right now: the last confirmed balance carried
+  // forward by everything logged since. Zero with no anchor — callers must gate
+  // on hasAnchor rather than display this cold.
+  function projectedBalance(s) {
+    const a = latestAnchor(s);
+    if (!a) return 0;
+    return num(a.amount) + incomeSinceAnchor(s, a) - debitSinceAnchor(s, a) - billPaymentsSinceAnchor(s, a);
+  }
+
+  // Only UNPAID obligations get reserved. Anything already ticked has left the
+  // account, so it is inside the observed balance already and reserving it
+  // again would understate what is spendable. This is the mirror image of the
+  // old flow-based math, which subtracted every bill whether paid or not.
+  function unpaidBillsTotal(s) {
+    const paid = (s.billsPaid || {})[s.currentMonth] || {};
+    return (s.bills || [])
+      .filter(b => !(paid[b.id] && paid[b.id].paid))
+      .reduce((a, b) => a + num(b.amount), 0);
+  }
+  // Tithe is a display-only line rather than a stored bill, and it can be
+  // ticked either as one total or per income source, so its paid amount is
+  // summed from both key shapes and clamped.
+  function unpaidTithe(s) {
+    if (!titheEnabled(s)) return 0;
+    const paid = (s.billsPaid || {})[s.currentMonth] || {};
+    let paidAmt = 0;
+    Object.keys(paid).forEach(k => {
+      if (k !== "tithe" && k.indexOf("tithe:") !== 0) return;
+      if (paid[k] && paid[k].paid) paidAmt += num(paid[k].amount);
+    });
+    return Math.max(0, tithe(s) - paidAmt);
+  }
+  // Ticking a debt minimum writes a real debit transaction, so a paid minimum
+  // has already come out of the balance and must not be reserved on top.
+  function unpaidDebtMins(s) {
+    const m = s.currentMonth;
+    const paidIds = {};
+    (s.transactions || []).forEach(t => {
+      if (t && t.tickPay && t.categoryType === "debt" && t.month === m) paidIds[t.categoryId] = true;
+    });
+    return (s.debts || [])
+      .filter(d => !paidIds[d.id])
+      .reduce((a, d) => a + num(d.minimumPayment), 0);
+  }
+  function unpaidObligations(s) {
+    return unpaidBillsTotal(s) + unpaidTithe(s) + unpaidDebtMins(s);
+  }
+
+  // Expected income that has not landed yet. Shown beside the balance so "what
+  // is here" and "what is still coming" stay visibly separate instead of being
+  // blended into one optimistic figure.
+  function incomeStillExpected(s) {
+    return Math.max(0, totalIncome(s) - receivedIncome(s));
+  }
+
+  // What is genuinely free to spend: what the account holds, less everything
+  // still owed out of it this month, less credit not yet paid off.
   function safeToSpend(s) {
-    return receivedIncome(s) - titheOnReceived(s) - totalBills(s) - totalDebtMins(s) - totalUnpaidCredit(s);
+    return projectedBalance(s) - unpaidObligations(s) - totalUnpaidCredit(s);
   }
   function spendingBudgetedTotal(s) {
     return (s.spendingCategories || []).reduce((a, c) => a + num(c.budgeted), 0);
@@ -1174,6 +1319,8 @@ const BudgetEngine = (() => {
     totalIncome, receivedIncome, tithePercent, titheEnabled, tithe, titheOnReceived, titheBillView,
     billsSubtotal, totalBills, totalDebtMins,
     totalUnpaidCredit, safeToSpend, spendingBudgetedTotal, totalBudgeted, extraForDebt,
+    latestAnchor, hasAnchor, isAfterAnchor, projectedBalance, billPaymentsSinceAnchor,
+    unpaidBillsTotal, unpaidTithe, unpaidDebtMins, unpaidObligations, incomeStillExpected,
     categorySpent, rolloverAmount, categoryRemaining, personSpent,
     totalDebt, targetDebt, debtOrder, debtStrategy, unpaidCredit, cashToCover,
     monthElapsed, monthDayInfo
@@ -1352,6 +1499,11 @@ function buildDefaultData(mode, names, withExamples, titheOn) {
     // Month-keyed paid-status map, same shape as monthlyRollover:
     // billsPaid[month][billId] = { paid, paidDate, amount, source, txnId }
     billsPaid: {},
+    // Dated observations of what the checking account actually held:
+    // { id, date, amount, createdAt, source }. A list rather than a single
+    // field so re-anchoring mid-month is the same operation as anchoring on
+    // the 1st, and so the history stays inspectable.
+    balanceChecks: [],
     currentMonth: nowMonth
   };
 }
@@ -1588,6 +1740,16 @@ const ImportEngine = (() => {
       const chosen = effAmountPos === "last" ? allAmts[allAmts.length - 1] : allAmts[0];
       const txnAmt = chosen.value;
 
+      // Running balance, when the layout has one. Previously the non-picked
+      // amount was simply thrown away; it's the account balance as of this row,
+      // and the newest row's is the closing balance — worth keeping so the
+      // balance anchor can be pre-filled instead of typed.
+      let runningBalance = null;
+      if (effSecondIsBalance && allAmts.length >= 2) {
+        const other = allAmts.filter(a => a !== chosen);
+        if (other.length) runningBalance = other[other.length - 1].value;
+      }
+
       // Description = combined text with the date and (usually) all amount tokens stripped.
       // If secondIsBalance is false, keep the non-chosen amount tokens in the description.
       let desc = g.map(l => l.line).join(" ");
@@ -1599,10 +1761,20 @@ const ImportEngine = (() => {
       }
       desc = desc.replace(/\s+/g, " ").trim();
 
-      items.push({ date: dEntry.date.iso, amount: txnAmt, description: desc });
+      items.push({ date: dEntry.date.iso, amount: txnAmt, description: desc, runningBalance });
     }
     structure.detected = items.length;
     return { items, structure };
+  }
+
+  // Closing balance from a parsed set of rows: the running balance on the
+  // newest-dated row that has one. Returns null when the layout carries no
+  // balance at all, which is the common case for two-column exports.
+  function closingBalanceOf(items) {
+    const withBal = (items || []).filter(i => i && i.runningBalance != null && isFinite(i.runningBalance));
+    if (!withBal.length) return null;
+    const newest = withBal.slice().sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+    return newest[newest.length - 1].runningBalance;
   }
 
   function computePasteFingerprint(structure) {
@@ -1821,7 +1993,7 @@ const ImportEngine = (() => {
 
   return {
     parseDate, findDate, findAmounts,
-    csvParse, textParse,
+    csvParse, textParse, closingBalanceOf,
     computePasteFingerprint, computeCsvFingerprint,
     normalizeMerchantKey, normalizeDescForCompare, cleanDescription,
     isExactDupe, findFuzzyMatch,
@@ -1927,6 +2099,13 @@ const UI = (() => {
   // New Month overlay state
   let newMonthOpen = false;
   let newMonthChoices = {}; // { categoryId: "roll" | "reset" }
+  // Balance confirm overlay. `prefill` carries a balance lifted off an import
+  // so the user confirms a number rather than typing one; it is never saved
+  // without them seeing it first.
+  let balanceForm = null; // { amount, date, error, prefill }
+  // { expected, entered, gap, dismissed } — set once on save when a previous
+  // anchor existed. Informational only; never alters any figure.
+  let balanceGapNotice = null;
 
   // Log-screen "IMPORT FROM BANK" inline menu
   let importMenuOpen = false;
@@ -2000,6 +2179,7 @@ const UI = (() => {
       dateColumn: null,        // CSV: header index
       amountColumn: null,      // CSV: header index
       descriptionColumn: null, // CSV: header index
+      balanceColumn: null,     // CSV: header index; OPTIONAL running-balance column
       balanceIsAmount: false,  // paste: legacy YES/NO running-balance answer (maps to amountPos)
       hasBalancePrompt: false, // paste: show running-balance question
       label: "",
@@ -2016,6 +2196,11 @@ const UI = (() => {
     },
     reviewRows: [],
     showOlder: false,
+    // Closing balance lifted off the import, when the layout carries one.
+    // Offered as a pre-fill on the balance overlay after the import commits;
+    // never saved without confirmation, since a statement's closing balance is
+    // as-of its own date rather than as-of now.
+    detectedBalance: null,
     // Three-choice panel for uncategorized rows on IMPORT ALL.
     // Setup wizard: same parse pipeline, different destination after parsing.
     wizard: false,
@@ -2780,7 +2965,8 @@ const UI = (() => {
     const s = DataService.get();
     if (!s) return "loading";
     const screen = settingsOpen ? "settings" : ("tab:" + currentTab);
-    const overlay = importFlow.open && importFlow.stage ? ("import:" + importFlow.stage)
+    const overlay = balanceForm ? "balance"
+                    : importFlow.open && importFlow.stage ? ("import:" + importFlow.stage)
                     : (newMonthOpen ? "newmonth" : "none");
     return `${screen}|${overlay}`;
   }
@@ -2978,6 +3164,15 @@ const UI = (() => {
     const titheExpected = BudgetEngine.tithe(s);
     const titheReceived = BudgetEngine.titheOnReceived(s);
     const heroDanger = safe < 0 ? "danger" : "";
+    // Every figure below hangs off a confirmed balance. Rather than silently
+    // falling back to a different definition when there isn't one, the hero
+    // asks for it — a number that quietly changes meaning depending on app
+    // state is worse than one that tells you what it needs.
+    const anchor = BudgetEngine.latestAnchor(s);
+    const anchored = !!anchor;
+    const projected = BudgetEngine.projectedBalance(s);
+    const stillExpected = BudgetEngine.incomeStillExpected(s);
+    const anchorAgeDays = anchor ? Util.daysSince(anchor.date) : 0;
 
     // Per-person spend (was Dashboard-only).
     let peopleHtml = "";
@@ -3021,7 +3216,22 @@ const UI = (() => {
       .filter(b => !(paidThisMonth[b.id] && paidThisMonth[b.id].paid))
       .reduce((a, b) => a + (Number(b.amount) || 0), 0);
     const savingsHtml = savingsAll.length ? `
-      <div class="sub-label text-success" style="margin-top:8px;" data-learn="HOW MANY OF YOUR SAVINGS TRANSFERS YOU'VE SET ASIDE THIS MONTH, AND WHAT'S LEFT TO GO. TICK THEM OFF ON THE SAVINGS TAB. THIS IS TRACKING ONLY; SAVINGS ARE ALREADY SUBTRACTED AS BUDGETED AMOUNTS."><span class="stat-val">${savingsDone.length}/${savingsAll.length}</span> <span class="stat-lbl">SAVINGS ALLOCATED</span>${savingsLeft > 0 ? ` <span class="stat-lbl">·</span> <span class="stat-val">${Util.esc(Util.fmtMoney(savingsLeft, 0))}</span> <span class="stat-lbl">LEFT</span>` : ``}</div>` : "";
+      <div class="sub-label text-success" style="margin-top:8px;" data-learn="HOW MANY OF YOUR SAVINGS TRANSFERS YOU'VE SET ASIDE THIS MONTH, AND WHAT'S LEFT TO GO. TICK THEM OFF ON THE SAVINGS TAB. UNTIL YOU DO, THE AMOUNT IS HELD BACK OUT OF SAFE TO SPEND."><span class="stat-val">${savingsDone.length}/${savingsAll.length}</span> <span class="stat-lbl">SAVINGS ALLOCATED</span>${savingsLeft > 0 ? ` <span class="stat-lbl">·</span> <span class="stat-val">${Util.esc(Util.fmtMoney(savingsLeft, 0))}</span> <span class="stat-lbl">LEFT</span>` : ``}</div>` : "";
+
+    // Balance lines. IN THE ACCOUNT is the anchor carried forward by everything
+    // logged since; STILL EXPECTED is income that hasn't landed. They're kept
+    // as separate facts rather than blended, so "what's here" never gets
+    // confused with "what's coming".
+    const balanceHtml = anchored ? `
+      <div class="sub-label" style="margin-top:8px;" data-learn="WHAT YOUR CHECKING ACCOUNT SHOULD HOLD RIGHT NOW: THE LAST BALANCE YOU CONFIRMED, PLUS INCOME LOGGED SINCE, MINUS DEBIT SPENDING LOGGED SINCE. TAP TO CONFIRM A FRESH BALANCE ANY TIME."><span class="stat-lbl">IN THE ACCOUNT</span> <span class="stat-val">${Util.esc(Util.fmtMoney(projected, 0))}</span> <span class="stat-lbl">· CONFIRMED ${anchorAgeDays === 0 ? "TODAY" : anchorAgeDays + " DAY" + (anchorAgeDays === 1 ? "" : "S") + " AGO"}</span> <button class="link" data-action="open-balance">UPDATE →</button></div>
+      ${stillExpected > 0 ? `<div class="sub-label" style="margin-top:8px;" data-learn="EXPECTED INCOME THAT HASN'T ARRIVED YET. IT IS NOT PART OF SAFE TO SPEND — THAT NUMBER ONLY COUNTS MONEY ACTUALLY IN THE ACCOUNT."><span class="stat-lbl">STILL EXPECTED</span> <span class="stat-val">${Util.esc(Util.fmtMoney(stillExpected, 0))}</span> <span class="stat-lbl">NOT YET IN THE ACCOUNT</span></div>` : ""}` : "";
+
+    // Gap notice: what the app projected vs what was actually confirmed. Purely
+    // informational and dismissible — the number the user typed always wins.
+    // A gap that survives a fresh import means the export missed something.
+    const gap = balanceGapNotice;
+    const gapHtml = (gap && !gap.dismissed) ? `
+      <div class="sub-label" style="margin-top:8px; opacity:0.85;" data-learn="THE DIFFERENCE BETWEEN WHAT THE APP EXPECTED YOU TO HAVE AND THE BALANCE YOU CONFIRMED. IT CHANGES NOTHING — YOUR CONFIRMED BALANCE IS ALWAYS USED. IF A GAP SHOWS UP RIGHT AFTER AN IMPORT, THE EXPORT PROBABLY DIDN'T COVER EVERYTHING."><span class="stat-lbl">EXPECTED</span> <span class="stat-val">${Util.esc(Util.fmtMoney(gap.expected, 0))}</span> <span class="stat-lbl">· YOU ENTERED</span> <span class="stat-val">${Util.esc(Util.fmtMoney(gap.entered, 0))}</span> <span class="stat-lbl">·</span> <span class="stat-val">${Util.esc(Util.fmtMoney(Math.abs(gap.gap), 0))}</span> <span class="stat-lbl">${gap.gap < 0 ? "UNACCOUNTED FOR" : "MORE THAN EXPECTED"}</span> <button class="link" data-action="dismiss-gap">× DISMISS</button></div>` : "";
 
     // Month-rollover nudge (was Log-only).
     const realMonth = Util.currentMonthYM();
@@ -3035,8 +3245,14 @@ const UI = (() => {
         ${swipeHintHtml()}
         <div class="meta" style="opacity:0.75; margin:12px 0;" data-learn="EVERY NUMBER IN THIS BLOCK IS FOR THIS MONTH ONLY. USE NEW MONTH IN SETTINGS TO ROLL FORWARD.">MONTH OF ${Util.esc(Util.fmtMonthLong(s.currentMonth))}</div>
         <div class="sub-label" data-learn="SUB-LABEL FOR THE SAFE TO SPEND NUMBER BELOW.">SAFE TO SPEND</div>
-        <div class="hero ${heroDanger}" data-learn="WHAT'S TRULY LEFT TO SPEND THIS MONTH AFTER TITHE, BILLS, DEBT MINIMUMS, AND UNPAID CREDIT ARE SET ASIDE. GOES RED WHEN NEGATIVE.">${Util.esc(Util.fmtMoney(safe, 0))}</div>
-        <div class="sub-label" style="margin-top:8px;" data-learn="HOW MUCH OF YOUR EXPECTED INCOME HAS ACTUALLY ARRIVED THIS MONTH. ONLY RECEIVED INCOME COUNTS TOWARD SAFE TO SPEND. MARK INCOME AS RECEIVED ON THE LOG INCOME TAB."><span class="stat-lbl">RECEIVED</span> <span class="stat-val">${Util.esc(Util.fmtMoney(received, 0))}</span> <span class="stat-lbl">OF</span> <span class="stat-val">${Util.esc(Util.fmtMoney(expectedIncome, 0))}</span> <span class="stat-lbl">EXPECTED</span></div>
+        ${anchored ? `
+        <div class="hero ${heroDanger}" data-learn="WHAT'S ACTUALLY FREE TO SPEND: THE BALANCE IN YOUR ACCOUNT, LESS BILLS, TITHE AND DEBT MINIMUMS YOU STILL OWE THIS MONTH, LESS UNPAID CREDIT. GOES RED WHEN NEGATIVE.">${Util.esc(Util.fmtMoney(safe, 0))}</div>`
+        : `
+        <div class="hero" data-learn="SAFE TO SPEND IS BASED ON WHAT'S ACTUALLY IN YOUR CHECKING ACCOUNT, SO IT NEEDS A BALANCE TO WORK FROM. TAP TO ENTER IT; IT TAKES A FEW SECONDS AND YOU CAN UPDATE IT ANY TIME."><button class="link" data-action="open-balance">CONFIRM YOUR BALANCE →</button></div>
+        <div class="sub-label" style="margin-top:8px;" data-learn="UNTIL A BALANCE IS CONFIRMED THERE IS NOTHING TO BASE SAFE TO SPEND ON. NOTHING ELSE IN THE APP IS AFFECTED.">ENTER WHAT YOUR BANK SAYS RIGHT NOW</div>`}
+        ${balanceHtml}
+        ${gapHtml}
+        <div class="sub-label" style="margin-top:8px;" data-learn="HOW MUCH OF YOUR EXPECTED INCOME HAS ACTUALLY ARRIVED THIS MONTH. MARK INCOME AS RECEIVED ON THE LOG INCOME TAB."><span class="stat-lbl">RECEIVED</span> <span class="stat-val">${Util.esc(Util.fmtMoney(received, 0))}</span> <span class="stat-lbl">OF</span> <span class="stat-val">${Util.esc(Util.fmtMoney(expectedIncome, 0))}</span> <span class="stat-lbl">EXPECTED</span></div>
         ${BudgetEngine.titheEnabled(s) ? `<div class="sub-label" style="margin-top:8px;" data-learn="HOW MUCH OF YOUR TITHE HAS BEEN SET ASIDE SO FAR, BASED ON INCOME MARKED RECEIVED THIS MONTH, OF THE FULL TITHE EXPECTED ON YOUR TOTAL EXPECTED INCOME."><span class="stat-lbl">TITHED</span> <span class="stat-val">${Util.esc(Util.fmtMoney(titheReceived, 0))}</span> <span class="stat-lbl">OF</span> <span class="stat-val">${Util.esc(Util.fmtMoney(titheExpected, 0))}</span></div>` : ""}
         <div class="sub-label" style="margin-top:8px;" data-learn="TOTAL BUDGETED = TITHE + BILLS + DEBT MINIMUMS + SPENDING BUDGETS, FOR YOUR FULL EXPECTED MONTH, SO IT DOESN'T MOVE AS PAYCHECKS LAND. ON CREDIT = TOTAL OF THIS MONTH'S CREDIT TRANSACTIONS THAT AREN'T PAID OFF YET."><span class="stat-val">${Util.esc(Util.fmtMoney(budgeted, 0))}</span> <span class="stat-lbl">BUDGETED ·</span> <span class="stat-val">${Util.esc(Util.fmtMoney(credit, 0))}</span> <span class="stat-lbl">ON CREDIT</span></div>
         ${peopleHtml}
@@ -3093,6 +3309,15 @@ const UI = (() => {
         render();
       });
     });
+    root.querySelectorAll("[data-action=open-balance]").forEach(el => {
+      el.addEventListener("click", () => openBalanceOverlay(null));
+    });
+    root.querySelectorAll("[data-action=dismiss-gap]").forEach(el => {
+      el.addEventListener("click", () => {
+        if (balanceGapNotice) balanceGapNotice.dismissed = true;
+        render();
+      });
+    });
   }
 
   // New Month + Import overlays are separate layers living outside #root.
@@ -3102,12 +3327,15 @@ const UI = (() => {
   function syncOverlays(s) {
     const wantNewMonth = !!s && !!newMonthOpen;
     const wantImport = !!s && !!(importFlow.open && importFlow.stage);
-    if (!wantNewMonth && !wantImport) {
+    const wantBalance = !!s && !!balanceForm;
+    if (!wantNewMonth && !wantImport && !wantBalance) {
       document.querySelectorAll(".overlay").forEach(o => o.remove());
       return;
     }
     if (wantNewMonth) renderNewMonthOverlay(s);
     if (wantImport) renderImportOverlay(s);
+    // Last, so confirming a balance straight after an import sits on top.
+    if (wantBalance) renderBalanceOverlay(s);
   }
 
   /* ------------- LOG SCREEN ------------- */
@@ -3308,7 +3536,7 @@ const UI = (() => {
             <button class="subtab ${logSubTab === "income" ? "active" : ""}" data-action="log-subtab" data-sub="income" data-learn="LOG MONEY COMING IN, AND MARK YOUR EXPECTED INCOME AS RECEIVED.">LOG INCOME</button>
           </div>
           ${logSubTab === "income" ? incomeSectionHtml : `
-          <div class="section-label" style="margin-top:16px;" data-learn="LOG A PURCHASE BLOCK. FILL IN AMOUNT, PICK A CATEGORY, CHOOSE DEBIT OR CREDIT, AND HIT LOG IT.">→ LOG A PURCHASE</div>
+          <div class="section-label" style="margin-top:16px;" data-learn="LOG A PURCHASE BLOCK. FILL IN AMOUNT, CHOOSE DEBIT OR CREDIT, AND HIT LOG IT. CATEGORY IS OPTIONAL.">→ LOG A PURCHASE</div>
           <div class="stack-24" style="margin-top:24px;">
             <div>
               <div class="sub-label">AMOUNT</div>
@@ -3318,15 +3546,16 @@ const UI = (() => {
             ${bankChipsHtml}
             <div>
               <div class="sub-label">PAYMENT</div>
-              <div class="toggle-row" data-learn="DEBIT SUBTRACTS FROM SAFE TO SPEND IMMEDIATELY. CREDIT LEAVES SAFE TO SPEND FLAT UNTIL YOU PAY THE CARD; UNPAID CREDIT IS TRACKED IN THE CREDIT THIS MONTH BLOCK ON THE DASHBOARD.">
+              <div class="toggle-row" data-learn="DEBIT COMES STRAIGHT OUT OF YOUR TRACKED BALANCE AND OUT OF SAFE TO SPEND. CREDIT LEAVES THE BALANCE ALONE — IT HASN'T TOUCHED CHECKING YET — BUT IS STILL HELD BACK AS UNPAID CREDIT.">
                 <button class="toggle ${logForm.paymentType==='cash'?'active':''}" data-action="pick-pay" data-pay="cash" data-learn="MONEY FROM YOUR CHECKING ACCOUNT. THE AMOUNT COMES OUT OF SAFE TO SPEND NOW.">DEBIT</button>
                 <button class="toggle ${logForm.paymentType==='credit'?'active':''}" data-action="pick-pay" data-pay="credit" data-learn="CREDIT CARD. THE AMOUNT SITS UNDER UNPAID CREDIT UNTIL THE CARD IS PAID OFF.">CREDIT</button>
               </div>
             </div>
             ${cardChipsHtml}
-            <div data-learn="CATEGORY PICKER. TAP A CHIP TO ASSIGN THIS PURCHASE TO A SPENDING CATEGORY OR A BILL. DEBTS AREN'T LISTED HERE; LOG DEBT PAYMENTS FROM THE DEBTS TAB.">
-              <div class="sub-label">CATEGORY</div>
+            <div data-learn="CATEGORY PICKER. OPTIONAL — LEAVE IT BLANK AND THE PURCHASE GOES TO MISC / ALL OTHERS SO IT STILL COUNTS AGAINST YOUR BALANCE. TAP A CHIP TO FILE IT UNDER A SPENDING CATEGORY OR A BILL. DEBTS AREN'T LISTED HERE; LOG DEBT PAYMENTS FROM THE DEBTS TAB.">
+              <div class="sub-label">CATEGORY <span style="opacity:0.6;">· OPTIONAL</span></div>
               <div class="chips" data-scroll-key="log-cat-chips">${chipsHtml || `<div class="meta">NO CATEGORIES; ADD SOME IN SETTINGS</div>`}</div>
+              ${logForm.categoryId ? "" : `<div class="meta" style="margin-top:8px; opacity:0.7;">NO CATEGORY PICKED; THIS WILL GO TO MISC / ALL OTHERS</div>`}
             </div>
             <div>
               <div class="sub-label">NOTE</div>
@@ -4029,21 +4258,28 @@ const UI = (() => {
     if (!isFinite(amount) || amount <= 0) {
       formErrors["txn_" + id] = "ENTER A VALID AMOUNT"; render(); return;
     }
-    if (!ed.form.categoryId) {
-      formErrors["txn_" + id] = "PICK A CATEGORY"; render(); return;
+    // Same rule as the log form: no category is not an error, it's Misc.
+    let miscPatch = {};
+    let edCategoryId = ed.form.categoryId;
+    let edCategoryType = ed.form.categoryType;
+    if (!edCategoryId) {
+      const m = ensureMiscCategory(s);
+      edCategoryId = m.cat.id;
+      edCategoryType = "spending";
+      miscPatch = m.patch;
     }
     const isCouple = s.settings && s.settings.mode === "couple";
     const person = isCouple ? ed.form.person : (s.settings.names[0] || "ME").toUpperCase();
     // Debt payments are debit-only. Pinned here rather than trusted from the
     // form so a record saved as credit under an older build is corrected the
     // next time it's opened and saved.
-    const isDebtTxn = ed.form.categoryType === "debt";
+    const isDebtTxn = edCategoryType === "debt";
     const paymentType = isDebtTxn ? "cash" : ed.form.paymentType;
     const updated = {
       ...old,
       amount: Math.round(amount * 100) / 100,
-      categoryId: ed.form.categoryId,
-      categoryType: ed.form.categoryType,
+      categoryId: edCategoryId,
+      categoryType: edCategoryType,
       paymentType: paymentType,
       person: person,
       note: (ed.form.note || "").toUpperCase().slice(0, 60),
@@ -4055,7 +4291,8 @@ const UI = (() => {
     if (updated.categoryId) delete updated.needsCategory;
     const patch = {
       transactions: (s.transactions||[]).map(x => x.id === id ? updated : x),
-      debts: applyDebtDelta(s.debts, old, updated)
+      debts: applyDebtDelta(s.debts, old, updated),
+      ...miscPatch
     };
     if (updated.categoryId && old.source === "import" && (old.needsCategory || !old.categoryId)) {
       const key = old.merchantKey || ImportEngine.normalizeMerchantKey(old.note || updated.note || "");
@@ -4110,6 +4347,7 @@ const UI = (() => {
       note: note.toUpperCase().slice(0, 60),
       bankId: incomeForm.bankId || null,
       tithe: incomeForm.tithe !== "no",
+      createdAt: Date.now(),
       source: "manual"
     };
     try {
@@ -4148,6 +4386,7 @@ const UI = (() => {
           person: isCouple ? "JOINT" : (s.settings.names[0] || "ME").toUpperCase(),
           note: "",
           tithe: true,
+          createdAt: Date.now(),
           source: "manual"
         };
         await DataService.update({ incomeLog: DataService.appendTxns(entry) });
@@ -4407,6 +4646,20 @@ const UI = (() => {
     render();
   }
 
+  // Catch-all for anything logged without a category. Picking one is no longer
+  // a gate on logging: a transaction that never gets recorded is worse for
+  // accuracy than one filed under Misc, and Safe To Spend now moves with real
+  // spending, so blocking the form would mean blocking the balance too.
+  // Reuses the existing Misc category when there is one rather than breeding
+  // duplicates. Returns { cat, patch } — patch is empty when nothing new.
+  function ensureMiscCategory(s) {
+    const cats = s.spendingCategories || [];
+    const found = cats.find(c => c && /^\s*misc/i.test(String(c.label || "")));
+    if (found) return { cat: found, patch: {} };
+    const cat = { id: Util.uuid(), label: "Misc / All Others", budgeted: 0, type: "spending" };
+    return { cat, patch: { spendingCategories: [...cats, cat] } };
+  }
+
   async function submitLog(s) {
     formErrors.log = "";
     const amount = parseFloat(logForm.amount);
@@ -4415,10 +4668,15 @@ const UI = (() => {
       render();
       return;
     }
-    if (!logForm.categoryId) {
-      formErrors.log = "PICK A CATEGORY";
-      render();
-      return;
+    // Category is optional. Left blank, it falls to Misc instead of erroring.
+    let miscPatch = {};
+    let categoryId = logForm.categoryId;
+    let categoryType = logForm.categoryType;
+    if (!categoryId) {
+      const m = ensureMiscCategory(s);
+      categoryId = m.cat.id;
+      categoryType = "spending";
+      miscPatch = m.patch;
     }
     const isCouple = s.settings && s.settings.mode === "couple";
     const person = isCouple ? logForm.person : (s.settings.names[0] || "ME").toUpperCase();
@@ -4428,22 +4686,25 @@ const UI = (() => {
       // is today, as it always was.
       date: logForm.date || Util.todayISO(),
       amount: Math.round(amount * 100) / 100,
-      categoryId: logForm.categoryId,
-      categoryType: logForm.categoryType,
+      categoryId: categoryId,
+      categoryType: categoryType,
       note: (logForm.note || "").toUpperCase().slice(0, 60),
       paymentType: logForm.paymentType,
       person: person,
       month: s.currentMonth,
       cardId: logForm.paymentType === "credit" ? (logForm.cardId || null) : null,
       bankId: logForm.paymentType === "cash" ? (logForm.bankId || null) : null,
+      // Wall-clock write time. The balance anchor uses it to tell a row logged
+      // just after a balance was confirmed from one that was already in it.
+      createdAt: Date.now(),
       source: "manual"
     };
-    const patch = { transactions: DataService.appendTxns(txn) };
+    const patch = { transactions: DataService.appendTxns(txn), ...miscPatch };
 
     // If logging against a debt, decrement its balance
-    if (logForm.categoryType === "debt") {
+    if (categoryType === "debt") {
       const debts = (s.debts||[]).map(d => {
-        if (d.id !== logForm.categoryId) return d;
+        if (d.id !== categoryId) return d;
         const newBal = Math.max(0, (Number(d.balance)||0) - amount);
         return { ...d, balance: Math.round(newBal * 100) / 100 };
       });
@@ -4640,7 +4901,7 @@ const UI = (() => {
           ${Util.esc(Util.fmtMoney(titheAmt, 0))}
           <span style="opacity:0.75;">${BudgetEngine.tithePercent(s)}%</span>
         </div>
-        <button class="txn-check ${titheIsPaid ? "checked" : ""}" data-action="bill-toggle" data-id="tithe" aria-label="PAID" data-learn="MARK YOUR TITHE AS GIVEN FOR THIS MONTH. STATUS TRACKING ONLY; SAFE TO SPEND ALREADY ACCOUNTS FOR TITHE AUTOMATICALLY AS INCOME IS MARKED RECEIVED."></button>
+        <button class="txn-check ${titheIsPaid ? "checked" : ""}" data-action="bill-toggle" data-id="tithe" aria-label="PAID" data-learn="MARK YOUR TITHE AS GIVEN FOR THIS MONTH. THE MONEY COMES OUT OF YOUR TRACKED BALANCE AND STOPS BEING HELD BACK, SO SAFE TO SPEND DOESN'T MOVE — IT WAS ALREADY SET ASIDE FOR THIS."></button>
       </div>
       ${titheSubRowsHtml}
       <div style="margin-top:-4px;">
@@ -4668,7 +4929,7 @@ const UI = (() => {
             ${Util.esc(Util.fmtMoney(Number(b.amount) || 0, 0))}
             ${isSavings ? "" : `<span class="${overdue ? "text-danger" : ""}" style="opacity:0.75;">DUE ${due || "-"}</span>`}
           </div>
-          <button class="txn-check ${isPaid ? "checked" : ""}" data-action="bill-toggle" data-id="${Util.esc(b.id)}" aria-label="${verb}" data-learn="${isSavings ? "MARK THIS SAVINGS TRANSFER AS SAVED FOR THIS MONTH. THIS IS STATUS TRACKING ONLY; IT DOES NOT CHANGE SAFE TO SPEND, BUDGETED, OR ANY CATEGORY, BECAUSE SAVINGS ARE ALREADY SUBTRACTED AS BUDGETED AMOUNTS." : "MARK THIS BILL AS PAID FOR THIS MONTH. THIS IS STATUS TRACKING ONLY; IT DOES NOT CHANGE SAFE TO SPEND, BUDGETED, OR ANY CATEGORY, BECAUSE BILLS ARE ALREADY SUBTRACTED AS BUDGETED AMOUNTS."}"></button>
+          <button class="txn-check ${isPaid ? "checked" : ""}" data-action="bill-toggle" data-id="${Util.esc(b.id)}" aria-label="${verb}" data-learn="${isSavings ? "MARK THIS SAVINGS TRANSFER AS SAVED FOR THIS MONTH. THE MONEY COMES OUT OF YOUR TRACKED BALANCE AND STOPS BEING HELD BACK, SO SAFE TO SPEND DOESN'T MOVE — IT WAS ALREADY SET ASIDE FOR THIS." : "MARK THIS BILL AS PAID FOR THIS MONTH. THE MONEY COMES OUT OF YOUR TRACKED BALANCE AND STOPS BEING HELD BACK, SO SAFE TO SPEND DOESN'T MOVE — IT WAS ALREADY SET ASIDE FOR THIS."}"></button>
         </div>`;
     };
 
@@ -4926,6 +5187,9 @@ const UI = (() => {
         paid: true,
         paidDate: Util.todayISO(),
         amount: Math.round(amount * 100) / 100,
+        // Lets the balance tell a tick made after confirming today's balance
+        // from one made before it; see billPaymentsSinceAnchor.
+        createdAt: Date.now(),
         source: "manual",
         txnId: null
       };
@@ -5060,6 +5324,7 @@ const UI = (() => {
       month: s.currentMonth,
       cardId: null,
       tickPay: true,
+      createdAt: Date.now(),
       source: "manual"
     };
     try {
@@ -5384,6 +5649,7 @@ const UI = (() => {
       person: person,
       month: dateISO.slice(0, 7),
       cardId: null,
+      createdAt: Date.now(),
       source: "manual"
     };
     // Reuse applyDebtDelta so the debt-balance reconciliation logic is shared
@@ -5809,6 +6075,10 @@ const UI = (() => {
       </div>`;
 
     // --- 2. Safe to Spend
+    // Same rule as the on-screen hero: with no confirmed balance there is
+    // nothing to derive this from, so say so rather than print a figure that
+    // reads like a real one.
+    const stsAnchored = B.hasAnchor(s);
     const sts = B.safeToSpend(s);
     const received = B.receivedIncome(s);
     const expected = B.totalIncome(s);
@@ -5816,9 +6086,9 @@ const UI = (() => {
     const stsHtml = `
       <div class="pr-block pr-lime" style="padding-top:4px;">
         <div class="pr-label">SAFE TO SPEND</div>
-        <div class="pr-hero${sts < 0 ? " pr-danger" : ""}">${Util.esc(Util.fmtMoney(sts, 0))}</div>
+        <div class="pr-hero${stsAnchored && sts < 0 ? " pr-danger" : ""}">${stsAnchored ? Util.esc(Util.fmtMoney(sts, 0)) : "NO BALANCE CONFIRMED"}</div>
         <div class="pr-sub">
-          RECEIVED ${Util.esc(Util.fmtMoney(received, 0))} OF ${Util.esc(Util.fmtMoney(expected, 0))} EXPECTED
+          ${stsAnchored ? `IN THE ACCOUNT ${Util.esc(Util.fmtMoney(B.projectedBalance(s), 0))} &middot; ` : ""}RECEIVED ${Util.esc(Util.fmtMoney(received, 0))} OF ${Util.esc(Util.fmtMoney(expected, 0))} EXPECTED
           &middot; BUDGETED ${Util.esc(Util.fmtMoney(budgeted, 0))}
         </div>
         <div class="pr-sub" style="margin-top:3px;">
@@ -6378,7 +6648,11 @@ const UI = (() => {
 
     // --- Derived figures
     L.push("DERIVED FIGURES");
-    L.push("Safe to spend right now: " + anonMoney(B.safeToSpend(s)));
+    const anchorRec = B.latestAnchor(s);
+    L.push("Balance last confirmed: " + (anchorRec ? anchorRec.date + " (" + Util.daysSince(anchorRec.date) + " days ago)" : "never"));
+    L.push("Balance in the account now: " + (anchorRec ? anonMoney(B.projectedBalance(s)) : "unknown; no balance confirmed"));
+    L.push("Still owed out of it this month: " + anonMoney(B.unpaidObligations(s)));
+    L.push("Safe to spend right now: " + (anchorRec ? anonMoney(B.safeToSpend(s)) : "unknown; no balance confirmed"));
     L.push("Total budgeted this month: " + anonMoney(B.totalBudgeted(s)));
     L.push("Unpaid credit this month: " + anonMoney(B.totalUnpaidCredit(s)));
     L.push("Cash available to cover that credit: " + anonMoney(B.cashToCover(s)));
@@ -6916,7 +7190,7 @@ const UI = (() => {
     importFlow.pasteStructure = null;
     importFlow.matchedProfile = null;
     importFlow.learn = {
-      dateColumn: null, amountColumn: null, descriptionColumn: null,
+      dateColumn: null, amountColumn: null, descriptionColumn: null, balanceColumn: null,
       balanceIsAmount: false, hasBalancePrompt: false,
       label: "", paymentType: "cash", negativeIsPurchase: null,
       somethingsWrong: false,
@@ -6924,6 +7198,7 @@ const UI = (() => {
     };
     importFlow.reviewRows = [];
     importFlow.showOlder = false;
+    importFlow.detectedBalance = null;
     importFlow.choicePanelOpen = false;
     importFlow.autoMatchResult = null;
   }
@@ -7012,6 +7287,7 @@ const UI = (() => {
       dateColumn: importFlow.learn.dateColumn,
       amountColumn: importFlow.learn.amountColumn,
       descriptionColumn: importFlow.learn.descriptionColumn,
+      balanceColumn: importFlow.learn.balanceColumn,
       negativeIsPurchase: !!importFlow.learn.negativeIsPurchase,
       paymentType: importFlow.learn.paymentType,
       label: importFlow.learn.label
@@ -7027,8 +7303,16 @@ const UI = (() => {
       const amtToks = ImportEngine.findAmounts(amtRaw) || [];
       const amount = amtToks.length ? amtToks[0].value : parseFloat(String(amtRaw).replace(/[^0-9.\-]/g, ""));
       if (!isFinite(amount)) continue;
-      items.push({ date: iso, amount, description: desc });
+      // Only read when a balance column was mapped for this bank's layout.
+      let runningBalance = null;
+      if (profile.balanceColumn != null) {
+        const balToks = ImportEngine.findAmounts(row[profile.balanceColumn] || "") || [];
+        const bal = balToks.length ? balToks[0].value : parseFloat(String(row[profile.balanceColumn] || "").replace(/[^0-9.\-]/g, ""));
+        if (isFinite(bal)) runningBalance = bal;
+      }
+      items.push({ date: iso, amount, description: desc, runningBalance });
     }
+    importFlow.detectedBalance = ImportEngine.closingBalanceOf(items);
     buildReviewRows(s, items, profile);
   }
 
@@ -7040,6 +7324,7 @@ const UI = (() => {
       label: importFlow.learn.label,
       formatFingerprint: ImportEngine.computePasteFingerprint(importFlow.pasteStructure)
     };
+    importFlow.detectedBalance = ImportEngine.closingBalanceOf(importFlow.pasteItems);
     buildReviewRows(s, importFlow.pasteItems, profile);
   }
 
@@ -7249,6 +7534,9 @@ const UI = (() => {
       profile.dateColumn = l.dateColumn;
       profile.amountColumn = l.amountColumn;
       profile.descriptionColumn = l.descriptionColumn;
+      // Optional; stays null when this bank's export has no balance column.
+      // Learned per header fingerprint like the rest, so it's asked once.
+      profile.balanceColumn = l.balanceColumn == null ? null : l.balanceColumn;
       profile.headerFingerprint = ImportEngine.computeCsvFingerprint(importFlow.csvHeaders);
     } else {
       // Compose effective override values (user picks fall back to auto-detected).
@@ -7393,6 +7681,10 @@ const UI = (() => {
         person: r.person,
         month: monthYM,
         cardId: r.paymentType === "credit" ? (r.cardId || null) : null,
+        // Written before the balance is confirmed (import → anchor → carry on),
+        // so same-day imported rows read as already cleared and don't get
+        // subtracted from the balance a second time.
+        createdAt: Date.now(),
         source: "import"
       };
       if (r.merchantKey) txn.merchantKey = r.merchantKey;
@@ -7425,6 +7717,7 @@ const UI = (() => {
         person: r.person,
         note: "",
         tithe: true,
+        createdAt: Date.now(),
         source: "import"
       };
       if (r.merchantKey) entry.merchantKey = r.merchantKey;
@@ -7465,7 +7758,10 @@ const UI = (() => {
         paid: true,
         paidDate: r.date,
         amount: Math.round((Number(r.amount) || 0) * 100) / 100,
+        createdAt: Date.now(),
         source: "import",
+        // Points at the transaction written for this same row, which is what
+        // keeps the balance from subtracting this payment twice.
         txnId: r.id
       };
       billsPaidPatch[monthYM] = forMonth;
@@ -7506,10 +7802,15 @@ const UI = (() => {
         billsPaid: billsPaidCount,
         dismissed: false
       };
+      // Import → confirm balance → gap check. Anchoring straight after the
+      // import means the rows just written are already inside the number the
+      // user confirms, and any gap that survives points at the export missing
+      // something rather than at sloppy logging.
+      const detected = importFlow.detectedBalance;
       resetImportFlow();
       importMenuOpen = false;
       currentTab = "log";
-      render();
+      openBalanceOverlay(detected);
     } catch (e) { alert("COULDN'T IMPORT; CHECK CONNECTION"); console.warn(e); }
   }
 
@@ -7730,6 +8031,7 @@ const UI = (() => {
       if (l.dateColumn === i) return "picked date";
       if (l.amountColumn === i) return "picked amount";
       if (l.descriptionColumn === i) return "picked description";
+      if (l.balanceColumn === i) return "picked balance";
       return "";
     };
     const headerCells = headers.map((h, i) => {
@@ -7739,6 +8041,7 @@ const UI = (() => {
         <button class="csv-col-btn ${l.dateColumn===i?'picked':''}" data-action="csv-pick-col" data-role="date" data-i="${i}">${dot("date")}DATE</button>
         <button class="csv-col-btn ${l.amountColumn===i?'picked':''}" data-action="csv-pick-col" data-role="amount" data-i="${i}">${dot("amount")}AMOUNT</button>
         <button class="csv-col-btn ${l.descriptionColumn===i?'picked':''}" data-action="csv-pick-col" data-role="description" data-i="${i}">${dot("description")}DESC</button>
+        <button class="csv-col-btn ${l.balanceColumn===i?'picked':''}" data-action="csv-pick-col" data-role="balance" data-i="${i}">${dot("balance")}BALANCE</button>
       </th>`;
     }).join("");
     const rowsHtml = sampleRows.map(r => `<tr>${r.map(c => `<td>${Util.esc(c)}</td>`).join("")}</tr>`).join("");
@@ -7748,6 +8051,7 @@ const UI = (() => {
         <button class="link" data-action="import-cancel">× CLOSE</button>
       </div>
       <div class="overlay-sub">MAP COLUMNS FROM ${Util.esc(importFlow.fileName || "CSV")}</div>
+      <div class="meta" style="margin-top:8px; opacity:0.75;">DATE, AMOUNT AND DESC ARE REQUIRED. BALANCE IS OPTIONAL — MAP IT AND CLEAR WILL OFFER THE CLOSING BALANCE WHEN YOU CONFIRM YOUR ACCOUNT BALANCE. TAP A PICKED BUTTON AGAIN TO UNSET IT.</div>
       <div class="csv-preview"><table>
         <thead><tr>${headerCells}</tr></thead>
         <tbody>${rowsHtml}</tbody>
@@ -8015,9 +8319,13 @@ const UI = (() => {
     q("[data-action=csv-pick-col]").forEach(el => el.addEventListener("click", () => {
       const i = parseInt(el.dataset.i, 10);
       const role = el.dataset.role;
-      if (role === "date") importFlow.learn.dateColumn = i;
-      else if (role === "amount") importFlow.learn.amountColumn = i;
-      else if (role === "description") importFlow.learn.descriptionColumn = i;
+      const l = importFlow.learn;
+      // Balance is optional, so tapping the picked column again clears it —
+      // otherwise a mis-tap would be stuck on and there is no "none" chip.
+      if (role === "date") l.dateColumn = i;
+      else if (role === "amount") l.amountColumn = i;
+      else if (role === "description") l.descriptionColumn = i;
+      else if (role === "balance") l.balanceColumn = (l.balanceColumn === i ? null : i);
       render();
     }));
     q("[data-action=paste-looks-right]").forEach(el => el.addEventListener("click", () => {
@@ -8213,7 +8521,9 @@ const UI = (() => {
         <h2 class="section-label" style="margin-top:16px;">→ NEW MONTH</h2>
         <div class="meta" style="margin-top:8px;">CURRENT: ${Util.esc(Util.fmtMonthLong(s.currentMonth))} · NEXT: ${Util.esc(Util.fmtMonthLong(nextMonth(s.currentMonth)))}</div>
         <div style="margin-top:24px;">${rows || `<div class="meta">NO SPENDING CATEGORIES</div>`}</div>
-        <button class="cta big" style="margin-top:24px;" data-action="nm-confirm">→ CONFIRM NEW MONTH</button>
+        <div class="meta" style="margin-top:24px; opacity:0.8;">SAFE TO SPEND IS BASED ON WHAT'S ACTUALLY IN YOUR ACCOUNT. CONFIRMING YOUR BALANCE AS YOU ROLL FORWARD CARRIES LAST MONTH'S LEFTOVER OVER AND CLEARS ANYTHING THAT NEVER GOT LOGGED.</div>
+        <button class="cta" style="margin-top:12px;" data-action="nm-balance">→ CONFIRM MY BALANCE</button>
+        <button class="cta big" style="margin-top:12px;" data-action="nm-confirm">→ CONFIRM NEW MONTH</button>
       </div>`;
     document.body.appendChild(overlay);
 
@@ -8228,6 +8538,10 @@ const UI = (() => {
     overlay.querySelector("[data-action=nm-cancel]").addEventListener("click", () => {
       newMonthOpen = false; render();
     });
+    // Anchoring is independent of rolling the month — the balance is "right
+    // now" either way — so this opens the same overlay on top and leaves the
+    // rollover choices untouched underneath.
+    overlay.querySelector("[data-action=nm-balance]").addEventListener("click", () => openBalanceOverlay(null));
     overlay.querySelector("[data-action=nm-confirm]").addEventListener("click", () => confirmNewMonth(s, overlay));
   }
 
@@ -8259,6 +8573,98 @@ const UI = (() => {
       newMonthChoices = {};
       render();
     } catch (e) { alert("COULDN'T UPDATE"); console.warn(e); }
+  }
+
+  /* ------------- BALANCE ANCHOR ------------- */
+  // Opening seeds today's date and, when an import just handed us one, the
+  // balance it found. The field is always editable — an extracted balance is a
+  // convenience, never the authority, because a statement's closing balance is
+  // as-of its own date rather than as-of now.
+  function openBalanceOverlay(prefill) {
+    balanceForm = {
+      amount: prefill != null && isFinite(Number(prefill)) ? String(Math.round(Number(prefill) * 100) / 100) : "",
+      date: Util.todayISO(),
+      error: "",
+      prefill: prefill != null && isFinite(Number(prefill))
+    };
+    render();
+  }
+
+  function renderBalanceOverlay(s) {
+    const f = balanceForm;
+    const anchor = BudgetEngine.latestAnchor(s);
+    const projected = anchor ? BudgetEngine.projectedBalance(s) : null;
+
+    document.querySelectorAll(".overlay").forEach(o => o.remove());
+    const overlay = document.createElement("div");
+    overlay.className = "overlay";
+    overlay.setAttribute("data-scroll-key", "balance-overlay");
+    overlay.innerHTML = `
+      <div class="overlay-inner" data-scroll-key="balance-overlay-inner">
+        <button class="link" data-action="bal-cancel">× CLOSE</button>
+        <h2 class="section-label" style="margin-top:16px;">→ CONFIRM BALANCE</h2>
+        <div class="meta" style="margin-top:8px;">WHAT DOES YOUR BANK SAY YOUR CHECKING BALANCE IS RIGHT NOW? EVERYTHING YOU LOG FROM HERE MOVES THIS NUMBER UNTIL YOU CONFIRM IT AGAIN.</div>
+        ${f.prefill ? `<div class="meta" style="margin-top:12px; opacity:0.8;">PRE-FILLED FROM YOUR IMPORT. CHECK IT AGAINST YOUR BANK BEFORE SAVING; A STATEMENT BALANCE CAN BE A FEW DAYS OLD.</div>` : ""}
+        ${anchor ? `<div class="meta" style="margin-top:12px; opacity:0.8;">LAST CONFIRMED ${Util.esc(Util.fmtDateShort(anchor.date))} AT ${Util.esc(Util.fmtMoney(Number(anchor.amount) || 0, 0))} · TRACKED NOW AT ${Util.esc(Util.fmtMoney(projected, 0))}</div>` : ""}
+        <div style="margin-top:24px;">
+          <div class="sub-label">BALANCE</div>
+          <input id="bal-amount" class="underline big num-input" inputmode="decimal" placeholder="$0.00" value="${Util.esc(f.amount)}">
+        </div>
+        <div style="margin-top:24px;">
+          <div class="sub-label">AS OF</div>
+          <input id="bal-date" class="underline" type="date" value="${Util.esc(f.date)}">
+        </div>
+        ${f.error ? `<div class="text-danger meta" style="margin-top:12px;">${Util.esc(f.error)}</div>` : ""}
+        <button class="cta big" style="margin-top:24px;" data-action="bal-save">→ SAVE BALANCE</button>
+      </div>`;
+    document.body.appendChild(overlay);
+
+    const amtEl = overlay.querySelector("#bal-amount");
+    const dateEl = overlay.querySelector("#bal-date");
+    amtEl.addEventListener("input", () => { balanceForm.amount = amtEl.value; });
+    dateEl.addEventListener("input", () => { balanceForm.date = dateEl.value; });
+    overlay.querySelector("[data-action=bal-cancel]").addEventListener("click", () => {
+      balanceForm = null; render();
+    });
+    overlay.querySelector("[data-action=bal-save]").addEventListener("click", () => saveBalance(s));
+  }
+
+  async function saveBalance(s) {
+    const f = balanceForm;
+    if (!f) return;
+    // Balances get typed with dollar signs and thousands separators far more
+    // often than purchase amounts do, so strip anything that isn't part of the
+    // number. A negative is legitimate — an overdrawn account is a real state.
+    const amount = parseFloat(String(f.amount).replace(/[^0-9.\-]/g, ""));
+    if (!isFinite(amount)) { f.error = "ENTER A VALID BALANCE"; render(); return; }
+    const date = String(f.date || "").trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || isNaN(new Date(date + "T00:00:00"))) {
+      f.error = "ENTER A VALID DATE"; render(); return;
+    }
+    // Snapshot what we thought BEFORE the new anchor lands, so the gap compares
+    // the old projection against the confirmed truth.
+    const hadAnchor = BudgetEngine.hasAnchor(s);
+    const expected = hadAnchor ? BudgetEngine.projectedBalance(s) : 0;
+    const entry = {
+      id: Util.uuid(),
+      date,
+      amount: Math.round(amount * 100) / 100,
+      createdAt: Date.now(),
+      source: f.prefill ? "import" : "manual"
+    };
+    try {
+      await DataService.update({ balanceChecks: DataService.appendTxns(entry) });
+      balanceGapNotice = hadAnchor ? {
+        expected: Math.round(expected * 100) / 100,
+        entered: entry.amount,
+        gap: Math.round((entry.amount - expected) * 100) / 100,
+        dismissed: false
+      } : null;
+      // A gap of a rounding cent or two is noise, not signal.
+      if (balanceGapNotice && Math.abs(balanceGapNotice.gap) < 1) balanceGapNotice = null;
+      balanceForm = null;
+      render();
+    } catch (e) { alert("COULDN'T SAVE; CHECK CONNECTION"); console.warn(e); }
   }
 
   /* ------------- GLOBAL EVENTS ------------- */
@@ -8337,6 +8743,7 @@ const UI = (() => {
   function swipeBlocked(target) {
     if (settingsOpen) return true;
     if (newMonthOpen) return true;
+    if (balanceForm) return true;
     if (importFlow && importFlow.open) return true;
     if (document.querySelector(".overlay")) return true;
     if (!target || !target.closest) return true;
