@@ -1756,6 +1756,19 @@ const ImportEngine = (() => {
     const dated = lineData.filter(x => x.date).length;
     if (dated === 0) return { items: [], structure: emptyStruct };
 
+    // --- Date-heading layouts (bank app feeds, screenshots) ---
+    // Some statements put the date in a heading — "AUG 02, 2026" — with the
+    // rows beneath carrying money and no date of their own. The per-row
+    // grouping below keys off a date on every transaction line, so without a
+    // separate pass an entire day collapses into one giant transaction. Every
+    // banking app that renders a scrollable feed formats this way.
+    const headingLines = lineData.filter(x => x.date && !x.amounts.length);
+    const moneyLines = lineData.filter(x => x.amounts.length);
+    const datedMoneyLines = moneyLines.filter(x => x.date);
+    if (headingLines.length && moneyLines.length >= 2 && datedMoneyLines.length <= moneyLines.length * 0.2) {
+      return parseDateHeadings(lineData, options);
+    }
+
     // --- Auto-detected structure (stable across overrides) ---
     const rawRatio = lines.length / dated;
     let autoLinesPerTxn = 1;
@@ -1839,6 +1852,32 @@ const ImportEngine = (() => {
     return { items, structure };
   }
 
+  // Do the running balances actually add up?
+  //
+  // Statements list newest first, so each row's balance should equal the NEXT
+  // (older) row's balance plus this row's signed amount. When that chain
+  // closes, the layout has been read correctly — that is arithmetic, not a
+  // guess. It is what lets a screenshot parse be trusted, and it catches an
+  // OCR misread of a decimal point for free, since a wrong amount breaks the
+  // chain instead of importing silently.
+  //
+  // Also scored in reverse so an oldest-first statement isn't penalised.
+  function balanceChainScore(items) {
+    const rows = (items || []).filter(i => i && i.runningBalance != null && isFinite(i.runningBalance) && isFinite(i.amount));
+    if (rows.length < 2) return { checked: 0, ok: 0, score: 0 };
+    let fwd = 0, rev = 0, checked = 0;
+    for (let i = 0; i < rows.length - 1; i++) {
+      const a = rows[i], b = rows[i + 1];
+      checked++;
+      // newest-first: bal[i] = bal[i+1] + amount[i]
+      if (Math.abs((b.runningBalance + a.amount) - a.runningBalance) < 0.011) fwd++;
+      // oldest-first: bal[i+1] = bal[i] + amount[i+1]
+      if (Math.abs((a.runningBalance + b.amount) - b.runningBalance) < 0.011) rev++;
+    }
+    const ok = Math.max(fwd, rev);
+    return { checked, ok, score: checked ? ok / checked : 0 };
+  }
+
   // Closing balance from a parsed set of rows: the running balance on the
   // newest-dated row that has one. Returns null when the layout carries no
   // balance at all, which is the common case for two-column exports.
@@ -1847,6 +1886,104 @@ const ImportEngine = (() => {
     if (!withBal.length) return null;
     const newest = withBal.slice().sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
     return newest[newest.length - 1].runningBalance;
+  }
+
+  // Parse a statement whose dates live in headings rather than on each row.
+  //
+  // How many lines make up one transaction, and which of its amounts is the
+  // money rather than the running balance, are not guessed here. Every
+  // plausible shape is built and the one whose running balances actually add
+  // up wins. When no shape closes the chain — a layout with no balance column
+  // — it falls back to the most rows, which is the old behaviour.
+  function parseDateHeadings(lineData, options) {
+    options = options || {};
+    const effSecondIsBalance = options.secondIsBalance == null ? true : !!options.secondIsBalance;
+    const forcedLpt = (options.linesPerTxn >= 1 && options.linesPerTxn <= 3) ? options.linesPerTxn : null;
+    const forcedPos = (options.amountPos === "first" || options.amountPos === "last") ? options.amountPos : null;
+
+    const build = (lpt, pos) => {
+      const groups = [];
+      let currentDate = null;
+      let buf = [];
+      for (const ld of lineData) {
+        if (ld.date && !ld.amounts.length) {
+          // A heading closes whatever was still being collected; a short tail
+          // is kept rather than dropped so nothing goes missing silently.
+          if (buf.length) { groups.push({ date: currentDate, lines: buf }); buf = []; }
+          currentDate = ld.date;
+          continue;
+        }
+        // Rows above the first heading have no date to inherit.
+        if (!currentDate) continue;
+        buf.push(ld);
+        if (buf.length === lpt) { groups.push({ date: currentDate, lines: buf }); buf = []; }
+      }
+      if (buf.length) groups.push({ date: currentDate, lines: buf });
+
+      const items = [];
+      for (const g of groups) {
+        const allAmts = [];
+        for (const l of g.lines) l.amounts.forEach(a => allAmts.push(a));
+        if (!allAmts.length || !g.date) continue;
+        const chosen = pos === "last" ? allAmts[allAmts.length - 1] : allAmts[0];
+        let runningBalance = null;
+        if (effSecondIsBalance && allAmts.length >= 2) {
+          const other = allAmts.filter(a => a !== chosen);
+          if (other.length) runningBalance = other[other.length - 1].value;
+        }
+        let desc = g.lines.map(l => l.line).join(" ");
+        if (effSecondIsBalance) {
+          for (const l of g.lines) for (const a of l.amounts) desc = desc.split(a.raw).join(" ");
+        } else {
+          desc = desc.split(chosen.raw).join(" ");
+        }
+        desc = desc.replace(/\s+/g, " ").trim();
+        items.push({
+          date: g.date.iso,
+          amount: chosen.value,
+          description: desc,
+          runningBalance,
+          // Not posted yet: the amount can still change, the balance shown is
+          // a placeholder, and it will arrive again for real once it clears.
+          pending: /\bPENDING\b/i.test(desc)
+        });
+      }
+      return items;
+    };
+
+    let best = null;
+    const lptOptions = forcedLpt ? [forcedLpt] : [2, 1, 3];
+    const posOptions = forcedPos ? [forcedPos] : ["first", "last"];
+    for (const lpt of lptOptions) {
+      for (const pos of posOptions) {
+        const items = build(lpt, pos);
+        if (!items.length) continue;
+        // Pending rows carry a $0.00 placeholder balance, so they'd break a
+        // chain that is otherwise perfect. Score on posted rows only.
+        const chain = balanceChainScore(items.filter(i => !i.pending));
+        const cand = { items, lpt, pos, chain };
+        if (!best) { best = cand; continue; }
+        if (cand.chain.score > best.chain.score) best = cand;
+        else if (cand.chain.score === best.chain.score && cand.items.length > best.items.length) best = cand;
+      }
+    }
+    if (!best) {
+      return { items: [], structure: { hasDates: true, hasBalance: false, linesPerTxn: 1, datePos: "heading", amountPos: "first", detected: 0, dateHeadings: true, chainScore: 0 } };
+    }
+    return {
+      items: best.items,
+      structure: {
+        hasDates: true,
+        hasBalance: best.items.some(i => i.runningBalance != null),
+        linesPerTxn: best.lpt,
+        datePos: "heading",
+        amountPos: best.pos,
+        detected: best.items.length,
+        dateHeadings: true,
+        // Surfaced so the UI can say whether the parse was verified or guessed.
+        chainScore: Math.round(best.chain.score * 100) / 100
+      }
+    };
   }
 
   function computePasteFingerprint(structure) {
@@ -2065,7 +2202,7 @@ const ImportEngine = (() => {
 
   return {
     parseDate, findDate, findAmounts,
-    csvParse, textParse, closingBalanceOf,
+    csvParse, textParse, closingBalanceOf, balanceChainScore,
     computePasteFingerprint, computeCsvFingerprint,
     normalizeMerchantKey, normalizeDescForCompare, cleanDescription,
     isExactDupe, findFuzzyMatch,
@@ -2270,6 +2407,13 @@ const UI = (() => {
     },
     reviewRows: [],
     showOlder: false,
+    // Screenshot import: one entry per picked image, carrying its OCR state so
+    // a long batch shows progress rather than a frozen screen.
+    // { name, status: "queued"|"reading"|"done"|"failed", pct, text, error }
+    shots: [],
+    shotsBusy: false,
+    // How many not-yet-posted rows were dropped, for the review header.
+    pendingSkipped: 0,
     // Closing balance lifted off the import, when the layout carries one.
     // Offered as a pre-fill on the balance overlay after the import commits;
     // never saved without confirmation, since a statement's closing balance is
@@ -3694,11 +3838,12 @@ const UI = (() => {
 
         <section class="section off-white">
           <div class="section-label" style="margin-bottom:24px;" data-learn="TRANSACTIONS. EVERYTHING YOU'VE LOGGED OR IMPORTED, PLUS THE IMPORT TOOLS AND THE MONTH NAVIGATOR.">→ TRANSACTIONS</div>
-          <button class="link" data-action="import-toggle" data-learn="IMPORT FROM BANK. UPLOAD A CSV FROM YOUR BANK OR PASTE STATEMENT TEXT. THE APP MATCHES CATEGORIES, DETECTS DUPLICATES, AND LETS YOU REVIEW BEFORE ANYTHING IS SAVED.">${importMenuOpen ? "× CLOSE" : "→ IMPORT FROM BANK"}</button>
+          <button class="link" data-action="import-toggle" data-learn="IMPORT FROM BANK. UPLOAD A CSV, PASTE STATEMENT TEXT, OR SCREENSHOT YOUR BANK APP. THE APP MATCHES CATEGORIES, DETECTS DUPLICATES, AND LETS YOU REVIEW BEFORE ANYTHING IS SAVED.">${importMenuOpen ? "× CLOSE" : "→ IMPORT FROM BANK"}</button>
           ${importMenuOpen ? `
             <div class="import-actions">
               <button class="cta ghost" data-action="import-csv-pick" data-learn="UPLOAD A CSV FILE YOU DOWNLOADED FROM YOUR BANK'S WEBSITE.">→ UPLOAD CSV FILE</button>
               <button class="cta ghost" data-action="import-paste" data-learn="PASTE TRANSACTION ROWS COPIED FROM YOUR BANK'S WEBSITE OR A PDF STATEMENT.">→ PASTE TRANSACTIONS</button>
+              <button class="cta ghost" data-action="import-shots" data-learn="SCREENSHOT THE TRANSACTION LIST IN YOUR BANK APP AND PICK THE IMAGES. THEY'RE READ ON YOUR PHONE — NOTHING IS UPLOADED — THEN GO THROUGH THE SAME REVIEW AND DUPLICATE CHECK AS EVERY OTHER IMPORT. TAKE AS MANY SHOTS AS YOU NEED; OVERLAPS ARE FINE.">→ SCAN BANK APP SCREENSHOTS</button>
               <input type="file" id="csv-file-input" accept=".csv,text/csv,text/plain" style="display:none;">
             </div>
           ` : ""}
@@ -3954,6 +4099,9 @@ const UI = (() => {
     if (fi) fi.addEventListener("change", (e) => onCsvFilePicked(s, e.target.files && e.target.files[0]));
     root.querySelectorAll("[data-action=import-paste]").forEach(el => {
       el.addEventListener("click", () => openPasteOverlay());
+    });
+    root.querySelectorAll("[data-action=import-shots]").forEach(el => {
+      el.addEventListener("click", () => openScreenshotOverlay());
     });
     // Bulk category-edit handlers
     root.querySelectorAll("[data-action=bulk-toggle]").forEach(el => {
@@ -7428,6 +7576,9 @@ const UI = (() => {
     };
     importFlow.reviewRows = [];
     importFlow.showOlder = false;
+    importFlow.shots = [];
+    importFlow.shotsBusy = false;
+    importFlow.pendingSkipped = 0;
     importFlow.detectedBalance = null;
     importFlow.choicePanelOpen = false;
     importFlow.autoMatchResult = null;
@@ -7471,6 +7622,172 @@ const UI = (() => {
       render();
     };
     reader.readAsText(file);
+  }
+
+  /* ------------- SCREENSHOT IMPORT ------------- */
+  // Screenshots of a bank app are the kindest input OCR ever gets: crisp
+  // digital glyphs, flat lighting, no perspective. The recognised text goes
+  // through exactly the same parser, review, dedupe and learning as a paste —
+  // the only thing this path adds is turning pixels into those lines.
+
+  function openScreenshotOverlay() {
+    resetImportFlow();
+    importFlow.open = true;
+    importFlow.stage = "shot-input";
+    importFlow.kind = "shot";
+    render();
+  }
+
+  // Tesseract is trained on dark text over light paper, and a bank app in dark
+  // mode is the exact inverse. Sampling a grid and flipping when the page is
+  // predominantly dark costs a few milliseconds and materially improves the
+  // read. Also scales small screenshots up, since recognition degrades badly
+  // below roughly 1000px wide.
+  function prepareShotForOcr(file) {
+    return new Promise((resolve) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const scale = img.width < 1000 ? Math.min(2.5, 1000 / img.width) : 1;
+          const w = Math.round(img.width * scale);
+          const h = Math.round(img.height * scale);
+          const canvas = document.createElement("canvas");
+          canvas.width = w; canvas.height = h;
+          const ctx = canvas.getContext("2d");
+          ctx.drawImage(img, 0, 0, w, h);
+          const data = ctx.getImageData(0, 0, w, h);
+          const px = data.data;
+          // Sample rather than sum every pixel; a screenshot is uniform enough
+          // that a stride of 97 pixels answers "is this dark mode?" reliably.
+          let dark = 0, seen = 0;
+          for (let i = 0; i < px.length; i += 4 * 97) {
+            const lum = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
+            if (lum < 110) dark++;
+            seen++;
+          }
+          if (seen && dark / seen > 0.6) {
+            for (let i = 0; i < px.length; i += 4) {
+              px[i] = 255 - px[i];
+              px[i + 1] = 255 - px[i + 1];
+              px[i + 2] = 255 - px[i + 2];
+            }
+            ctx.putImageData(data, 0, 0);
+          }
+          URL.revokeObjectURL(url);
+          canvas.toBlob(b => resolve(b || file), "image/png");
+        } catch (e) {
+          URL.revokeObjectURL(url);
+          resolve(file);
+        }
+      };
+      // Anything unreadable falls through to Tesseract untouched rather than
+      // failing the whole batch.
+      img.onerror = () => { URL.revokeObjectURL(url); resolve(file); };
+      img.src = url;
+    });
+  }
+
+  async function shotsRunOcr(s, files) {
+    const list = Array.from(files || []).filter(f => f && /^image\//.test(f.type || ""));
+    if (!list.length) {
+      importFlow.error = "PICK AT LEAST ONE SCREENSHOT";
+      render();
+      return;
+    }
+    importFlow.error = "";
+    importFlow.shotsBusy = true;
+    // Append rather than replace, so a second batch adds to the first.
+    list.forEach(f => importFlow.shots.push({
+      name: f.name || "SCREENSHOT", status: "queued", pct: 0, text: "", error: ""
+    }));
+    render();
+
+    let T;
+    try {
+      T = await loadTesseract();
+    } catch (err) {
+      importFlow.shotsBusy = false;
+      importFlow.error = (err && err.message) || "COULDN'T DOWNLOAD THE READER; CHECK CONNECTION";
+      importFlow.shots = importFlow.shots.filter(x => x.status === "done");
+      render();
+      return;
+    }
+
+    const base = importFlow.shots.length - list.length;
+    for (let i = 0; i < list.length; i++) {
+      const slot = importFlow.shots[base + i];
+      if (!slot) continue;
+      slot.status = "reading";
+      render();
+      try {
+        const prepared = await prepareShotForOcr(list[i]);
+        const res = await T.recognize(prepared, "eng", {
+          logger: (m) => {
+            if (!m || m.status !== "recognizing text") return;
+            const pct = Math.round((m.progress || 0) * 100);
+            if (pct !== slot.pct) { slot.pct = pct; render(); }
+          }
+        });
+        slot.text = (res && res.data && res.data.text) || "";
+        slot.status = slot.text.trim() ? "done" : "failed";
+        if (slot.status === "failed") slot.error = "NOTHING READABLE IN THIS ONE";
+      } catch (err) {
+        console.warn(err);
+        slot.status = "failed";
+        slot.error = (err && err.message) || "COULDN'T READ THIS ONE";
+      }
+      render();
+    }
+    importFlow.shotsBusy = false;
+    render();
+  }
+
+  // Screenshots are read as one statement rather than one import each. Joining
+  // them keeps a date heading at the top of one screenshot governing the rows
+  // that spill onto the next, and the running-balance chain stays continuous
+  // across the seam. Overlapping shots are harmless — the same duplicate check
+  // the other paths use catches the repeats.
+  function onShotsSubmit(s) {
+    const text = importFlow.shots
+      .filter(x => x.status === "done")
+      .map(x => x.text)
+      .join("\n");
+    if (!text.trim()) {
+      importFlow.error = "NOTHING WAS READ FROM THOSE SCREENSHOTS";
+      render();
+      return;
+    }
+    importFlow.rawText = text;
+    const parsed = ImportEngine.textParse(text);
+    if (!parsed.structure.hasDates || !parsed.items.length) {
+      importFlow.stage = "no-dates";
+      render();
+      return;
+    }
+    // Not-yet-posted rows are dropped: the amount can still change, the
+    // balance beside them is a placeholder that would break the arithmetic
+    // check, and they arrive again for real once they clear — on a different
+    // date, which is exactly the shape the duplicate check is worst at.
+    const posted = parsed.items.filter(i => !i.pending);
+    importFlow.pendingSkipped = parsed.items.length - posted.length;
+    importFlow.pasteItems = posted.length ? posted : parsed.items;
+    importFlow.pasteStructure = parsed.structure;
+    importFlow.detectedBalance = ImportEngine.closingBalanceOf(importFlow.pasteItems);
+
+    const fp = ImportEngine.computePasteFingerprint(parsed.structure);
+    const profile = (s.importProfiles || []).find(p => p.profileType === "paste" && p.formatFingerprint === fp);
+    if (profile) {
+      importFlow.matchedProfile = profile;
+      goToReviewFromPaste(s);
+      return;
+    }
+    importFlow.learn.hasBalancePrompt = false; // the chain check already settled this
+    const signs = importFlow.pasteItems.map(i => Math.sign(i.amount));
+    if (signs.every(x => x >= 0)) importFlow.learn.negativeIsPurchase = false;
+    else if (signs.every(x => x <= 0)) importFlow.learn.negativeIsPurchase = true;
+    importFlow.stage = "learning";
+    render();
   }
 
   function onPasteSubmit(s) {
@@ -8205,6 +8522,7 @@ const UI = (() => {
     if (stage === "wizard-offer") inner = renderWizardOffer();
     else if (stage === "wizard-review") inner = renderWizardReview(s);
     else if (stage === "paste-input") inner = renderPasteInput();
+    else if (stage === "shot-input") inner = renderShotInput();
     else if (stage === "no-dates") inner = renderNoDates();
     else if (stage === "error") inner = renderImportError();
     else if (stage === "learning") inner = renderLearning(s);
@@ -8223,6 +8541,36 @@ const UI = (() => {
       <textarea class="paste-area" id="paste-input" placeholder="PASTE TRANSACTION TEXT FROM YOUR BANK'S WEBSITE OR STATEMENT">${Util.esc(importFlow.rawText)}</textarea>
       ${importFlow.error ? `<div class="text-danger meta" style="margin-top:12px;">${Util.esc(importFlow.error)}</div>` : ""}
       <button class="cta" style="margin-top:16px;" data-action="paste-parse">→ PARSE</button>
+    `;
+  }
+
+  function renderShotInput() {
+    const shots = importFlow.shots || [];
+    const done = shots.filter(x => x.status === "done").length;
+    const rows = shots.map(x => {
+      const state = x.status === "done" ? "READ"
+        : x.status === "reading" ? `READING ${x.pct}%`
+        : x.status === "failed" ? (x.error || "COULDN'T READ") : "WAITING";
+      return `
+        <div class="inc-row">
+          <div><div class="inc-label">${Util.esc(String(x.name).slice(0, 28))}</div></div>
+          <div class="inc-amt ${x.status === "failed" ? "text-danger" : ""}">${Util.esc(state)}</div>
+        </div>`;
+    }).join("");
+
+    return `
+      <div class="row" style="justify-content:space-between; align-items:center; margin-bottom:16px;">
+        <div class="overlay-title">→ BANK APP SCREENSHOTS</div>
+        <button class="link" data-action="import-cancel">× CLOSE</button>
+      </div>
+      <div class="meta" style="opacity:0.85;">SCREENSHOT YOUR TRANSACTION LIST IN YOUR BANK APP AND PICK THE IMAGES HERE. TAKE AS MANY AS YOU NEED TO COVER THE PERIOD; THEY'RE READ TOGETHER, AND OVERLAPPING SHOTS ARE FINE BECAUSE REPEATS GET CAUGHT.</div>
+      <div class="meta" style="margin-top:12px; opacity:0.7;">READING HAPPENS ON YOUR PHONE. NOTHING IS UPLOADED ANYWHERE, AND NOTHING IS SAVED UNTIL YOU'VE REVIEWED IT.</div>
+      <input type="file" id="shot-file-input" accept="image/*" multiple style="display:none;">
+      <button class="cta ghost" style="margin-top:24px;" data-action="shot-pick"${importFlow.shotsBusy ? " disabled" : ""}>${shots.length ? "+ ADD MORE SCREENSHOTS" : "→ CHOOSE SCREENSHOTS"}</button>
+      ${shots.length ? `<div style="margin-top:16px;">${rows}</div>` : ""}
+      ${importFlow.error ? `<div class="text-danger meta" style="margin-top:12px;">${Util.esc(importFlow.error)}</div>` : ""}
+      ${importFlow.shotsBusy ? `<div class="meta" style="margin-top:16px;">READING… THIS CAN TAKE A FEW SECONDS PER SCREENSHOT.</div>` : ""}
+      ${(!importFlow.shotsBusy && done) ? `<button class="cta" style="margin-top:16px;" data-action="shot-parse">→ READ ${done} SCREENSHOT${done === 1 ? "" : "S"}</button>` : ""}
     `;
   }
 
@@ -8404,6 +8752,18 @@ const UI = (() => {
         ${Object.keys(monthBuckets).sort().map(ym => `${monthBuckets[ym]} ROW${monthBuckets[ym]===1?'':'S'} DATED ${Util.esc(Util.fmtMonthLong(ym))}`).join(" · ")}
       </div>
     ` : "";
+    // When the layout carried a running balance, the parse was checked against
+    // it rather than guessed. Saying so is the difference between "we think
+    // this is right" and "the arithmetic closes" — and it is the thing that
+    // makes a screenshot import trustworthy.
+    const st = importFlow.pasteStructure;
+    const chainHtml = (st && st.chainScore != null && st.hasBalance) ? (
+      st.chainScore >= 0.999
+        ? `<div class="overlay-sub text-success" style="opacity:0.85;" data-learn="EVERY ROW'S RUNNING BALANCE MATCHES THE ONE BELOW IT PLUS ITS OWN AMOUNT. THAT MEANS THE AMOUNTS WERE READ CORRECTLY — IT IS ARITHMETIC, NOT A GUESS.">✓ BALANCES CHECK OUT ACROSS EVERY ROW</div>`
+        : `<div class="overlay-sub text-danger" style="opacity:0.9;" data-learn="THE RUNNING BALANCES DON'T ALL ADD UP, WHICH USUALLY MEANS AN AMOUNT WAS MISREAD OR A ROW IS MISSING. CHECK THE AMOUNTS BELOW AGAINST YOUR BANK BEFORE IMPORTING.">× SOME BALANCES DON'T ADD UP · CHECK THE AMOUNTS BELOW</div>`
+    ) : "";
+    const pendingHtml = importFlow.pendingSkipped ? `
+      <div class="overlay-sub" style="opacity:0.7;" data-learn="PENDING TRANSACTIONS HAVEN'T POSTED YET. THE AMOUNT CAN STILL CHANGE AND THEY'LL SHOW UP AGAIN ONCE THEY CLEAR, SO THEY'RE LEFT OUT TO AVOID IMPORTING THEM TWICE.">${importFlow.pendingSkipped} PENDING ROW${importFlow.pendingSkipped === 1 ? "" : "S"} SKIPPED · THEY'LL IMPORT ONCE THEY POST</div>` : "";
     const choicePanel = importFlow.choicePanelOpen ? `
       <div class="settings-group" style="margin-top:16px; background: var(--gray-light);">
         <h3 class="text-danger">${uncatCount} OF ${importable} ROWS HAVE NO CATEGORY</h3>
@@ -8422,6 +8782,8 @@ const UI = (() => {
       </div>
       <div class="overlay-sub">${recognized ? "RECOGNIZED: " : ""}${Util.esc(label)}</div>
       <div class="overlay-sub" style="opacity:0.7;">${importable} OF ${allRows.length} WILL BE IMPORTED${uncatCount ? ` · ${uncatCount} NEED CATEGORIES` : ""}</div>
+      ${chainHtml}
+      ${pendingHtml}
       ${offMonthHtml}
       <div style="margin-top:16px;">${rowsHtml}</div>
       ${olderCount > 0 || importFlow.showOlder ? `
@@ -8545,6 +8907,22 @@ const UI = (() => {
     if (ta) ta.addEventListener("input", e => { importFlow.rawText = e.target.value; });
     q("[data-action=paste-parse]").forEach(el => el.addEventListener("click", () => {
       onPasteSubmit(s);
+    }));
+    q("[data-action=shot-pick]").forEach(el => el.addEventListener("click", () => {
+      const input = overlay.querySelector("#shot-file-input");
+      if (input) input.click();
+    }));
+    overlay.querySelectorAll("#shot-file-input").forEach(el => {
+      el.addEventListener("change", () => {
+        const files = el.files;
+        // Clear the input so picking the same file twice still fires change.
+        const picked = files && files.length ? Array.from(files) : [];
+        el.value = "";
+        if (picked.length) shotsRunOcr(s, picked);
+      });
+    });
+    q("[data-action=shot-parse]").forEach(el => el.addEventListener("click", () => {
+      onShotsSubmit(s);
     }));
     q("[data-action=csv-pick-col]").forEach(el => el.addEventListener("click", () => {
       const i = parseInt(el.dataset.i, 10);
