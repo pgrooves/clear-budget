@@ -889,6 +889,20 @@ const Util = (() => {
   function currentMonthYM() {
     return todayISO().slice(0,7);
   }
+  function nextMonthYM(ym) {
+    let [y, m] = String(ym || "").split("-").map(Number);
+    if (!y || !m) return currentMonthYM();
+    m++;
+    if (m > 12) { m = 1; y++; }
+    return `${y}-${String(m).padStart(2,"0")}`;
+  }
+  function prevMonthYM(ym) {
+    let [y, m] = String(ym || "").split("-").map(Number);
+    if (!y || !m) return currentMonthYM();
+    m--;
+    if (m < 1) { m = 12; y--; }
+    return `${y}-${String(m).padStart(2,"0")}`;
+  }
   // Whole days between an ISO date and today. Used to age the balance anchor:
   // a confirmed balance is exact on the day it's taken and drifts from there,
   // so how old it is belongs on screen next to it.
@@ -909,7 +923,7 @@ const Util = (() => {
     if (s.length === 10) return s.slice(0, 5) + "-" + s.slice(5);
     return s;
   }
-  return { esc, fmtMoney, fmtMonthShort, fmtMonthLong, fmtDateShort, todayISO, currentMonthYM, daysSince, uuid, fmtCode };
+  return { esc, fmtMoney, fmtMonthShort, fmtMonthLong, fmtDateShort, todayISO, currentMonthYM, nextMonthYM, prevMonthYM, daysSince, uuid, fmtCode };
 })();
 
 /* ============================================================
@@ -1250,6 +1264,63 @@ const BudgetEngine = (() => {
   function categoryRemaining(s, cat) {
     return num(cat.budgeted) + rolloverAmount(s, cat.id) - categorySpent(s, cat.id);
   }
+
+  /* ---------- THE BUDGET MONTH FOLLOWS THE CALENDAR ----------
+     currentMonth used to advance only when someone pressed START NEW MONTH.
+     Miss it and every figure kept describing the month that had already
+     ended: income read as unreceived, bills read as overdue, and imported
+     transactions landed in a month the app wasn't showing. The calendar is
+     not a decision, so it is no longer treated as one — the pointer moves on
+     its own and the rollover choice becomes something you revisit rather than
+     a gate you have to pass first. */
+
+  // Month-explicit variants of the three above. The defaults read
+  // s.currentMonth, which is no use when rolling several months in one pass.
+  function categorySpentIn(s, id, month) {
+    return (s.transactions || [])
+      .filter(t => t.categoryId === id && t.month === month)
+      .reduce((a, t) => a + num(t.amount), 0);
+  }
+  function rolloverAmountIn(s, id, month) {
+    return num(s.monthlyRollover && s.monthlyRollover[month] && s.monthlyRollover[month][id]);
+  }
+  function categoryRemainingIn(s, cat, month) {
+    return num(cat.budgeted) + rolloverAmountIn(s, cat.id, month) - categorySpentIn(s, cat.id, month);
+  }
+
+  // What a category would carry into `month` from the one before it, under the
+  // default "roll unspent forward" rule. Used both when advancing and when
+  // showing what to keep or clear afterwards.
+  function rolloverCandidate(s, cat, month) {
+    const prev = Util.prevMonthYM(month);
+    const remaining = categoryRemainingIn(s, cat, prev);
+    return remaining > 0 ? Math.round(remaining * 100) / 100 : 0;
+  }
+
+  // Patch that walks currentMonth up to today's month, filling in each
+  // intervening month's rollovers, or null when nothing needs to move.
+  // Rolling unspent money forward is the default because it is the
+  // non-destructive one — nothing is lost, and it can be cleared afterwards
+  // from the rollover review.
+  function autoAdvancePatch(s) {
+    const real = Util.currentMonthYM();
+    const cur = s && s.currentMonth;
+    if (!cur || !real || real <= cur) return null;
+    const mr = Object.assign({}, s.monthlyRollover || {});
+    let m = cur;
+    // Bounded so a corrupt currentMonth can never spin here.
+    for (let guard = 0; m < real && guard < 600; guard++) {
+      const next = Util.nextMonthYM(m);
+      const rollovers = {};
+      (s.spendingCategories || []).forEach(c => {
+        const remaining = num(c.budgeted) + num(mr[m] && mr[m][c.id]) - categorySpentIn(s, c.id, m);
+        if (remaining > 0) rollovers[c.id] = Math.round(remaining * 100) / 100;
+      });
+      mr[next] = rollovers;
+      m = next;
+    }
+    return { monthlyRollover: mr, currentMonth: real };
+  }
   function personSpent(s, person) {
     const m = s.currentMonth;
     return (s.transactions || [])
@@ -1322,6 +1393,7 @@ const BudgetEngine = (() => {
     latestAnchor, hasAnchor, isAfterAnchor, projectedBalance, billPaymentsSinceAnchor,
     unpaidBillsTotal, unpaidTithe, unpaidDebtMins, unpaidObligations, incomeStillExpected,
     categorySpent, rolloverAmount, categoryRemaining, personSpent,
+    categorySpentIn, rolloverAmountIn, categoryRemainingIn, rolloverCandidate, autoAdvancePatch,
     totalDebt, targetDebt, debtOrder, debtStrategy, unpaidCredit, cashToCover,
     monthElapsed, monthDayInfo
   };
@@ -2106,6 +2178,8 @@ const UI = (() => {
   // { expected, entered, gap, dismissed } — set once on save when a previous
   // anchor existed. Informational only; never alters any figure.
   let balanceGapNotice = null;
+  // { from, to, dismissed } — set when the budget month rolls itself forward.
+  let monthRollNotice = null;
 
   // Log-screen "IMPORT FROM BANK" inline menu
   let importMenuOpen = false;
@@ -3022,6 +3096,32 @@ const UI = (() => {
     }
   }
 
+  // Roll the budget month up to the calendar month, once, as soon as we have
+  // data. Runs from the render path because that is the one place guaranteed
+  // to see every snapshot; the write flips currentMonth so the patch comes
+  // back null forever after, and the in-flight flag stops a burst of renders
+  // firing the same write several times over.
+  let advanceInFlight = false;
+  function maybeAdvanceMonth(s) {
+    if (advanceInFlight) return;
+    const patch = BudgetEngine.autoAdvancePatch(s);
+    if (!patch) return;
+    advanceInFlight = true;
+    const from = s.currentMonth;
+    DataService.update(patch).then(() => {
+      // Rolling forward is silent but not hidden: say it happened and offer
+      // the rollover review, since money was carried across on your behalf.
+      monthRollNotice = { from, to: patch.currentMonth, dismissed: false };
+      advanceInFlight = false;
+      render();
+    }).catch(e => {
+      // Offline or a failed write: leave currentMonth alone and let the
+      // existing stale-month nudge do its job until the next attempt.
+      advanceInFlight = false;
+      console.warn("month auto-advance failed", e);
+    });
+  }
+
   function render() {
     // Capture BEFORE any DOM mutation so we see the outgoing scroll state
     // (including any body-level overlay currently attached).
@@ -3044,6 +3144,7 @@ const UI = (() => {
     if (!id) { activeView = "setup"; renderSetup(); syncOverlays(null); return; }
     const s = DataService.get();
     if (!s) { renderLoading("SYNCING..."); return; }
+    maybeAdvanceMonth(s);
     // NOTE: overlays must be synced on the settings path too — NEW MONTH is
     // launched from inside Settings, and an early return here used to skip the
     // overlay dispatch entirely so the overlay never appeared.
@@ -3235,9 +3336,17 @@ const UI = (() => {
 
     // Month-rollover nudge (was Log-only).
     const realMonth = Util.currentMonthYM();
+    // The month rolls forward on its own now, so this only appears when that
+    // write could not go through — offline, or a rejected save. It is a real
+    // problem when it shows, hence still red.
     const monthStale = !!(s.currentMonth && realMonth > s.currentMonth);
     const staleHtml = monthStale ? `
-      <div class="sub-label text-danger" style="margin-top:8px;" data-learn="THE CALENDAR HAS MOVED ON BUT THE APP IS STILL TRACKING THE OLD MONTH. EVERY FIGURE HERE DESCRIBES THAT OLD MONTH UNTIL YOU ROLL FORWARD. TAP TO START THE NEW MONTH.">IT'S ${Util.esc(Util.fmtMonthLong(realMonth))} · <button class="link text-danger" data-action="open-new-month-inline">START NEW MONTH →</button></div>` : "";
+      <div class="sub-label text-danger" style="margin-top:8px;" data-learn="IT'S A NEW MONTH BUT THE ROLL-FORWARD COULDN'T BE SAVED, USUALLY BECAUSE THE APP IS OFFLINE. EVERY FIGURE HERE STILL DESCRIBES THE OLD MONTH. IT WILL SORT ITSELF OUT WHEN THE CONNECTION IS BACK, OR TAP TO ROLL FORWARD NOW.">IT'S ${Util.esc(Util.fmtMonthLong(realMonth))} · COULDN'T ROLL FORWARD · <button class="link text-danger" data-action="open-new-month-inline">TRY AGAIN →</button></div>` : "";
+
+    // Confirmation that the month moved by itself and money came with it.
+    const roll = monthRollNotice;
+    const rollHtml = (roll && !roll.dismissed && roll.to === s.currentMonth) ? `
+      <div class="sub-label" style="margin-top:8px; opacity:0.85;" data-learn="THE BUDGET MONTH FOLLOWS THE CALENDAR, SO IT ROLLED FORWARD ON ITS OWN. UNSPENT CATEGORY MONEY WAS CARRIED ACROSS. REVIEW LETS YOU KEEP OR CLEAR WHAT CAME WITH IT.">ROLLED FORWARD INTO ${Util.esc(Util.fmtMonthLong(roll.to))} · <button class="link" data-action="open-rollovers">REVIEW ROLLOVERS →</button> <button class="link" data-action="dismiss-roll">× DISMISS</button></div>` : "";
 
     return `
       <section class="section lime" style="padding-top:80px;" data-learn="SAFE TO SPEND BLOCK. THE BIG NUMBER IS WHAT'S TRULY LEFT TO SPEND THIS MONTH AFTER TITHE, BILLS, DEBT MINIMUMS, AND UNPAID CREDIT ARE SET ASIDE. IT STAYS PUT ON EVERY TAB SO THE FIGURE THAT MATTERS IS ALWAYS THE FIRST THING YOU SEE.">
@@ -3259,6 +3368,7 @@ const UI = (() => {
         ${dueSoonHtml}
         ${savingsHtml}
         ${staleHtml}
+        ${rollHtml}
       </section>`;
   }
 
@@ -3315,6 +3425,19 @@ const UI = (() => {
     root.querySelectorAll("[data-action=dismiss-gap]").forEach(el => {
       el.addEventListener("click", () => {
         if (balanceGapNotice) balanceGapNotice.dismissed = true;
+        render();
+      });
+    });
+    root.querySelectorAll("[data-action=open-rollovers]").forEach(el => {
+      el.addEventListener("click", () => {
+        newMonthChoices = {};
+        newMonthOpen = true;
+        render();
+      });
+    });
+    root.querySelectorAll("[data-action=dismiss-roll]").forEach(el => {
+      el.addEventListener("click", () => {
+        if (monthRollNotice) monthRollNotice.dismissed = true;
         render();
       });
     });
@@ -5981,10 +6104,10 @@ const UI = (() => {
             <div class="meta" style="opacity:0.85; margin-top:8px;">${shimmerMode() === "off" ? "SHIMMER IS OFF." : "ONLY ONE CAN BE ON; TURNING THE OTHER ON SWITCHES IT. TURN OFF WHICHEVER IS ON FOR NO SHIMMER AT ALL."}</div>
           </div>
 
-          <div class="settings-group" id="sg-newmonth" data-learn="NEW MONTH. STARTS A FRESH BUDGET MONTH. FOR EACH SPENDING CATEGORY WITH UNSPENT MONEY YOU CHOOSE ROLL OVER (KEEP IT) OR RESET TO ZERO. TRANSACTIONS FROM OLD MONTHS STAY IN THE LOG.">
-            <h3>NEW MONTH · CURRENT: ${Util.esc(Util.fmtMonthLong(s.currentMonth))}</h3>
-            <div class="meta" style="opacity:0.85;">START A NEW BUDGET MONTH · REVIEW ROLLOVERS · RESET SPENDING</div>
-            <button class="cta" style="margin-top:16px;" data-action="open-new-month">→ START NEW MONTH</button>
+          <div class="settings-group" id="sg-newmonth" data-learn="ROLLOVERS. THE BUDGET MONTH FOLLOWS THE CALENDAR AND ROLLS FORWARD BY ITSELF, CARRYING UNSPENT CATEGORY MONEY WITH IT. THIS IS WHERE YOU KEEP OR CLEAR WHAT CAME ACROSS. TRANSACTIONS FROM OLD MONTHS STAY IN THE LOG EITHER WAY.">
+            <h3>ROLLOVERS · ${Util.esc(Util.fmtMonthLong(s.currentMonth))}</h3>
+            <div class="meta" style="opacity:0.85;">THE MONTH ROLLS FORWARD ON ITS OWN WITH THE CALENDAR · KEEP OR CLEAR WHAT WAS CARRIED IN</div>
+            <button class="cta" style="margin-top:16px;" data-action="open-new-month">→ REVIEW ROLLOVERS</button>
           </div>
 
           <div class="settings-group" id="sg-wizard" data-learn="SETUP WIZARD. PASTE OR UPLOAD STATEMENTS AND CLEAR WORKS OUT YOUR PAYCHECKS AND RECURRING BILLS. RUNNING IT AGAIN UPDATES MATCHING ITEMS AND ADDS NEW ONES; IT NEVER DELETES ANYTHING OR TOUCHES YOUR LOGGED TRANSACTIONS.">
@@ -8600,18 +8723,28 @@ const UI = (() => {
   }
 
   /* ------------- NEW MONTH OVERLAY (only allowed modal) ------------- */
+  // The month advances on its own, so this is no longer a gate you pass to
+  // start one — it is where you keep or clear what was carried across into the
+  // month you are already in. Only categories that actually brought something
+  // with them are listed; the rest have nothing to decide.
   function renderNewMonthOverlay(s) {
+    const month = s.currentMonth;
     const cats = (s.spendingCategories||[]);
-    const rows = cats.map(c => {
-      const remaining = BudgetEngine.categoryRemaining(s, c);
-      const choice = newMonthChoices[c.id] || "roll";
+    const withRoll = cats
+      .map(c => ({ cat: c, candidate: BudgetEngine.rolloverCandidate(s, c, month) }))
+      .filter(x => x.candidate > 0);
+    const rows = withRoll.map(({ cat, candidate }) => {
+      // Default reflects what is actually stored, so reopening shows the state
+      // you left rather than resetting to "keep" every time.
+      const stored = BudgetEngine.rolloverAmountIn(s, cat.id, month);
+      const choice = newMonthChoices[cat.id] || (stored > 0 ? "roll" : "reset");
       return `
         <div class="rollover-row">
-          <h4>${Util.esc(c.label)}</h4>
-          <div class="amt">${Util.esc(Util.fmtMoney(remaining,0))} UNSPENT</div>
+          <h4>${Util.esc(cat.label)}</h4>
+          <div class="amt">${Util.esc(Util.fmtMoney(candidate,0))} CARRIED IN</div>
           <div class="choice-row">
-            <button class="${choice==='roll'?'active':''}" data-action="nm-choice" data-id="${Util.esc(c.id)}" data-choice="roll">ROLL OVER →</button>
-            <button class="${choice==='reset'?'active':''}" data-action="nm-choice" data-id="${Util.esc(c.id)}" data-choice="reset">RESET TO $0</button>
+            <button class="${choice==='roll'?'active':''}" data-action="nm-choice" data-id="${Util.esc(cat.id)}" data-choice="roll">KEEP IT</button>
+            <button class="${choice==='reset'?'active':''}" data-action="nm-choice" data-id="${Util.esc(cat.id)}" data-choice="reset">CLEAR TO $0</button>
           </div>
         </div>`;
     }).join("");
@@ -8625,12 +8758,13 @@ const UI = (() => {
     overlay.innerHTML = `
       <div class="overlay-inner" data-scroll-key="newmonth-overlay-inner">
         <button class="link" data-action="nm-cancel">× CLOSE</button>
-        <h2 class="section-label" style="margin-top:16px;">→ NEW MONTH</h2>
-        <div class="meta" style="margin-top:8px;">CURRENT: ${Util.esc(Util.fmtMonthLong(s.currentMonth))} · NEXT: ${Util.esc(Util.fmtMonthLong(nextMonth(s.currentMonth)))}</div>
-        <div style="margin-top:24px;">${rows || `<div class="meta">NO SPENDING CATEGORIES</div>`}</div>
-        <div class="meta" style="margin-top:24px; opacity:0.8;">SAFE TO SPEND IS BASED ON WHAT'S ACTUALLY IN YOUR ACCOUNT. CONFIRMING YOUR BALANCE AS YOU ROLL FORWARD CARRIES LAST MONTH'S LEFTOVER OVER AND CLEARS ANYTHING THAT NEVER GOT LOGGED.</div>
+        <h2 class="section-label" style="margin-top:16px;">→ ROLLOVERS</h2>
+        <div class="meta" style="margin-top:8px;">${Util.esc(Util.fmtMonthLong(month))} · CARRIED IN FROM ${Util.esc(Util.fmtMonthLong(Util.prevMonthYM(month)))}</div>
+        <div class="meta" style="margin-top:8px; opacity:0.8;">THE BUDGET MONTH FOLLOWS THE CALENDAR AND UNSPENT MONEY COMES WITH IT. CLEAR ANYTHING YOU'D RATHER START FRESH.</div>
+        <div style="margin-top:24px;">${rows || `<div class="meta">NOTHING WAS CARRIED INTO THIS MONTH.</div>`}</div>
+        <div class="meta" style="margin-top:24px; opacity:0.8;">SAFE TO SPEND IS BASED ON WHAT'S ACTUALLY IN YOUR ACCOUNT, SO CONFIRMING YOUR BALANCE AT THE START OF A MONTH CLEARS ANYTHING THAT NEVER GOT LOGGED.</div>
         <button class="cta" style="margin-top:12px;" data-action="nm-balance">→ CONFIRM MY BALANCE</button>
-        <button class="cta big" style="margin-top:12px;" data-action="nm-confirm">→ CONFIRM NEW MONTH</button>
+        ${withRoll.length ? `<button class="cta big" style="margin-top:12px;" data-action="nm-confirm">→ SAVE ROLLOVERS</button>` : ""}
       </div>`;
     document.body.appendChild(overlay);
 
@@ -8643,37 +8777,32 @@ const UI = (() => {
       });
     });
     overlay.querySelector("[data-action=nm-cancel]").addEventListener("click", () => {
-      newMonthOpen = false; render();
+      newMonthOpen = false; newMonthChoices = {}; render();
     });
-    // Anchoring is independent of rolling the month — the balance is "right
+    // Anchoring is independent of the rollover choice — the balance is "right
     // now" either way — so this opens the same overlay on top and leaves the
-    // rollover choices untouched underneath.
+    // choices untouched underneath.
     overlay.querySelector("[data-action=nm-balance]").addEventListener("click", () => openBalanceOverlay(null));
-    overlay.querySelector("[data-action=nm-confirm]").addEventListener("click", () => confirmNewMonth(s, overlay));
+    const confirmBtn = overlay.querySelector("[data-action=nm-confirm]");
+    if (confirmBtn) confirmBtn.addEventListener("click", () => confirmNewMonth(s, overlay));
   }
 
-  function nextMonth(ym) {
-    let [y, m] = ym.split("-").map(Number);
-    m++;
-    if (m > 12) { m = 1; y++; }
-    return `${y}-${String(m).padStart(2,"0")}`;
-  }
-
+  // Writes the rollover amounts for the month already in progress. It does not
+  // move currentMonth — the calendar does that.
   async function confirmNewMonth(s, overlay) {
-    const newMonth = nextMonth(s.currentMonth);
+    const month = s.currentMonth;
     const rollovers = {};
     (s.spendingCategories||[]).forEach(c => {
-      const choice = newMonthChoices[c.id] || "roll";
-      if (choice === "roll") {
-        const remaining = BudgetEngine.categoryRemaining(s, c);
-        if (remaining > 0) rollovers[c.id] = Math.round(remaining * 100) / 100;
-      }
+      const candidate = BudgetEngine.rolloverCandidate(s, c, month);
+      if (candidate <= 0) return;
+      const stored = BudgetEngine.rolloverAmountIn(s, c.id, month);
+      const choice = newMonthChoices[c.id] || (stored > 0 ? "roll" : "reset");
+      if (choice === "roll") rollovers[c.id] = candidate;
     });
     const patch = {};
     const mr = Object.assign({}, s.monthlyRollover || {});
-    mr[newMonth] = rollovers;
+    mr[month] = rollovers;
     patch.monthlyRollover = mr;
-    patch.currentMonth = newMonth;
     try {
       await DataService.update(patch);
       newMonthOpen = false;
