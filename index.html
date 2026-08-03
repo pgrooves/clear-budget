@@ -5521,18 +5521,32 @@ const UI = (() => {
   // "fuzzy" is close enough to link (which fixes the double-count) but not to
   // teach billMap, since a merchant learned wrong would auto-tick the wrong
   // bill on every future import.
-  function findTxnForBill(s, bill) {
+  function findTxnForBill(s, bill, month) {
     if (!bill || !bill.id) return null;
+    const ym = /^\d{4}-\d{2}$/.test(String(month || "")) ? month : Util.currentMonthYM();
     const linked = linkedTxnIds(s);
-    // Bills recur monthly, so a payment much older than this belongs to an
-    // earlier cycle and is not what's being ticked now.
-    const cutoff = new Date(Date.now() - 45 * 86400000).toISOString().slice(0, 10);
+
+    // Candidates are confined to the cycle being ticked. Bills recur monthly
+    // and every cycle looks alike, so a wider window lets LAST month's rent
+    // answer for THIS month's — which marks an unpaid bill as paid, releases
+    // its reservation, and deducts nothing from the balance because the money
+    // left before the last one was confirmed. Safe To Spend then jumps by the
+    // full amount of a bill you still owe.
+    //
+    // A few days of grace before the 1st covers a payment sent early for a
+    // bill due on the 1st or 2nd.
+    const [y, m] = ym.split("-").map(Number);
+    const first = new Date(Date.UTC(y, m - 1, 1));
+    const graceStart = new Date(first.getTime() - 5 * 86400000).toISOString().slice(0, 10);
+    const monthEnd = new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10);
+
     let best = null;
     for (const t of (s.transactions || [])) {
       if (!t || t.paymentType === "credit") continue;   // never touched checking
       if (t.categoryType === "debt" || t.tickPay) continue; // debt payments have their own tick
       if (linked[t.id]) continue;
-      if (String(t.date || "") < cutoff) continue;
+      const d = String(t.date || "");
+      if (d < graceStart || d > monthEnd) continue;
       const key = t.merchantKey || ImportEngine.normalizeMerchantKey(t.note || "");
       const m = matchSettingsItem({ merchantKey: key, amount: t.amount }, [bill]);
       if (!m) continue;
@@ -5579,7 +5593,7 @@ const UI = (() => {
       }
       // If this payment is already sitting in the ledger, link to it rather
       // than recording a second, independent outflow of the same money.
-      const link = bill ? findTxnForBill(s, bill) : null;
+      const link = bill ? findTxnForBill(s, bill, month) : null;
       forMonth[billId] = {
         paid: true,
         // The transaction's own date beats "today" when we found one — it's
