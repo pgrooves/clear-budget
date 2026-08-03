@@ -1754,7 +1754,13 @@ const ImportEngine = (() => {
     }));
 
     const dated = lineData.filter(x => x.date).length;
-    if (dated === 0) return { items: [], structure: emptyStruct };
+    // No date anywhere — a screenshot taken below the heading, or a heading the
+    // reader garbled. The rows are still perfectly good if the user tells us
+    // what day they're from, so accept a supplied date rather than giving up.
+    if (dated === 0) {
+      if (options.assumeDate) return parseDateHeadings(lineData, options);
+      return { items: [], structure: emptyStruct };
+    }
 
     // --- Date-heading layouts (bank app feeds, screenshots) ---
     // Some statements put the date in a heading — "AUG 02, 2026" — with the
@@ -1900,10 +1906,25 @@ const ImportEngine = (() => {
     const effSecondIsBalance = options.secondIsBalance == null ? true : !!options.secondIsBalance;
     const forcedLpt = (options.linesPerTxn >= 1 && options.linesPerTxn <= 3) ? options.linesPerTxn : null;
     const forcedPos = (options.amountPos === "first" || options.amountPos === "last") ? options.amountPos : null;
+    // A date the caller supplied for rows with no heading above them. Screenshots
+    // are taken mid-scroll all the time, so the top of one routinely lands under
+    // a heading that is off screen.
+    const assumed = /^\d{4}-\d{2}-\d{2}$/.test(String(options.assumeDate || "")) ? { iso: options.assumeDate } : null;
+
+    // Money-bearing lines appearing before any heading. Without a date to
+    // inherit these used to be dropped on the floor; they are counted so the
+    // caller can ask rather than lose them silently.
+    let orphanLines = 0;
+    if (!assumed) {
+      for (const ld of lineData) {
+        if (ld.date && !ld.amounts.length) break;
+        if (ld.amounts.length) orphanLines++;
+      }
+    }
 
     const build = (lpt, pos) => {
       const groups = [];
-      let currentDate = null;
+      let currentDate = assumed;
       let buf = [];
       for (const ld of lineData) {
         if (ld.date && !ld.amounts.length) {
@@ -1968,7 +1989,7 @@ const ImportEngine = (() => {
       }
     }
     if (!best) {
-      return { items: [], structure: { hasDates: true, hasBalance: false, linesPerTxn: 1, datePos: "heading", amountPos: "first", detected: 0, dateHeadings: true, chainScore: 0 } };
+      return { items: [], structure: { hasDates: !!assumed, hasBalance: false, linesPerTxn: 1, datePos: "heading", amountPos: "first", detected: 0, dateHeadings: true, chainScore: 0, orphanRows: 0 } };
     }
     return {
       items: best.items,
@@ -1981,7 +2002,11 @@ const ImportEngine = (() => {
         detected: best.items.length,
         dateHeadings: true,
         // Surfaced so the UI can say whether the parse was verified or guessed.
-        chainScore: Math.round(best.chain.score * 100) / 100
+        chainScore: Math.round(best.chain.score * 100) / 100,
+        // Transactions stranded above the first heading, in whatever grouping
+        // actually won. Non-zero means rows are being dropped unless a date
+        // is supplied for them.
+        orphanRows: orphanLines ? Math.ceil(orphanLines / best.lpt) : 0
       }
     };
   }
@@ -2412,6 +2437,10 @@ const UI = (() => {
     // { name, status: "queued"|"reading"|"done"|"failed", pct, text, error }
     shots: [],
     shotsBusy: false,
+    // { reason, orphanRows, found, value, error } while asking what day some
+    // rows belong to; the confirmed ISO date is kept in assumeDate.
+    askDate: null,
+    assumeDate: null,
     // How many not-yet-posted rows were dropped, for the review header.
     pendingSkipped: 0,
     // Closing balance lifted off the import, when the layout carries one.
@@ -7578,6 +7607,8 @@ const UI = (() => {
     importFlow.showOlder = false;
     importFlow.shots = [];
     importFlow.shotsBusy = false;
+    importFlow.askDate = null;
+    importFlow.assumeDate = null;
     importFlow.pendingSkipped = 0;
     importFlow.detectedBalance = null;
     importFlow.choicePanelOpen = false;
@@ -7759,9 +7790,25 @@ const UI = (() => {
       return;
     }
     importFlow.rawText = text;
-    const parsed = ImportEngine.textParse(text);
-    if (!parsed.structure.hasDates || !parsed.items.length) {
-      importFlow.stage = "no-dates";
+    finishShotParse(s, ImportEngine.textParse(text, importFlow.assumeDate ? { assumeDate: importFlow.assumeDate } : undefined));
+  }
+
+  // Shared by the first parse and the re-parse after a date is supplied.
+  function finishShotParse(s, parsed) {
+    const st = parsed.structure || {};
+    // Two ways a screenshot ends up with rows we can't date: no heading was
+    // read at all, or the shot starts mid-scroll so its first rows sit under a
+    // heading that was off screen. Both are answerable by asking, and both used
+    // to end in rows being silently dropped.
+    if (!importFlow.assumeDate && (!st.hasDates || !parsed.items.length || st.orphanRows > 0)) {
+      importFlow.askDate = {
+        reason: (!st.hasDates || !parsed.items.length) ? "none" : "orphans",
+        orphanRows: st.orphanRows || 0,
+        found: parsed.items.length,
+        value: Util.todayISO(),
+        error: ""
+      };
+      importFlow.stage = "ask-date";
       render();
       return;
     }
@@ -7792,9 +7839,23 @@ const UI = (() => {
 
   function onPasteSubmit(s) {
     const text = importFlow.rawText || "";
-    const parsed = ImportEngine.textParse(text);
+    const parsed = ImportEngine.textParse(text, importFlow.assumeDate ? { assumeDate: importFlow.assumeDate } : undefined);
     if (!parsed.structure.hasDates) {
       importFlow.stage = "no-dates";
+      render();
+      return;
+    }
+    // Pasted text can also start below a date heading. Ask rather than drop the
+    // rows on the floor, same as the screenshot path.
+    if (!importFlow.assumeDate && parsed.structure.orphanRows > 0) {
+      importFlow.askDate = {
+        reason: "orphans",
+        orphanRows: parsed.structure.orphanRows,
+        found: parsed.items.length,
+        value: Util.todayISO(),
+        error: ""
+      };
+      importFlow.stage = "ask-date";
       render();
       return;
     }
@@ -8523,6 +8584,7 @@ const UI = (() => {
     else if (stage === "wizard-review") inner = renderWizardReview(s);
     else if (stage === "paste-input") inner = renderPasteInput();
     else if (stage === "shot-input") inner = renderShotInput();
+    else if (stage === "ask-date") inner = renderAskDate();
     else if (stage === "no-dates") inner = renderNoDates();
     else if (stage === "error") inner = renderImportError();
     else if (stage === "learning") inner = renderLearning(s);
@@ -8571,6 +8633,34 @@ const UI = (() => {
       ${importFlow.error ? `<div class="text-danger meta" style="margin-top:12px;">${Util.esc(importFlow.error)}</div>` : ""}
       ${importFlow.shotsBusy ? `<div class="meta" style="margin-top:16px;">READING… THIS CAN TAKE A FEW SECONDS PER SCREENSHOT.</div>` : ""}
       ${(!importFlow.shotsBusy && done) ? `<button class="cta" style="margin-top:16px;" data-action="shot-parse">→ READ ${done} SCREENSHOT${done === 1 ? "" : "S"}</button>` : ""}
+    `;
+  }
+
+  // Rather than failing on a screenshot whose date it couldn't read, ask. The
+  // rows themselves are fine; only the day they belong to is missing, and the
+  // user knows it. Answering here beats losing the rows or making them retype
+  // everything by hand.
+  function renderAskDate() {
+    const a = importFlow.askDate || {};
+    const none = a.reason === "none";
+    return `
+      <div class="row" style="justify-content:space-between; align-items:center; margin-bottom:16px;">
+        <div class="overlay-title">→ WHAT DATE?</div>
+        <button class="link" data-action="import-cancel">× CLOSE</button>
+      </div>
+      <div class="meta" style="opacity:0.9;">${none
+        ? "NO DATE WAS READ FROM THESE SCREENSHOTS. THAT USUALLY MEANS THE DATE HEADING WASN'T IN SHOT, OR IT CAME OUT TOO BLURRY TO READ."
+        : `${a.orphanRows} TRANSACTION${a.orphanRows === 1 ? "" : "S"} AT THE TOP ${a.orphanRows === 1 ? "SITS" : "SIT"} ABOVE THE FIRST DATE HEADING, SO ${a.orphanRows === 1 ? "IT HAS" : "THEY HAVE"} NO DATE TO INHERIT. THE OTHER ${a.found} READ FINE.`}</div>
+      <div class="meta" style="margin-top:12px; opacity:0.75;">${none
+        ? "TELL US THE DAY THEY'RE FROM AND THEY'LL ALL BE DATED THAT DAY."
+        : "TELL US THE DAY THOSE TOP ROWS ARE FROM. EVERYTHING UNDER A HEADING KEEPS ITS OWN DATE."}</div>
+      <div style="margin-top:24px;">
+        <div class="sub-label">DATE</div>
+        <input id="ask-date-input" class="underline" type="date" value="${Util.esc(a.value || Util.todayISO())}">
+      </div>
+      ${a.error ? `<div class="text-danger meta" style="margin-top:12px;">${Util.esc(a.error)}</div>` : ""}
+      <button class="cta" style="margin-top:24px;" data-action="ask-date-confirm">→ USE THIS DATE</button>
+      <button class="link" style="margin-top:16px;" data-action="ask-date-back">${importFlow.kind === "paste" ? "← BACK TO THE TEXT" : "← PICK DIFFERENT SCREENSHOTS"}</button>
     `;
   }
 
@@ -8923,6 +9013,29 @@ const UI = (() => {
     });
     q("[data-action=shot-parse]").forEach(el => el.addEventListener("click", () => {
       onShotsSubmit(s);
+    }));
+    overlay.querySelectorAll("#ask-date-input").forEach(el => {
+      el.addEventListener("input", () => { if (importFlow.askDate) importFlow.askDate.value = el.value; });
+    });
+    q("[data-action=ask-date-back]").forEach(el => el.addEventListener("click", () => {
+      importFlow.askDate = null;
+      importFlow.assumeDate = null;
+      importFlow.stage = importFlow.kind === "paste" ? "paste-input" : "shot-input";
+      render();
+    }));
+    q("[data-action=ask-date-confirm]").forEach(el => el.addEventListener("click", () => {
+      const a = importFlow.askDate;
+      if (!a) return;
+      const v = String(a.value || "").trim();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(v) || isNaN(new Date(v + "T00:00:00"))) {
+        a.error = "ENTER A VALID DATE";
+        render();
+        return;
+      }
+      importFlow.assumeDate = v;
+      importFlow.askDate = null;
+      if (importFlow.kind === "paste") { onPasteSubmit(s); return; }
+      finishShotParse(s, ImportEngine.textParse(importFlow.rawText || "", { assumeDate: v }));
     }));
     q("[data-action=csv-pick-col]").forEach(el => el.addEventListener("click", () => {
       const i = parseInt(el.dataset.i, 10);
