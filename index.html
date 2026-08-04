@@ -1058,6 +1058,32 @@ const BudgetEngine = (() => {
   function totalIncome(s) {
     return (s.income || []).reduce((a, i) => a + incomeMonthlyAmount(i), 0);
   }
+  // The days a source actually pays within a month, earliest first, and what
+  // lands each time. A month is not one paycheck: where a fortnightly earner's
+  // paydays sit relative to the bills is the whole point of the cash-flow walk,
+  // so every landing has to be its own dated event.
+  function incomeLandings(inc, lastDay) {
+    const freq = incomeFrequency(inc);
+    // A 31st pay date in a 30-day month would otherwise produce no landing at
+    // all and read as a month with no income.
+    const first = Math.max(1, Math.min(lastDay, num(inc && inc.dueDateOfMonth) || 1));
+    const each = num(inc && inc.amount);
+    const out = [];
+    if (freq.everyDays > 0 && freq.everyDays < 15) {
+      for (let d = first; d <= lastDay; d += freq.everyDays) out.push({ day: d, amount: each });
+    } else if (freq.id === "semimonthly") {
+      // Twice a month is a pair of fixed dates, not a 15-day cycle: stepping it
+      // would fit a third landing into a 31-day month and overstate the year.
+      out.push({ day: first, amount: each });
+      out.push({ day: Math.min(first + 15, lastDay), amount: each });
+    } else {
+      // Monthly and rarer. Quarterly and yearly have no payday in most months,
+      // so they keep contributing their averaged monthly share rather than
+      // implying a lump sum that isn't coming.
+      out.push({ day: first, amount: freq.perMonth >= 1 ? each : incomeMonthlyAmount(inc) });
+    }
+    return out;
+  }
   // Pay-date order, which is how they actually arrive. Undated sources sort
   // last rather than pretending to be the 1st.
   function incomeByDate(s) {
@@ -1329,43 +1355,46 @@ const BudgetEngine = (() => {
     // by is deliberately NOT pulled forward to today — money that was due and
     // hasn't shown up is not money you can spend, and quietly counting it is
     // how this number would start lying.
-    const cleared = {};
-    (s.incomeLog || []).forEach(e => { if (e && e.month === s.currentMonth) cleared[e.incomeId] = true; });
+    // Logged paychecks are counted, not treated as a flag on the source. A
+    // fortnightly earner is paid two or three times a month, so marking the
+    // first one received says nothing about the ones still to come — writing
+    // the whole source off there left the walk holding a full month of bills
+    // against a part month of income, which is what drove Safe To Spend
+    // negative for the rest of every month.
+    const loggedCount = {};
+    (s.incomeLog || []).forEach(e => {
+      if (e && e.month === s.currentMonth) loggedCount[e.incomeId] = (loggedCount[e.incomeId] || 0) + 1;
+    });
     let titheBase = 0;
     (s.income || []).forEach(i => {
-      if (cleared[i.id]) return;
-      const freq = incomeFrequency(i);
-      const first = num(i.dueDateOfMonth) || 1;
-      const each = num(i.amount);
-      if (each <= 0) return;
-      if (freq.everyDays > 0 && freq.everyDays < 15) {
-        // Weekly and fortnightly sources land several times a month, and where
-        // those landings sit relative to the bills is the whole point.
-        for (let d = first; d <= last; d += freq.everyDays) {
-          if (d < today) continue;
-          events.push({ day: d, seq: IN, amount: each, label: i.label });
-          titheBase += each;
-        }
-      } else {
-        if (first < today) return;
-        const amt = freq.perMonth >= 1 ? each * freq.perMonth : incomeMonthlyAmount(i);
-        events.push({ day: first, seq: IN, amount: amt, label: i.label });
-        titheBase += amt;
-      }
+      if (num(i.amount) <= 0) return;
+      // Paychecks arrive in date order, so N logged entries account for this
+      // month's N earliest landings; the rest are still ahead.
+      const pending = incomeLandings(i, last).slice(loggedCount[i.id] || 0);
+      pending.forEach(l => {
+        if (l.day < today) return;
+        events.push({ day: l.day, seq: IN, amount: l.amount, label: i.label });
+        titheBase += l.amount;
+      });
     });
 
     // Tithe comes due with the income it is taken from, not on the 1st.
     // What is still owed gets spread across the paydays still to come, in
     // proportion to what each one brings, so the events sum to exactly the
     // outstanding amount however much has already been given.
-    if (titheEnabled(s) && titheBase > 0) {
+    if (titheEnabled(s)) {
       const owed = Math.max(0, unpaidTithe(s));
-      if (owed > 0) {
+      if (owed > 0 && titheBase > 0) {
         events.slice().forEach(e => {
           if (e.seq !== IN) return;
           const cut = owed * (e.amount / titheBase);
           if (cut > 0) events.push({ day: e.day, seq: TITHE, amount: -cut, label: "TITHE" });
         });
+      } else if (owed > 0) {
+        // Nothing left to land this month to take it from, but it is owed on
+        // income already received, so it comes out now instead of dropping out
+        // of the walk and flattering the number.
+        events.push({ day: today, seq: TITHE, amount: -owed, label: "TITHE" });
       }
     }
 
@@ -1551,7 +1580,7 @@ const BudgetEngine = (() => {
   return {
     num,
     totalIncome, receivedIncome, tithePercent, titheEnabled, tithe, titheOnReceived, titheBillView,
-    INCOME_FREQUENCIES, incomeFrequency, incomeMonthlyAmount, incomeByDate,
+    INCOME_FREQUENCIES, incomeFrequency, incomeMonthlyAmount, incomeByDate, incomeLandings,
     billsSubtotal, totalBills, totalDebtMins,
     totalUnpaidCredit, safeToSpend, spendingBudgetedTotal, totalBudgeted, extraForDebt,
     latestAnchor, hasAnchor, isAfterAnchor, projectedBalance, billPaymentsSinceAnchor,
