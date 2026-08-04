@@ -456,6 +456,7 @@
   .cat-line { display: flex; justify-content: space-between; align-items: baseline; font-size: 16px; font-weight: 600; letter-spacing: 0.06em; gap: 8px; }
   .cat-remaining { font-size: 12px; letter-spacing: 0.12em; opacity: 0.85; margin-top: 4px; }
   .cat-head { cursor: pointer; }
+  .cat-fund-bar { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-top: 12px; }
   .cat-fund { font-size: 11px; letter-spacing: 0.12em; opacity: 0.72; margin-top: 4px; }
   /* The transactions behind a category total, shown when its row is open. */
   .cat-txns { margin-top: 10px; padding-top: 8px; border-top: 1px solid rgba(0,0,0,0.18); }
@@ -2635,6 +2636,26 @@ const UI = (() => {
   const UNCAT_KEY = "__uncategorized__";
   let dashCatOpen = null;
 
+  /* Payday screen. Ticking a paycheck is the one moment there is new money to
+     decide about, so the three decisions that follow it — fund the categories,
+     give the tithe, move the savings — are asked together there rather than
+     left to be remembered separately on three other tabs.
+
+     One screen, not three prompts: paid fortnightly that would be six
+     interruptions a month, and weekly it would be fifteen. Every section is
+     skippable and the whole thing can be muted for the month.
+
+     `fundingOnly` reuses the same screen for the dashboard's own button, so
+     forgetting to tick income doesn't lock you out of funding. */
+  let paydayForm = null;
+  const PAYDAY_MUTE_KEY = "clear.paydayMuted";
+  function paydayMuted(month) {
+    try { return localStorage.getItem(PAYDAY_MUTE_KEY) === month; } catch (e) { return false; }
+  }
+  function mutePayday(month) {
+    try { localStorage.setItem(PAYDAY_MUTE_KEY, month); } catch (e) {}
+  }
+
   // New Month overlay state
   let newMonthOpen = false;
   let newMonthChoices = {}; // { categoryId: "roll" | "reset" }
@@ -3923,6 +3944,9 @@ const UI = (() => {
         render();
       });
     });
+    root.querySelectorAll("[data-action=open-funding]").forEach(el => {
+      el.addEventListener("click", () => openFundingForm(s));
+    });
   }
 
   // The month-rollover nudge now lives in the shared lime block, so its handler
@@ -3974,12 +3998,14 @@ const UI = (() => {
     const wantNewMonth = !!s && !!newMonthOpen;
     const wantImport = !!s && !!(importFlow.open && importFlow.stage);
     const wantBalance = !!s && !!balanceForm;
-    if (!wantNewMonth && !wantImport && !wantBalance) {
+    const wantPayday = !!s && !!paydayForm;
+    if (!wantNewMonth && !wantImport && !wantBalance && !wantPayday) {
       document.querySelectorAll(".overlay").forEach(o => o.remove());
       return;
     }
     if (wantNewMonth) renderNewMonthOverlay(s);
     if (wantImport) renderImportOverlay(s);
+    if (wantPayday) renderPaydayOverlay(s);
     // Last, so confirming a balance straight after an import sits on top.
     if (wantBalance) renderBalanceOverlay(s);
   }
@@ -5076,6 +5102,14 @@ const UI = (() => {
           source: "manual"
         };
         await DataService.update({ incomeLog: DataService.appendTxns(entry) });
+        // Only on the way in, and only if the month hasn't been muted: money
+        // just landed, so this is the moment to decide what to do with it.
+        // Untickng a paycheck is a correction and asks nothing.
+        if (!paydayMuted(s.currentMonth)) {
+          render();
+          openPaydayForm(DataService.get() || s, incomeId);
+          return;
+        }
       }
       render();
     } catch (e) { alert("COULDN'T SAVE; CHECK CONNECTION"); console.warn(e); }
@@ -5538,6 +5572,10 @@ const UI = (() => {
         <section class="section teal" data-learn="SPENDING CATEGORIES. EACH ROW SHOWS SPENT / BUDGETED WITH A PROGRESS BAR. THE BAR COMPARES YOUR SPENDING AGAINST HOW FAR THROUGH THE MONTH YOU ARE, SO 80% SPENT ON THE 5TH WARNS BUT 80% ON THE 28TH DOESN'T. RED ALWAYS MEANS OVER BUDGET OR WELL AHEAD OF PACE.">
           <div class="section-label">→ CATEGORIES</div>
           <div class="sub-label" style="margin-top:12px;" data-learn="HOW FAR THROUGH THE MONTH YOU ARE. CATEGORY BARS ARE JUDGED AGAINST THIS, NOT JUST AGAINST YOUR BUDGET.">DAY ${dayInfo.day} OF ${dayInfo.daysInMonth} · ${dayInfo.pct}% THROUGH THE MONTH</div>
+          <div class="cat-fund-bar">
+            <span class="sub-label">${Util.esc(Util.fmtMoney(BudgetEngine.totalReserved(s),0))} SET ASIDE AND UNSPENT</span>
+            <button class="link" data-action="open-funding" data-learn="SET MONEY ASIDE INTO YOUR CATEGORIES. IT STOPS COUNTING AS SAFE TO SPEND, AND SPENDING IN THAT CATEGORY THEN COMES OUT OF WHAT YOU SET ASIDE.">SET ASIDE →</button>
+          </div>
           <div style="margin-top:24px;">${catRows}${uncatRow}</div>
         </section>
 
@@ -9864,6 +9902,213 @@ const UI = (() => {
       balanceForm = null; render();
     });
     overlay.querySelector("[data-action=bal-save]").addEventListener("click", () => saveBalance(s));
+  }
+
+  // Opened by a paycheck tick. Savings rows are seeded unticked with their
+  // budgeted amount: the question is whether the money actually moved, and
+  // pre-answering yes would mark transfers that never happened.
+  function openPaydayForm(s, incomeId) {
+    const src = (s.income || []).find(i => i.id === incomeId);
+    if (!src) return;
+    const paid = (s.billsPaid || {})[s.currentMonth] || {};
+    const savings = {};
+    (s.bills || []).filter(b => b.category === "savings").forEach(b => {
+      if (paid[b.id] && paid[b.id].paid) return;
+      savings[b.id] = { on: false, amount: String(Math.round((Number(b.amount) || 0) * 100) / 100) };
+    });
+    paydayForm = {
+      fundingOnly: false,
+      incomeId,
+      label: String(src.label || "PAYCHECK").toUpperCase(),
+      amount: Math.round((Number(src.amount) || 0) * 100) / 100,
+      fundMode: "share",
+      tithe: false,
+      savings,
+      error: ""
+    };
+    render();
+  }
+
+  // The same screen reached from the dashboard, with only the funding section.
+  function openFundingForm(s) {
+    paydayForm = {
+      fundingOnly: true, incomeId: null, label: "", amount: 0,
+      fundMode: "share", tithe: false, savings: {}, error: ""
+    };
+    render();
+  }
+
+  function renderPaydayOverlay(s) {
+    const f = paydayForm;
+    const pct = Math.round(BudgetEngine.fundedShare(s) * 100);
+    const shareTotal = BudgetEngine.fundingPlanTotal(s, "share");
+    const fullTotal = BudgetEngine.fundingPlanTotal(s, "full");
+    const plan = f.fundMode === "none" ? [] : BudgetEngine.fundingPlan(s, f.fundMode);
+    const planRows = plan.filter(p => p.add > 0).map(p => `
+        <div class="cat-txn">
+          <span class="cat-txn-note">${Util.esc(p.label)}</span>
+          <span class="cat-txn-amt">+ ${Util.esc(Util.fmtMoney(p.add, 0))}</span>
+        </div>`).join("");
+
+    const titheOn = BudgetEngine.titheEnabled(s);
+    // Tithe on THIS paycheck, not the month, since this is the one that landed.
+    const titheAmt = Math.round(f.amount * BudgetEngine.tithePercent(s)) / 100;
+    const alreadyTithed = !!((s.billsPaid || {})[s.currentMonth] || {})["tithe:" + f.incomeId];
+    const showTithe = !f.fundingOnly && titheOn && titheAmt > 0 && !alreadyTithed;
+    const savingsIds = Object.keys(f.savings || {});
+    const showSavings = !f.fundingOnly && savingsIds.length > 0;
+
+    document.querySelectorAll(".overlay").forEach(o => o.remove());
+    const overlay = document.createElement("div");
+    overlay.className = "overlay";
+    overlay.setAttribute("data-scroll-key", "payday-overlay");
+    overlay.innerHTML = `
+      <div class="overlay-inner" data-scroll-key="payday-overlay-inner">
+        <button class="link" data-action="payday-close">× ${f.fundingOnly ? "CLOSE" : "SKIP ALL"}</button>
+        <h2 class="section-label" style="margin-top:16px;">→ ${f.fundingOnly ? "SET MONEY ASIDE" : "YOU GOT PAID"}</h2>
+        ${f.fundingOnly
+          ? `<div class="meta" style="margin-top:8px;">MONEY YOU SET ASIDE STOPS COUNTING AS SAFE TO SPEND, AND SPENDING IN THAT CATEGORY THEN COMES OUT OF WHAT YOU SET ASIDE INSTEAD OF OFF YOUR HEADLINE FIGURE.</div>`
+          : `<div class="meta" style="margin-top:8px;">${Util.esc(f.label)} · ${Util.esc(Util.fmtMoney(f.amount, 0))} LOGGED. THREE THINGS TO DECIDE WHILE THE MONEY IS HERE. SKIP ANY OF THEM.</div>`}
+
+        <div style="margin-top:28px;">
+          <div class="sub-label">1 · CATEGORIES</div>
+          <div class="meta" style="margin-top:8px;">YOU'VE BEEN PAID ${Util.esc(Util.fmtMoney(BudgetEngine.receivedIncome(s), 0))} OF AN EXPECTED ${Util.esc(Util.fmtMoney(BudgetEngine.totalIncome(s), 0))} THIS MONTH · ${pct}%</div>
+          <!-- Amounts sit here rather than inside the chips: three chips long
+               enough to carry a figure each overflow the row on a phone. -->
+          <div class="meta" style="margin-top:8px; opacity:0.8;">MY SHARE SETS ASIDE ${Util.esc(Util.fmtMoney(shareTotal, 0))} NOW · EVERYTHING SETS ASIDE ${Util.esc(Util.fmtMoney(fullTotal, 0))}</div>
+          <div class="chips" style="margin-top:12px;">
+            <button class="chip ${f.fundMode === "share" ? "active" : ""}" data-action="payday-mode" data-mode="share">MY SHARE</button>
+            <button class="chip ${f.fundMode === "full" ? "active" : ""}" data-action="payday-mode" data-mode="full">EVERYTHING</button>
+            <button class="chip ${f.fundMode === "none" ? "active" : ""}" data-action="payday-mode" data-mode="none">NOTHING</button>
+          </div>
+          ${planRows
+            ? `<div class="cat-txns" style="margin-top:12px;">${planRows}</div>`
+            : `<div class="meta" style="margin-top:12px; opacity:0.8;">${f.fundMode === "none" ? "NOTHING WILL BE SET ASIDE." : "NOTHING LEFT TO SET ASIDE; EVERY CATEGORY IS ALREADY FUNDED TO THIS POINT."}</div>`}
+        </div>
+
+        ${showTithe ? `
+        <div style="margin-top:28px;">
+          <div class="sub-label">2 · TITHE</div>
+          <div class="meta" style="margin-top:8px;">${BudgetEngine.tithePercent(s)}% OF THIS PAYCHECK IS ${Util.esc(Util.fmtMoney(titheAmt, 0))}.</div>
+          <div class="chips" style="margin-top:12px;">
+            <button class="chip ${f.tithe ? "active" : ""}" data-action="payday-tithe" data-on="1">GIVEN</button>
+            <button class="chip ${f.tithe ? "" : "active"}" data-action="payday-tithe" data-on="">NOT YET</button>
+          </div>
+        </div>` : ""}
+
+        ${showSavings ? `
+        <div style="margin-top:28px;">
+          <div class="sub-label">${showTithe ? "3" : "2"} · SAVINGS</div>
+          <div class="meta" style="margin-top:8px;">HAVE YOU MOVED ANY ACROSS YET? TICK ONLY WHAT ACTUALLY LEFT YOUR CHECKING.</div>
+          ${savingsIds.map(id => {
+            const b = (s.bills || []).find(x => x.id === id) || {};
+            const row = f.savings[id];
+            return `
+            <div style="margin-top:14px;">
+              <div class="chips">
+                <button class="chip ${row.on ? "active" : ""}" data-action="payday-savings-toggle" data-id="${Util.esc(id)}">${row.on ? "✓ " : ""}${Util.esc(b.label || "SAVINGS")}</button>
+              </div>
+              ${row.on ? `<input class="underline num-input" inputmode="decimal" data-action="payday-savings-amount" data-id="${Util.esc(id)}" placeholder="$0.00" value="${Util.esc(row.amount)}" style="margin-top:8px;">` : ""}
+            </div>`;
+          }).join("")}
+        </div>` : ""}
+
+        ${f.error ? `<div class="text-danger meta" style="margin-top:16px;">${Util.esc(f.error)}</div>` : ""}
+        <button class="cta big" style="margin-top:28px;" data-action="payday-save">→ ${f.fundingOnly ? "SET IT ASIDE" : "DONE"}</button>
+        ${f.fundingOnly ? "" : `<button class="link" style="margin-top:16px;" data-action="payday-mute">DON'T ASK AGAIN THIS MONTH</button>`}
+      </div>`;
+    document.body.appendChild(overlay);
+
+    overlay.querySelectorAll("[data-action=payday-mode]").forEach(el => {
+      el.addEventListener("click", () => { paydayForm.fundMode = el.dataset.mode; render(); });
+    });
+    overlay.querySelectorAll("[data-action=payday-tithe]").forEach(el => {
+      el.addEventListener("click", () => { paydayForm.tithe = !!el.dataset.on; render(); });
+    });
+    overlay.querySelectorAll("[data-action=payday-savings-toggle]").forEach(el => {
+      el.addEventListener("click", () => {
+        const row = paydayForm.savings[el.dataset.id];
+        if (row) row.on = !row.on;
+        render();
+      });
+    });
+    // Kept off render() so typing doesn't rebuild the overlay under the caret.
+    overlay.querySelectorAll("[data-action=payday-savings-amount]").forEach(el => {
+      el.addEventListener("input", () => {
+        const row = paydayForm.savings[el.dataset.id];
+        if (row) row.amount = el.value;
+      });
+    });
+    overlay.querySelector("[data-action=payday-close]").addEventListener("click", () => {
+      paydayForm = null; render();
+    });
+    const muteBtn = overlay.querySelector("[data-action=payday-mute]");
+    if (muteBtn) muteBtn.addEventListener("click", () => {
+      mutePayday(s.currentMonth); paydayForm = null; render();
+    });
+    overlay.querySelector("[data-action=payday-save]").addEventListener("click", () => savePayday(s));
+  }
+
+  // Everything the screen decides goes out in one write, so a dropped
+  // connection cannot leave the categories funded but the tithe unrecorded.
+  async function savePayday(s) {
+    const f = paydayForm;
+    if (!f) return;
+    const month = s.currentMonth;
+    const patch = {};
+
+    if (f.fundMode !== "none") {
+      const plan = BudgetEngine.fundingPlan(s, f.fundMode);
+      const funding = { ...(s.categoryFunding || {}) };
+      const forMonth = { ...(funding[month] || {}) };
+      plan.forEach(p => {
+        if (p.add > 0) forMonth[p.id] = Math.round((BudgetEngine.num(forMonth[p.id]) + p.add) * 100) / 100;
+      });
+      funding[month] = forMonth;
+      patch.categoryFunding = funding;
+    }
+
+    const allPaid = { ...(s.billsPaid || {}) };
+    const paidMonth = { ...(allPaid[month] || {}) };
+    let touchedPaid = false;
+    if (f.tithe && f.incomeId) {
+      const key = "tithe:" + f.incomeId;
+      if (!(paidMonth[key] && paidMonth[key].paid)) {
+        // amount x percent lands in cents, so one round then /100 is exact.
+        paidMonth[key] = {
+          paid: true, paidDate: Util.todayISO(),
+          amount: Math.round(f.amount * BudgetEngine.tithePercent(s)) / 100,
+          createdAt: Date.now(), source: "payday", txnId: null
+        };
+        touchedPaid = true;
+      }
+    }
+    let badAmount = false;
+    Object.keys(f.savings || {}).forEach(id => {
+      const row = f.savings[id];
+      if (!row || !row.on) return;
+      const amt = parseFloat(String(row.amount).replace(/[^0-9.]/g, ""));
+      if (!isFinite(amt) || amt <= 0) { badAmount = true; return; }
+      paidMonth[id] = {
+        paid: true, paidDate: Util.todayISO(),
+        amount: Math.round(amt * 100) / 100,
+        createdAt: Date.now(), source: "payday", txnId: null
+      };
+      touchedPaid = true;
+    });
+    if (badAmount) { f.error = "ENTER A VALID SAVINGS AMOUNT"; render(); return; }
+    if (touchedPaid) { allPaid[month] = paidMonth; patch.billsPaid = allPaid; }
+
+    if (!Object.keys(patch).length) { paydayForm = null; render(); return; }
+    try {
+      await DataService.update(patch);
+      paydayForm = null;
+      render();
+    } catch (e) {
+      f.error = "COULDN'T SAVE; CHECK CONNECTION";
+      console.warn(e);
+      render();
+    }
   }
 
   async function saveBalance(s) {
