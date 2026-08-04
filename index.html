@@ -1259,6 +1259,56 @@ const BudgetEngine = (() => {
   function titheBillView(s) {
     return { id: "tithe", label: "TITHE", amount: tithe(s), dueDateOfMonth: 0, isTithe: true };
   }
+  /* This month's tithe, split across the pay days it will actually be taken
+     from — one tickable share per landing, in date order.
+
+     Shares are prorated INSIDE each source rather than across all of them.
+     A source's monthly tithe is its monthly-equivalent income times the rate,
+     and a fortnightly source lands three times in some months and twice in
+     others; splitting its own share between its own landings keeps each
+     source contributing exactly what it owes, and keeps the whole list adding
+     up to the figure on the TITHE row. A breakdown that doesn't sum to the
+     number above it is worse than no breakdown.
+
+     legacyKey is the pre-split "whole source" id. Records written under it
+     still exist, so the earliest landing answers to both and an old tick can
+     still be untucked instead of becoming an orphan nothing can clear. */
+  function titheLandings(s, ym) {
+    const month = ym || s.currentMonth;
+    // Through the same on/off choke point as tithe(), so a disabled switch
+    // zeroes the split here too rather than leaving shares that would still
+    // be tickable from an older screen.
+    const rate = titheEnabled(s) ? tithePercent(s) / 100 : 0;
+    const out = [];
+    (s.income || []).forEach(i => {
+      if (num(i.amount) <= 0) return;
+      const slots = landingsForMonth(s, i, month);
+      const total = slots.reduce((a, l) => a + l.amount, 0);
+      const sourceShare = incomeMonthlyAmount(i) * rate;
+      slots.forEach(l => out.push({
+        incomeId: i.id,
+        label: String(i.label || "INCOME"),
+        index: l.index,
+        date: l.date,
+        amount: l.amount,
+        share: total > 0 ? sourceShare * (l.amount / total) : 0,
+        received: !!l.entry,
+        key: "tithe:" + i.id + ":" + l.index,
+        legacyKey: l.index === 0 ? "tithe:" + i.id : null
+      }));
+    });
+    return out.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  }
+  // The paid record covering a landing, under either id. Returns the key it
+  // was found under so a tick always removes the record that actually exists.
+  function titheLandingRecord(s, landing, paidMap) {
+    const map = paidMap || ((s.billsPaid || {})[s.currentMonth] || {});
+    if (map[landing.key]) return { key: landing.key, rec: map[landing.key] };
+    if (landing.legacyKey && map[landing.legacyKey]) {
+      return { key: landing.legacyKey, rec: map[landing.legacyKey] };
+    }
+    return { key: landing.key, rec: null };
+  }
   function billsSubtotal(s) {
     return (s.bills || []).reduce((a, b) => a + num(b.amount), 0);
   }
@@ -2223,6 +2273,7 @@ const BudgetEngine = (() => {
   return {
     num,
     totalIncome, receivedIncome, tithePercent, titheEnabled, tithe, titheOnReceived, titheBillView,
+    titheLandings, titheLandingRecord,
     INCOME_FREQUENCIES, incomeFrequency, incomeMonthlyAmount, incomeByDate, incomeLandings,
     landingsForMonth,
     billsSubtotal, totalBills, totalDebtMins,
@@ -5761,7 +5812,7 @@ const UI = (() => {
         // Untickng a paycheck is a correction and asks nothing.
         if (!paydayMuted(s.currentMonth)) {
           render();
-          openPaydayForm(DataService.get() || s, incomeId);
+          openPaydayForm(DataService.get() || s, incomeId, idx);
           return;
         }
       }
@@ -6287,53 +6338,65 @@ const UI = (() => {
     const titheRec = paidMap["tithe"];
     const titheIsPaid = titheOn && !!(titheRec && titheRec.paid);
     const titheFromImport = titheIsPaid && titheRec.source === "import";
-    // Per-income-source breakdown, shown only when the row is expanded. Each
-    // sub-row gets its own independent checkmark ("tithe:<incomeId>"),
-    // separate from the total's own checkmark, which stays put either way.
-    const titheSources = s.income || [];
-    const titheSubPaidTotal = titheSources.reduce((a, i) => {
-      const subRec = paidMap["tithe:" + i.id];
-      return a + (subRec && subRec.paid ? (Number(subRec.amount) || 0) : 0);
+    // Tithe is given out of paychecks, so it breaks down by pay day — one
+    // tickable share per landing — the same way the income list does. A month
+    // with a single pay day has nothing to break down and keeps the plain
+    // checkbox it always had.
+    const titheLandingsList = titheOn ? BudgetEngine.titheLandings(s) : [];
+    const titheMulti = titheLandingsList.length > 1;
+    const titheDone = titheLandingsList.filter(l =>
+      !!(BudgetEngine.titheLandingRecord(s, l, paidMap).rec || {}).paid).length;
+    const titheSubPaidTotal = titheLandingsList.reduce((a, l) => {
+      const rec = BudgetEngine.titheLandingRecord(s, l, paidMap).rec;
+      return a + (rec && rec.paid ? (Number(rec.amount) || 0) : 0);
     }, 0);
-    // The parent checkmark means "the whole thing, paid as one lump" and
-    // wins outright so a paid parent plus some ticked sub-rows never double
-    // counts; otherwise whatever sub-rows are ticked contribute their share.
+    // The lump checkmark means "the whole thing, given in one go" and wins
+    // outright so a paid lump plus some ticked pay days never double counts;
+    // otherwise whatever pay days are ticked contribute their share.
     const titheEffectivePaid = titheIsPaid ? titheAmt : titheSubPaidTotal;
     const titheFullyCleared = titheOn && (titheIsPaid ||
-      (titheSources.length > 0 && titheSources.every(i => {
-        const r = paidMap["tithe:" + i.id];
-        return !!(r && r.paid);
-      })));
-    const titheSubRowsHtml = (titheOn && titheExpanded) ? (titheSources.length ? titheSources.map(i => {
-      const subId = "tithe:" + i.id;
-      const subRec = paidMap[subId];
-      const subPaid = !!(subRec && subRec.paid);
-      const subAmt = (Number(i.amount) || 0) * BudgetEngine.tithePercent(s) / 100;
-      return `
-        <div class="inc-row" style="padding-left:16px;">
-          <div class="inc-label" style="font-size:13px; opacity:0.85;">${Util.esc(i.label)}</div>
-          <div class="inc-amt" style="font-size:13px;">${Util.esc(Util.fmtMoney(subAmt, 2))}</div>
-          <button class="txn-check ${subPaid ? "checked" : ""}" data-action="bill-toggle" data-id="${Util.esc(subId)}" aria-label="PAID" data-learn="MARK THIS INCOME SOURCE'S SHARE OF YOUR TITHE AS GIVEN. INDEPENDENT OF THE TOTAL CHECKMARK ABOVE; TRACKING ONLY, EITHER WAY."></button>
+      (titheLandingsList.length > 0 && titheDone === titheLandingsList.length));
+    const titheClearedCount = titheIsPaid ? titheLandingsList.length : titheDone;
+
+    const titheSubRowsHtml = (titheOn && titheMulti && titheExpanded) ? `
+      <div class="inc-sub">
+        <div class="inc-sub-label">GIVEN AS ONE LUMP</div>
+        <div class="inc-amt">${Util.esc(Util.fmtMoney(titheAmt, 2))}</div>
+        <button class="txn-check ${titheIsPaid ? "checked" : ""}" data-action="bill-toggle" data-id="tithe" aria-label="GIVEN AS ONE LUMP" data-learn="MARK THE WHOLE MONTH'S TITHE AS GIVEN IN ONE GO. USE THIS INSTEAD OF THE PER-PAY-DAY TICKS BELOW IF YOU GIVE ONCE A MONTH; IT COVERS EVERYTHING AND THE PAY DAY ROWS STOP MATTERING."></button>
+      </div>
+      ${titheLandingsList.map(l => {
+        const found = BudgetEngine.titheLandingRecord(s, l, paidMap);
+        const subPaid = !!(found.rec && found.rec.paid);
+        return `
+        <div class="inc-sub">
+          <div>
+            <div class="inc-sub-label">${Util.esc(l.label)}</div>
+            <div class="meta">${Util.esc(Util.fmtDateShort(l.date))}${l.received ? "" : " · PENDING"}</div>
+          </div>
+          <div class="inc-amt">${Util.esc(Util.fmtMoney(l.share, 2))}</div>
+          <button class="txn-check ${subPaid ? "checked" : ""}" data-action="bill-toggle" data-id="${Util.esc(found.key)}" aria-label="TITHE GIVEN ON ${Util.esc(l.label)} ${Util.esc(Util.fmtDateShort(l.date))}" data-learn="MARK THIS ONE PAY DAY'S SHARE OF YOUR TITHE AS GIVEN. EACH PAY DAY IS TRACKED SEPARATELY, SO TICKING THIS ONE LEAVES THE OTHERS ALONE. THE SHARES ADD UP TO THE TOTAL ON THE ROW ABOVE."></button>
         </div>`;
-    }).join("") : `<div class="meta" style="padding-left:16px;">NO INCOME SOURCES YET</div>`) : "";
+      }).join("")}` : "";
 
     const titheRowHtml = titheOn ? `
       <div class="inc-row">
         <div>
-          <button class="inc-label" style="background:none; border:0; padding:0; text-align:left; cursor:pointer; color:inherit; font:inherit;" data-action="tithe-expand-toggle" aria-label="${titheExpanded ? "COLLAPSE" : "EXPAND"} TITHE BREAKDOWN" data-learn="EXPAND TO SEE EACH INCOME SOURCE'S SHARE OF YOUR TITHE, EACH WITH ITS OWN CHECKMARK. TAP AGAIN TO COLLAPSE. THE TOTAL CHECKMARK ON THE RIGHT STAYS EITHER WAY.">${titheExpanded ? "▾" : "▸"} TITHE</button>
+          <div class="inc-label">TITHE</div>
           ${titheFromImport ? `<div class="meta">PAID ${Util.esc(Util.fmtMoney(Number(titheRec.amount)||0, 2))} ON ${Util.esc(Util.fmtDateShort(titheRec.paidDate))} · FROM IMPORT</div>` : ""}
         </div>
         <div class="inc-amt">
           ${Util.esc(Util.fmtMoney(titheAmt, 0))}
           <span style="opacity:0.75;">${BudgetEngine.tithePercent(s)}%</span>
         </div>
-        <button class="txn-check ${titheIsPaid ? "checked" : ""}" data-action="bill-toggle" data-id="tithe" aria-label="PAID" data-learn="MARK YOUR TITHE AS GIVEN FOR THIS MONTH. THE MONEY COMES OUT OF YOUR TRACKED BALANCE AND STOPS BEING HELD BACK, SO SAFE TO SPEND DOESN'T MOVE — IT WAS ALREADY SET ASIDE FOR THIS."></button>
+        ${titheMulti
+          ? `<button class="inc-chev ${titheExpanded ? "open" : ""}${titheFullyCleared ? " all-clear" : ""}" data-action="tithe-expand-toggle" aria-expanded="${titheExpanded ? "true" : "false"}" aria-label="${titheClearedCount} OF ${titheLandingsList.length} PAY DAYS TITHED · ${titheExpanded ? "COLLAPSE" : "EXPAND"}" data-learn="YOUR TITHE IS GIVEN OUT OF PAYCHECKS, AND THIS MONTH HAS MORE THAN ONE PAY DAY, SO ONE CHECKBOX COULDN'T SAY WHICH SHARE HAD BEEN GIVEN. THE COUNT IS HOW MANY PAY DAYS ARE TICKED OFF; OPEN IT FOR A ROW PER PAY DAY, PLUS A SINGLE TICK IF YOU GIVE THE WHOLE MONTH AT ONCE.">${titheClearedCount}/${titheLandingsList.length} <span class="arrow">⌄</span></button>`
+          : `<button class="txn-check ${titheIsPaid ? "checked" : ""}" data-action="bill-toggle" data-id="tithe" aria-label="PAID" data-learn="MARK YOUR TITHE AS GIVEN FOR THIS MONTH. THE MONEY COMES OUT OF YOUR TRACKED BALANCE AND STOPS BEING HELD BACK, SO SAFE TO SPEND DOESN'T MOVE — IT WAS ALREADY SET ASIDE FOR THIS."></button>`}
       </div>
-      ${titheSubRowsHtml}
       <div style="margin-top:-4px;">
         <button class="link" style="padding:0;min-height:auto;font-size:11px;letter-spacing:0.14em;" data-action="edit-tithe" data-learn="EDIT YOUR TITHE RATE. IT'S THE SAME RATE SETTINGS EDITS, SO CHANGES SHOW IN BOTH PLACES.">EDIT →</button>
       </div>
-      ${titheEdit.open ? renderTitheEditForm() : ""}` : "";
+      ${titheEdit.open ? renderTitheEditForm() : ""}
+      ${titheSubRowsHtml}` : "";
 
     const rowFor = (b) => {
       const rec = paidMap[b.id];
@@ -6725,10 +6788,21 @@ const UI = (() => {
       if (billId === "tithe") {
         amount = BudgetEngine.tithe(s);
       } else if (billId.indexOf("tithe:") === 0) {
-        const incomeId = billId.slice("tithe:".length);
-        const src = (s.income || []).find(i => i.id === incomeId);
-        if (!src) return;
-        amount = (Number(src.amount) || 0) * BudgetEngine.tithePercent(s) / 100;
+        // Either a per-pay-day id or the pre-split whole-source one; the
+        // earliest landing answers to both, so a single lookup covers old and
+        // new records and the share always matches what the row displayed.
+        const landing = BudgetEngine.titheLandings(s, month)
+          .find(l => l.key === billId || l.legacyKey === billId);
+        if (landing) {
+          amount = landing.share;
+        } else {
+          // A source deleted since the record was written. Fall back to the
+          // old arithmetic so the tick can still be cleared rather than
+          // becoming an orphan nothing can remove.
+          const src = (s.income || []).find(i => i.id === billId.slice("tithe:".length));
+          if (!src) return;
+          amount = (Number(src.amount) || 0) * BudgetEngine.tithePercent(s) / 100;
+        }
       } else {
         bill = (s.bills || []).find(b => b.id === billId);
         if (!bill) return;
@@ -10781,7 +10855,7 @@ const UI = (() => {
   // Opened by a paycheck tick. Savings rows are seeded unticked with their
   // budgeted amount: the question is whether the money actually moved, and
   // pre-answering yes would mark transfers that never happened.
-  function openPaydayForm(s, incomeId) {
+  function openPaydayForm(s, incomeId, landingIndex) {
     const src = (s.income || []).find(i => i.id === incomeId);
     if (!src) return;
     const paid = (s.billsPaid || {})[s.currentMonth] || {};
@@ -10790,11 +10864,19 @@ const UI = (() => {
       if (paid[b.id] && paid[b.id].paid) return;
       savings[b.id] = { on: false, amount: String(Math.round((Number(b.amount) || 0) * 100) / 100) };
     });
+    // Which pay day just landed. The tithe question, and the record it writes,
+    // belong to that one landing rather than to the source as a whole — the
+    // Bills tab ticks the same pay day under the same id.
+    const idx = Number.isFinite(landingIndex) ? landingIndex : 0;
+    const landing = BudgetEngine.titheLandings(s)
+      .find(l => l.incomeId === incomeId && l.index === idx) || null;
     paydayForm = {
       fundingOnly: false,
       incomeId,
+      landingIndex: idx,
+      landing,
       label: String(src.label || "PAYCHECK").toUpperCase(),
-      amount: Math.round((Number(src.amount) || 0) * 100) / 100,
+      amount: Math.round((landing ? landing.amount : Number(src.amount) || 0) * 100) / 100,
       fundMode: "share",
       tithe: false,
       savings,
@@ -10806,7 +10888,8 @@ const UI = (() => {
   // The same screen reached from the dashboard, with only the funding section.
   function openFundingForm(s) {
     paydayForm = {
-      fundingOnly: true, incomeId: null, label: "", amount: 0,
+      fundingOnly: true, incomeId: null, landingIndex: 0, landing: null,
+      label: "", amount: 0,
       fundMode: "share", tithe: false, savings: {}, error: ""
     };
     render();
@@ -10825,9 +10908,16 @@ const UI = (() => {
         </div>`).join("");
 
     const titheOn = BudgetEngine.titheEnabled(s);
-    // Tithe on THIS paycheck, not the month, since this is the one that landed.
-    const titheAmt = Math.round(f.amount * BudgetEngine.tithePercent(s)) / 100;
-    const alreadyTithed = !!((s.billsPaid || {})[s.currentMonth] || {})["tithe:" + f.incomeId];
+    // Tithe on THIS pay day, not the month, since this is the one that landed.
+    // Taken from the same split the Bills tab shows, so the figure offered
+    // here and the figure ticked there are the same number.
+    const titheAmt = f.landing
+      ? Math.round(f.landing.share * 100) / 100
+      : Math.round(f.amount * BudgetEngine.tithePercent(s)) / 100;
+    const paidNow = (s.billsPaid || {})[s.currentMonth] || {};
+    const alreadyTithed = !!(f.landing
+      ? (BudgetEngine.titheLandingRecord(s, f.landing, paidNow).rec || {}).paid
+      : paidNow["tithe:" + f.incomeId]);
     const showTithe = !f.fundingOnly && titheOn && titheAmt > 0 && !alreadyTithed;
     const savingsIds = Object.keys(f.savings || {});
     const showSavings = !f.fundingOnly && savingsIds.length > 0;
@@ -10946,12 +11036,19 @@ const UI = (() => {
     const paidMonth = { ...(allPaid[month] || {}) };
     let touchedPaid = false;
     if (f.tithe && f.incomeId) {
-      const key = "tithe:" + f.incomeId;
-      if (!(paidMonth[key] && paidMonth[key].paid)) {
+      // Per pay day, under the id the Bills tab ticks, so the two screens
+      // never write two records for the same share.
+      const key = f.landing ? f.landing.key : "tithe:" + f.incomeId;
+      const already = f.landing
+        ? BudgetEngine.titheLandingRecord(s, f.landing, paidMonth).rec
+        : paidMonth[key];
+      if (!(already && already.paid)) {
         // amount x percent lands in cents, so one round then /100 is exact.
         paidMonth[key] = {
           paid: true, paidDate: Util.todayISO(),
-          amount: Math.round(f.amount * BudgetEngine.tithePercent(s)) / 100,
+          amount: f.landing
+            ? Math.round(f.landing.share * 100) / 100
+            : Math.round(f.amount * BudgetEngine.tithePercent(s)) / 100,
           createdAt: Date.now(), source: "payday", txnId: null
         };
         touchedPaid = true;
