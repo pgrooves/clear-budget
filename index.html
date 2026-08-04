@@ -1404,7 +1404,12 @@ const BudgetEngine = (() => {
   // { low, lowDay, monthEnd } — the worst point between now and month end, and
   // where the month finishes if everything expected actually happens.
   function cashFlowOutlook(s) {
-    const start = projectedBalance(s) - totalUnpaidCredit(s);
+    // Money already set aside into categories is claimed, so it comes off the
+    // balance the walk starts from — one deduction at the moment you fund,
+    // which then shifts the whole curve down rather than nibbling at it with
+    // every purchase. Spending against a funded category lowers the balance
+    // and the reservation together, leaving this figure where it was.
+    const start = projectedBalance(s) - totalUnpaidCredit(s) - totalReserved(s);
     let running = start;
     let low = start;
     let lowDay = dayOfMonthToday(s);
@@ -1455,6 +1460,90 @@ const BudgetEngine = (() => {
   }
   function categoryRemaining(s, cat) {
     return num(cat.budgeted) + rolloverAmount(s, cat.id) - categorySpent(s, cat.id);
+  }
+
+  /* ---------- FUNDED CATEGORIES ----------
+     A category budget is an intention, not money. Reserving every budget at
+     the start of the month would hold Safe To Spend against income that has
+     not arrived — the same mistake that made it read negative all month.
+
+     So a category holds nothing until you deliberately put money in it, and
+     you can only do that once income has actually landed. Funding is stored
+     per month, exactly like rollover, and starts empty each month: until you
+     fund, every purchase reduces Safe To Spend, categorised or not.
+
+     Once funded, spending in that category draws the reserve down instead.
+     The balance falls and the reservation falls with it, so Safe To Spend
+     holds steady — the money was already accounted for when you funded it.
+     Spend past what you set aside and the reserve floors at zero, so the
+     excess starts biting again. Spending with no category has nothing behind
+     it and bites immediately, which is the whole point of surfacing it. */
+
+  // What a category is aiming to hold this month: its budget plus whatever
+  // last month left it.
+  function categoryTarget(s, cat) {
+    return num(cat && cat.budgeted) + rolloverAmount(s, cat && cat.id);
+  }
+  // How much has actually been set aside for it this month.
+  function categoryFunded(s, id) {
+    const m = s.currentMonth;
+    return num(s.categoryFunding && s.categoryFunding[m] && s.categoryFunding[m][id]);
+  }
+  function totalFunded(s) {
+    return (s.spendingCategories || []).reduce((a, c) => a + categoryFunded(s, c.id), 0);
+  }
+  // Set aside and not yet spent — the slice of the balance already claimed.
+  // Floored at zero so overspending a category cannot swing the reservation
+  // negative and hand the overspend back as if it were spendable.
+  function categoryReserve(s, id) {
+    return Math.max(0, categoryFunded(s, id) - categorySpent(s, id));
+  }
+  function totalReserved(s) {
+    return (s.spendingCategories || []).reduce((a, c) => a + categoryReserve(s, c.id), 0);
+  }
+  // The share of this month's expected income that has actually landed, which
+  // is what "fund my share" funds. Capped at 1 so a three-payday month cannot
+  // push a category past what it asked for.
+  function fundedShare(s) {
+    const expected = totalIncome(s);
+    if (expected <= 0) return 0;
+    return Math.min(1, receivedIncome(s) / expected);
+  }
+  // What each category would take to reach its share of the month. Tops up
+  // rather than restarting, and never goes negative: a category already
+  // funded past the share is left alone rather than clawed back.
+  function fundingPlan(s, mode) {
+    const share = mode === "full" ? 1 : fundedShare(s);
+    return (s.spendingCategories || []).map(c => {
+      const target = categoryTarget(s, c);
+      const already = categoryFunded(s, c.id);
+      return {
+        id: c.id, label: c.label, target, already,
+        add: Math.max(0, Math.round(target * share) - already)
+      };
+    });
+  }
+  function fundingPlanTotal(s, mode) {
+    return fundingPlan(s, mode).reduce((a, p) => a + p.add, 0);
+  }
+  // Transactions behind a figure on the dashboard, newest first, so every
+  // total on that screen can be opened up and checked.
+  function categoryTxns(s, id) {
+    const m = s.currentMonth;
+    return (s.transactions || [])
+      .filter(t => t && t.month === m && t.categoryId === id)
+      .sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
+  }
+  // Spending that never got a category. Debt payments carry their debt's id,
+  // so they are not swept in here.
+  function uncategorizedTxns(s) {
+    const m = s.currentMonth;
+    return (s.transactions || [])
+      .filter(t => t && t.month === m && !t.categoryId)
+      .sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
+  }
+  function uncategorizedSpent(s) {
+    return uncategorizedTxns(s).reduce((a, t) => a + num(t.amount), 0);
   }
 
   /* ---------- THE BUDGET MONTH FOLLOWS THE CALENDAR ----------
@@ -1587,6 +1676,9 @@ const BudgetEngine = (() => {
     unpaidBillsTotal, unpaidTithe, unpaidDebtMins, unpaidObligations, incomeStillExpected,
     remainingMonthEvents, cashFlowOutlook, monthEndBalance, overdueIncome, daysInMonthOf,
     categorySpent, rolloverAmount, categoryRemaining, personSpent,
+    categoryTarget, categoryFunded, totalFunded, categoryReserve, totalReserved,
+    fundedShare, fundingPlan, fundingPlanTotal,
+    categoryTxns, uncategorizedTxns, uncategorizedSpent,
     categorySpentIn, rolloverAmountIn, categoryRemainingIn, rolloverCandidate, autoAdvancePatch,
     totalDebt, targetDebt, debtOrder, debtStrategy, unpaidCredit, cashToCover,
     monthElapsed, monthDayInfo
