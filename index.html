@@ -455,6 +455,18 @@
   .cat-row + .cat-row { margin-top: 16px; }
   .cat-line { display: flex; justify-content: space-between; align-items: baseline; font-size: 16px; font-weight: 600; letter-spacing: 0.06em; gap: 8px; }
   .cat-remaining { font-size: 12px; letter-spacing: 0.12em; opacity: 0.85; margin-top: 4px; }
+  .cat-head { cursor: pointer; }
+  .cat-fund { font-size: 11px; letter-spacing: 0.12em; opacity: 0.72; margin-top: 4px; }
+  /* The transactions behind a category total, shown when its row is open. */
+  .cat-txns { margin-top: 10px; padding-top: 8px; border-top: 1px solid rgba(0,0,0,0.18); }
+  .cat-txn { display: flex; gap: 10px; align-items: baseline; font-size: 12px; letter-spacing: 0.06em; padding: 5px 0; }
+  .cat-txn + .cat-txn { border-top: 1px solid rgba(0,0,0,0.08); }
+  .cat-txn-date { flex: 0 0 auto; opacity: 0.7; }
+  /* The description is the only elastic column, so a long merchant name
+     truncates instead of pushing the amount off the row. */
+  .cat-txn-note { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cat-txn-amt { flex: 0 0 auto; font-weight: 600; }
+  .cat-txn-empty { font-size: 12px; letter-spacing: 0.12em; opacity: 0.7; padding: 4px 0; }
 
   .setup {
     background: var(--lime); min-height: 100vh;
@@ -2616,6 +2628,13 @@ const UI = (() => {
   // breakdown. Pure UI state, not persisted — collapses again on next reload.
   let titheExpanded = false;
 
+  // Which dashboard category is open to show the transactions behind it, or
+  // null for none. One at a time: the point is to check a figure, not to
+  // scroll past every row on the tab. UNCAT_KEY stands in for the
+  // uncategorized row, which has no category id of its own.
+  const UNCAT_KEY = "__uncategorized__";
+  let dashCatOpen = null;
+
   // New Month overlay state
   let newMonthOpen = false;
   let newMonthChoices = {}; // { categoryId: "roll" | "reset" }
@@ -3891,6 +3910,19 @@ const UI = (() => {
     if (tab === "log") bindLogEvents(s);
     else if (tab === "bills") bindBillsEvents(s);
     else if (tab === "debts") bindDebtsEvents(s);
+    else if (tab === "dashboard") bindDashboardEvents(s);
+  }
+
+  function bindDashboardEvents(s) {
+    root.querySelectorAll("[data-action=cat-toggle]").forEach(el => {
+      el.addEventListener("click", () => {
+        const id = el.dataset.cat || null;
+        // Tapping the open row closes it, so the same tap both opens and
+        // dismisses and no row can be left stuck open.
+        dashCatOpen = dashCatOpen === id ? null : id;
+        render();
+      });
+    });
   }
 
   // The month-rollover nudge now lives in the shared lime block, so its handler
@@ -5391,6 +5423,21 @@ const UI = (() => {
     const elapsed = BudgetEngine.monthElapsed(s);
     const dayInfo = BudgetEngine.monthDayInfo(s);
     const cats = (s.spendingCategories||[]);
+
+    // The rows behind a category total. Every figure on this tab should be
+    // openable, so a number you don't recognise can be traced to the purchases
+    // that made it rather than taken on trust.
+    const txnLineHtml = t => `
+        <div class="cat-txn">
+          <span class="cat-txn-date">${Util.esc(Util.fmtDateShort(t.date) || "—")}</span>
+          <span class="cat-txn-note">${Util.esc(t.note || "NO DESCRIPTION")}${t.paymentType === "credit" ? " · CREDIT" : ""}</span>
+          <span class="cat-txn-amt">${Util.esc(Util.fmtMoney(BudgetEngine.num(t.amount), 2))}</span>
+        </div>`;
+    const txnListHtml = (txns, emptyMsg) => `
+        <div class="cat-txns">
+          ${txns.length ? txns.map(txnLineHtml).join("") : `<div class="cat-txn-empty">${Util.esc(emptyMsg)}</div>`}
+        </div>`;
+
     const catRows = cats.map(c => {
       const spent = BudgetEngine.categorySpent(s, c.id);
       const roll = BudgetEngine.rolloverAmount(s, c.id);
@@ -5406,16 +5453,49 @@ const UI = (() => {
         : (spentFrac > elapsed + 0.30 ? "danger"
           : (spentFrac > elapsed + 0.12 ? "warn" : ""));
       const remainClass = remaining < 0 ? "text-danger" : "";
+      const open = dashCatOpen === c.id;
+      // Whether this category is holding money says which way its spending
+      // moves Safe To Spend, so it belongs on the row rather than buried.
+      const funded = BudgetEngine.categoryFunded(s, c.id);
+      const held = BudgetEngine.categoryReserve(s, c.id);
+      const fundLine = funded > 0
+        ? `SET ASIDE ${Util.fmtMoney(funded,0)} · ${Util.fmtMoney(held,0)} STILL HELD`
+        : `NOTHING SET ASIDE · SPENDING COMES OFF SAFE TO SPEND`;
       return `
-        <div class="cat-row">
-          <div class="cat-line">
-            <span>${Util.esc(c.label)}</span>
-            <span>${Util.esc(Util.fmtMoney(spent,0))} / ${Util.esc(Util.fmtMoney(budget,0))}</span>
+        <div class="cat-row${open ? " open" : ""}">
+          <div class="cat-head" data-action="cat-toggle" data-cat="${Util.esc(c.id)}">
+            <div class="cat-line">
+              <span>${open ? "▾" : "▸"} ${Util.esc(c.label)}</span>
+              <span>${Util.esc(Util.fmtMoney(spent,0))} / ${Util.esc(Util.fmtMoney(budget,0))}</span>
+            </div>
+            <div class="progress ${barClass}"><span style="width:${pct}%"></span></div>
+            <div class="cat-remaining ${remainClass}">${Util.esc(Util.fmtMoney(remaining,0))} REMAINING${roll ? " · ROLLOVER " + Util.esc(Util.fmtMoney(roll,0)) : ""}</div>
+            <div class="cat-fund">${Util.esc(fundLine)}</div>
           </div>
-          <div class="progress ${barClass}"><span style="width:${pct}%"></span></div>
-          <div class="cat-remaining ${remainClass}">${Util.esc(Util.fmtMoney(remaining,0))} REMAINING${roll ? " · ROLLOVER " + Util.esc(Util.fmtMoney(roll,0)) : ""}</div>
+          ${open ? txnListHtml(BudgetEngine.categoryTxns(s, c.id), "NOTHING IN THIS CATEGORY THIS MONTH") : ""}
         </div>`;
     }).join("") || `<div class="meta">NO CATEGORIES YET</div>`;
+
+    /* Spending that never got a category used to be invisible: it left the
+       account and landed on no row, so the categories added up to less than
+       was actually spent and there was nowhere to go looking. It is its own
+       row now. Nothing is ever set aside for it, so unlike a funded category
+       it comes straight off Safe To Spend — which is exactly why it is worth
+       being able to see and clear down. */
+    const uncatTxns = BudgetEngine.uncategorizedTxns(s);
+    const uncatSpent = BudgetEngine.uncategorizedSpent(s);
+    const uncatOpen = dashCatOpen === UNCAT_KEY;
+    const uncatRow = `
+        <div class="cat-row uncat${uncatOpen ? " open" : ""}">
+          <div class="cat-head" data-action="cat-toggle" data-cat="${UNCAT_KEY}">
+            <div class="cat-line">
+              <span>${uncatOpen ? "▾" : "▸"} UNCATEGORIZED</span>
+              <span class="${uncatSpent > 0 ? "text-warn" : ""}">${Util.esc(Util.fmtMoney(uncatSpent,0))}</span>
+            </div>
+            <div class="cat-remaining">${uncatTxns.length} TRANSACTION${uncatTxns.length === 1 ? "" : "S"} · COMES STRAIGHT OFF SAFE TO SPEND</div>
+          </div>
+          ${uncatOpen ? txnListHtml(uncatTxns, "EVERYTHING THIS MONTH HAS A CATEGORY") : ""}
+        </div>`;
 
     // Credit block
     const unpaid = BudgetEngine.totalUnpaidCredit(s);
@@ -5458,7 +5538,7 @@ const UI = (() => {
         <section class="section teal" data-learn="SPENDING CATEGORIES. EACH ROW SHOWS SPENT / BUDGETED WITH A PROGRESS BAR. THE BAR COMPARES YOUR SPENDING AGAINST HOW FAR THROUGH THE MONTH YOU ARE, SO 80% SPENT ON THE 5TH WARNS BUT 80% ON THE 28TH DOESN'T. RED ALWAYS MEANS OVER BUDGET OR WELL AHEAD OF PACE.">
           <div class="section-label">→ CATEGORIES</div>
           <div class="sub-label" style="margin-top:12px;" data-learn="HOW FAR THROUGH THE MONTH YOU ARE. CATEGORY BARS ARE JUDGED AGAINST THIS, NOT JUST AGAINST YOUR BUDGET.">DAY ${dayInfo.day} OF ${dayInfo.daysInMonth} · ${dayInfo.pct}% THROUGH THE MONTH</div>
-          <div style="margin-top:24px;">${catRows}</div>
+          <div style="margin-top:24px;">${catRows}${uncatRow}</div>
         </section>
 
         <section class="section lavender" data-learn="CREDIT THIS MONTH. UNPAID = SUM OF CREDIT TRANSACTIONS NOT YET PAID OFF. SHORTFALL WARNS WHEN CHECKING CAN'T COVER IT.">
