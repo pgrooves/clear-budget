@@ -140,6 +140,31 @@
   @media (prefers-reduced-motion: reduce) {
     .scroll-hint { display: none; }
   }
+  /* "← TAP ME" beside a negative Safe To Spend. Same fade-blink-fade timing as
+     the two hints above so the app only ever teaches one gesture language.
+     Inline rather than absolute: it sits on the hero's own baseline, and
+     because it keeps its width once faded there is no reflow at the end. */
+  .tap-hint {
+    display: inline-block; margin-left: 14px; vertical-align: middle;
+    font-size: 12px; letter-spacing: 0.14em; font-weight: 600;
+    white-space: nowrap; pointer-events: none; opacity: 0;
+    animation: tap-hint-play 2.6s ease-in-out forwards;
+  }
+  @keyframes tap-hint-play {
+    0%   { opacity: 0;    transform: translateX(0); }
+    8%   { opacity: 0.55; transform: translateX(0); }
+    20%  { opacity: 0.12; transform: translateX(6px); }
+    32%  { opacity: 0.55; transform: translateX(-6px); }
+    44%  { opacity: 0.12; transform: translateX(6px); }
+    56%  { opacity: 0.55; transform: translateX(-6px); }
+    68%  { opacity: 0.12; transform: translateX(0); }
+    82%  { opacity: 0.5;  transform: translateX(0); }
+    100% { opacity: 0;    transform: translateX(0); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .tap-hint { display: none; }
+  }
+  .hero.tappable { cursor: pointer; }
   .section.gray { background: var(--gray); }
   .section.off-white { background: var(--gray-light); }
   .section.terracotta { background: var(--terracotta); }
@@ -468,6 +493,16 @@
   .cat-txn-note { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .cat-txn-amt { flex: 0 0 auto; font-weight: 600; }
   .cat-txn-empty { font-size: 12px; letter-spacing: 0.12em; opacity: 0.7; padding: 4px 0; }
+  /* Shortfall breakdown. The two totals are what let the reader check the
+     arithmetic themselves, so they get a rule above them and full weight. */
+  .shortfall-total { border-top: 1px solid rgba(0,0,0,0.35); margin-top: 4px; font-weight: 700; }
+  .shortfall-net {
+    display: flex; justify-content: space-between; align-items: baseline;
+    margin-top: 24px; padding-top: 12px; border-top: 2px solid currentColor;
+    font-size: 18px; font-weight: 700; letter-spacing: 0.08em;
+  }
+  .shortfall-notes { margin: 10px 0 0; padding-left: 18px; }
+  .shortfall-notes li { font-size: 12px; letter-spacing: 0.06em; line-height: 1.6; margin-top: 12px; }
 
   .setup {
     background: var(--lime); min-height: 100vh;
@@ -1453,6 +1488,137 @@ const BudgetEngine = (() => {
       !cleared[i.id] && num(i.amount) > 0 && (num(i.dueDateOfMonth) || 1) < today
     );
   }
+  /* ---------- WHY IT WENT NEGATIVE ----------
+     A red number tells you there's a problem and nothing about which one. The
+     causes are not interchangeable either: income that hasn't been logged, a
+     duplicated purchase, money deliberately set aside and a genuinely
+     overcommitted month all read identically on the headline and want
+     completely different responses.
+
+     The figure is the low point of the walk, which means it decomposes exactly:
+
+         low = (balance + income landing by then)
+             - (unpaid credit + money set aside + everything due by then)
+
+     so the report below is arithmetic rather than opinion — the two sides
+     always reconcile to the number on screen. The notes on top of it are the
+     judgement part, and each one that can be acted on is costed by re-running
+     the whole walk with that one thing changed, so "log it and this becomes
+     $1,580" is the real figure rather than a guess. */
+
+  // Re-runs Safe To Spend against a throwaway copy of the household with one
+  // change applied. Pure functions all the way down, so nothing leaks back.
+  function whatIfSafeToSpend(s, mutate) {
+    let copy;
+    try { copy = JSON.parse(JSON.stringify(s)); } catch (e) { return null; }
+    try { mutate(copy); } catch (e) { return null; }
+    return safeToSpend(copy);
+  }
+
+  function shortfallNotes(s) {
+    const m = s.currentMonth;
+    const notes = [];
+
+    // Expected money that never got logged is the most common cause by far,
+    // and the cheapest to fix: the walk deliberately refuses to count it.
+    const overdue = overdueIncome(s);
+    if (overdue.length) {
+      notes.push({
+        kind: "income",
+        count: overdue.length,
+        amount: overdue.reduce((a, i) => a + num(i.amount), 0),
+        labels: overdue.map(i => String(i.label || "INCOME")),
+        after: whatIfSafeToSpend(s, c => {
+          c.incomeLog = (c.incomeLog || []).concat(overdue.map(i => ({
+            id: "whatif-" + i.id, incomeId: i.id, amount: num(i.amount),
+            month: m, date: Util.todayISO(), createdAt: Date.now(), tithe: true
+          })));
+        })
+      });
+    }
+
+    // Money set aside is still yours; it is only held back. Worth saying so,
+    // because this is the one cause that is not a problem at all.
+    const reserved = totalReserved(s);
+    if (reserved > 0) {
+      notes.push({
+        kind: "reserved", amount: reserved,
+        after: whatIfSafeToSpend(s, c => { if (c.categoryFunding) delete c.categoryFunding[m]; })
+      });
+    }
+
+    // Overdue and unticked bills are pinned to today by the walk, so a bill
+    // paid last week but never ticked lands its whole amount on the number now.
+    const paid = (s.billsPaid || {})[m] || {};
+    const today = dayOfMonthToday(s);
+    const late = (s.bills || []).filter(b =>
+      !(paid[b.id] && paid[b.id].paid) && num(b.dueDateOfMonth) > 0 && num(b.dueDateOfMonth) < today);
+    if (late.length) {
+      notes.push({
+        kind: "lateBills", count: late.length,
+        amount: late.reduce((a, b) => a + num(b.amount), 0),
+        labels: late.map(b => String(b.label || "BILL"))
+      });
+    }
+
+    // Everything here is carried forward from the last confirmed balance, so
+    // the older that is, the more room there has been for it to drift.
+    const anchor = latestAnchor(s);
+    if (anchor) {
+      const age = Util.daysSince(anchor.date);
+      if (age >= 7) notes.push({ kind: "staleAnchor", days: age });
+    }
+
+    // One fat-fingered amount or an import landing twice shows up here.
+    const big = (s.transactions || [])
+      .filter(t => t && t.paymentType !== "credit" && isAfterAnchor(t, anchor))
+      .slice()
+      .sort((x, y) => num(y.amount) - num(x.amount))
+      .slice(0, 3)
+      .filter(t => num(t.amount) > 0);
+    if (big.length) {
+      notes.push({
+        kind: "bigTxns",
+        items: big.map(t => ({ note: String(t.note || "NO DESCRIPTION"), amount: num(t.amount), date: t.date || "" }))
+      });
+    }
+
+    const uncat = uncategorizedSpent(s);
+    if (uncat > 0) {
+      notes.push({ kind: "uncategorized", amount: uncat, count: uncategorizedTxns(s).length });
+    }
+    return notes;
+  }
+
+  // The two sides of the number, and what to look at. Callers should gate on
+  // low < 0; nothing here breaks when it isn't, it just reads oddly.
+  function shortfallReport(s) {
+    const outlook = cashFlowOutlook(s);
+    const lowDay = outlook.lowDay;
+    // Only what has happened by the low point made the low point. Anything
+    // after it is on the far side of the dip and did not cause it.
+    const byThen = remainingMonthEvents(s).filter(e => e.day <= lowDay);
+    const balance = projectedBalance(s);
+    const credit = totalUnpaidCredit(s);
+    const reserved = totalReserved(s);
+
+    const incoming = byThen.filter(e => e.amount > 0)
+      .map(e => ({ label: String(e.label || "INCOME"), amount: e.amount, day: e.day }));
+    const claims = [];
+    if (credit > 0) claims.push({ label: "UNPAID CREDIT", amount: credit, kind: "credit" });
+    if (reserved > 0) claims.push({ label: "SET ASIDE IN CATEGORIES", amount: reserved, kind: "reserved" });
+    byThen.filter(e => e.amount < 0).forEach(e =>
+      claims.push({ label: String(e.label || "DUE"), amount: -e.amount, day: e.day, kind: "due" }));
+    claims.sort((a, b) => b.amount - a.amount);
+
+    const available = balance + incoming.reduce((a, e) => a + e.amount, 0);
+    const claimed = claims.reduce((a, c) => a + c.amount, 0);
+    return {
+      low: outlook.low, lowDay, balance, incoming, available, claims, claimed,
+      notes: shortfallNotes(s)
+    };
+  }
+
   function spendingBudgetedTotal(s) {
     return (s.spendingCategories || []).reduce((a, c) => a + num(c.budgeted), 0);
   }
@@ -1688,6 +1854,7 @@ const BudgetEngine = (() => {
     latestAnchor, hasAnchor, isAfterAnchor, projectedBalance, billPaymentsSinceAnchor,
     unpaidBillsTotal, unpaidTithe, unpaidDebtMins, unpaidObligations, incomeStillExpected,
     remainingMonthEvents, cashFlowOutlook, monthEndBalance, overdueIncome, daysInMonthOf,
+    shortfallReport, shortfallNotes, whatIfSafeToSpend,
     categorySpent, rolloverAmount, categoryRemaining, personSpent,
     categoryTarget, categoryFunded, totalFunded, categoryReserve, totalReserved,
     fundedShare, fundingPlan, fundingPlanTotal,
@@ -2635,6 +2802,10 @@ const UI = (() => {
   // uncategorized row, which has no category id of its own.
   const UNCAT_KEY = "__uncategorized__";
   let dashCatOpen = null;
+
+  // The "why is it negative" panel, and whether its one-shot hint has played.
+  let shortfallOpen = false;
+  let shortfallHintShown = false;
 
   /* Payday screen. Ticking a paycheck is the one moment there is new money to
      decide about, so the three decisions that follow it — fund the categories,
@@ -3724,6 +3895,17 @@ const UI = (() => {
     return `<div class="swipe-hint" aria-hidden="true">${swipeHintSvg()}</div>`;
   }
 
+  // Same one-shot fade as the swipe and scroll hints, pointing at the red
+  // number rather than sitting over a scroll box. Unlike those two it is not
+  // permanent: the flag clears whenever Safe To Spend is back above zero (see
+  // limeBlock), so a household that dips again in three months gets pointed at
+  // the explanation again instead of being expected to remember it.
+  function tapHintHtml() {
+    if (shortfallHintShown) return "";
+    shortfallHintShown = true;
+    return `<span class="tap-hint" aria-hidden="true">← TAP ME</span>`;
+  }
+
   // Renders the centered scroll-hint for one scroll box, exactly once, and
   // only once that box's IntersectionObserver (see ensureScrollHintObserver)
   // has actually reported it on screen — `pending` is what that observer
@@ -3774,6 +3956,8 @@ const UI = (() => {
     const titheExpected = BudgetEngine.tithe(s);
     const titheReceived = BudgetEngine.titheOnReceived(s);
     const heroDanger = safe < 0 ? "danger" : "";
+    // Back in the black: arm the hint again for the next time it isn't.
+    if (safe >= 0) shortfallHintShown = false;
     // Every figure below hangs off a confirmed balance. Rather than silently
     // falling back to a different definition when there isn't one, the hero
     // asks for it — a number that quietly changes meaning depending on app
@@ -3875,7 +4059,7 @@ const UI = (() => {
         <div class="meta" style="opacity:0.75; margin:12px 0;" data-learn="EVERY NUMBER IN THIS BLOCK IS FOR THIS MONTH ONLY. USE NEW MONTH IN SETTINGS TO ROLL FORWARD.">MONTH OF ${Util.esc(Util.fmtMonthLong(s.currentMonth))}</div>
         <div class="sub-label" data-learn="SUB-LABEL FOR THE SAFE TO SPEND NUMBER BELOW. THE HORIZON BESIDE IT IS THE DAY YOUR BALANCE IS FORECAST TO BE AT ITS LOWEST.">SAFE TO SPEND${anchored && !lowIsToday ? ` <span style="opacity:0.7;">· LOW POINT ${Util.esc(lowDateLabel)}</span>` : ""}</div>
         ${anchored ? `
-        <div class="hero ${heroDanger}" data-learn="THE LOWEST YOUR BALANCE IS FORECAST TO REACH BETWEEN NOW AND THE END OF THE MONTH, ONCE EVERY UNPAID BILL AND EVERY EXPECTED PAYCHECK IS PUT ON ITS DUE DAY. SPEND UP TO THIS AND EVERYTHING STILL CLEARS. GOES RED WHEN NEGATIVE.">${Util.esc(Util.fmtMoney(safe, 0))}</div>`
+        <div class="hero ${heroDanger}${safe < 0 ? " tappable" : ""}"${safe < 0 ? ` data-action="open-shortfall"` : ""} data-learn="THE LOWEST YOUR BALANCE IS FORECAST TO REACH BETWEEN NOW AND THE END OF THE MONTH, ONCE EVERY UNPAID BILL AND EVERY EXPECTED PAYCHECK IS PUT ON ITS DUE DAY. SPEND UP TO THIS AND EVERYTHING STILL CLEARS. GOES RED WHEN NEGATIVE, AND TAPPING IT THEN BREAKS DOWN WHY.">${Util.esc(Util.fmtMoney(safe, 0))}${safe < 0 ? tapHintHtml() : ""}</div>`
         : `
         <div class="hero" data-learn="SAFE TO SPEND IS BASED ON WHAT'S ACTUALLY IN YOUR CHECKING ACCOUNT, SO IT NEEDS A BALANCE TO WORK FROM. TAP TO ENTER IT; IT TAKES A FEW SECONDS AND YOU CAN UPDATE IT ANY TIME."><button class="link" data-action="open-balance">CONFIRM YOUR BALANCE →</button></div>
         <div class="sub-label" style="margin-top:8px;" data-learn="UNTIL A BALANCE IS CONFIRMED THERE IS NOTHING TO BASE SAFE TO SPEND ON. NOTHING ELSE IN THE APP IS AFFECTED.">ENTER WHAT YOUR BANK SAYS RIGHT NOW</div>`}
@@ -3962,6 +4146,11 @@ const UI = (() => {
     root.querySelectorAll("[data-action=open-balance]").forEach(el => {
       el.addEventListener("click", () => openBalanceOverlay(null));
     });
+    // Only rendered onto the hero while the figure is negative, so there is
+    // nothing to unbind when it recovers.
+    root.querySelectorAll("[data-action=open-shortfall]").forEach(el => {
+      el.addEventListener("click", () => { shortfallOpen = true; render(); });
+    });
     root.querySelectorAll("[data-action=dismiss-gap]").forEach(el => {
       el.addEventListener("click", () => {
         if (balanceGapNotice) balanceGapNotice.dismissed = true;
@@ -3999,12 +4188,14 @@ const UI = (() => {
     const wantImport = !!s && !!(importFlow.open && importFlow.stage);
     const wantBalance = !!s && !!balanceForm;
     const wantPayday = !!s && !!paydayForm;
-    if (!wantNewMonth && !wantImport && !wantBalance && !wantPayday) {
+    const wantShortfall = !!s && !!shortfallOpen;
+    if (!wantNewMonth && !wantImport && !wantBalance && !wantPayday && !wantShortfall) {
       document.querySelectorAll(".overlay").forEach(o => o.remove());
       return;
     }
     if (wantNewMonth) renderNewMonthOverlay(s);
     if (wantImport) renderImportOverlay(s);
+    if (wantShortfall) renderShortfallOverlay(s);
     if (wantPayday) renderPaydayOverlay(s);
     // Last, so confirming a balance straight after an import sits on top.
     if (wantBalance) renderBalanceOverlay(s);
@@ -9902,6 +10093,96 @@ const UI = (() => {
       balanceForm = null; render();
     });
     overlay.querySelector("[data-action=bal-save]").addEventListener("click", () => saveBalance(s));
+  }
+
+  /* The breakdown behind a negative Safe To Spend. Two columns that reconcile
+     to the number exactly — what you have against what is already claiming it —
+     then the things worth looking at, most fixable first. */
+  function renderShortfallOverlay(s) {
+    const r = BudgetEngine.shortfallReport(s);
+    const money = (n, d) => Util.esc(Util.fmtMoney(n, d == null ? 0 : d));
+    const dayLabel = d => Util.esc(Util.fmtDateShort(`${s.currentMonth}-${String(d).padStart(2, "0")}`));
+    const lowIsToday = r.lowDay <= BudgetEngine.monthDayInfo(s).day;
+
+    const row = (label, amount, sub) => `
+        <div class="cat-txn">
+          <span class="cat-txn-note">${Util.esc(label)}${sub ? ` <span style="opacity:0.6;">${sub}</span>` : ""}</span>
+          <span class="cat-txn-amt">${money(amount)}</span>
+        </div>`;
+
+    const haveRows = row("IN THE ACCOUNT NOW", r.balance)
+      + r.incoming.map(e => row(e.label, e.amount, "· " + dayLabel(e.day))).join("");
+    const claimRows = r.claims.map(c => row(c.label, c.amount, c.day ? "· " + dayLabel(c.day) : "")).join("");
+
+    // Each note is one sentence about one cause, and where the cause can be
+    // undone the sentence carries what the number would become.
+    const noteHtml = r.notes.map(n => {
+      if (n.kind === "income") {
+        const names = n.labels.slice(0, 2).join(", ") + (n.labels.length > 2 ? " AND OTHERS" : "");
+        return `<li><b>${n.count} PAYCHECK${n.count === 1 ? " HASN'T" : "S HAVEN'T"} BEEN LOGGED</b> · ${Util.esc(names)}, ${money(n.amount)} EXPECTED. THIS DELIBERATELY DOESN'T COUNT MONEY THAT HASN'T ARRIVED.${n.after == null ? "" : ` LOG IT AND THIS BECOMES ${money(n.after)}.`}</li>`;
+      }
+      if (n.kind === "reserved") {
+        return `<li><b>${money(n.amount)} IS SET ASIDE IN CATEGORIES</b> · THAT MONEY IS STILL YOURS, JUST SPOKEN FOR, SO IT ISN'T COUNTED HERE.${n.after == null ? "" : ` RELEASE IT AND THIS BECOMES ${money(n.after)}.`}</li>`;
+      }
+      if (n.kind === "lateBills") {
+        const names = n.labels.slice(0, 3).join(", ") + (n.labels.length > 3 ? " AND OTHERS" : "");
+        return `<li><b>${n.count} BILL${n.count === 1 ? " IS" : "S ARE"} PAST DUE AND UNTICKED</b> · ${Util.esc(names)}, ${money(n.amount)}. UNTICKED BILLS ARE HELD AGAINST TODAY. IF YOU'VE ALREADY PAID THEM, TICK THEM OFF ON THE BILLS TAB.</li>`;
+      }
+      if (n.kind === "staleAnchor") {
+        return `<li><b>YOUR BALANCE WAS LAST CONFIRMED ${n.days} DAYS AGO</b> · EVERYTHING HERE IS CARRIED FORWARD FROM THAT, SO THE OLDER IT IS THE MORE IT CAN HAVE DRIFTED. UPDATING IT TAKES A FEW SECONDS.</li>`;
+      }
+      if (n.kind === "bigTxns") {
+        const items = n.items.map(t => `${Util.esc(t.note)} ${money(t.amount, 2)}`).join(" · ");
+        return `<li><b>BIGGEST PURCHASES SINCE YOU CONFIRMED</b> · ${items}. WORTH A GLANCE FOR A WRONG AMOUNT OR SOMETHING IMPORTED TWICE.</li>`;
+      }
+      if (n.kind === "uncategorized") {
+        return `<li><b>${money(n.amount)} ISN'T IN A CATEGORY</b> · ${n.count} TRANSACTION${n.count === 1 ? "" : "S"}. NOTHING IS EVER SET ASIDE FOR THESE, SO THEY COME STRAIGHT OFF THIS NUMBER.</li>`;
+      }
+      return "";
+    }).join("");
+
+    document.querySelectorAll(".overlay").forEach(o => o.remove());
+    const overlay = document.createElement("div");
+    overlay.className = "overlay";
+    overlay.setAttribute("data-scroll-key", "shortfall-overlay");
+    overlay.innerHTML = `
+      <div class="overlay-inner" data-scroll-key="shortfall-overlay-inner">
+        <button class="link" data-action="shortfall-close">× CLOSE</button>
+        <h2 class="section-label" style="margin-top:16px;">→ WHY IT'S NEGATIVE</h2>
+        <div class="meta" style="margin-top:8px;">SAFE TO SPEND IS <b>${money(r.low)}</b>. THAT'S THE LOWEST YOUR BALANCE IS FORECAST TO GET${lowIsToday ? " — AND IT'S TODAY" : `, ON ${dayLabel(r.lowDay)}`}. EVERYTHING BELOW ADDS UP TO EXACTLY THAT.</div>
+
+        <div style="margin-top:28px;">
+          <div class="sub-label">WHAT YOU HAVE</div>
+          <div class="cat-txns" style="margin-top:8px;">
+            ${haveRows}
+            <div class="cat-txn shortfall-total"><span class="cat-txn-note">TOTAL</span><span class="cat-txn-amt">${money(r.available)}</span></div>
+          </div>
+        </div>
+
+        <div style="margin-top:24px;">
+          <div class="sub-label">WHAT'S ALREADY CLAIMING IT</div>
+          <div class="cat-txns" style="margin-top:8px;">
+            ${claimRows || `<div class="cat-txn-empty">NOTHING CLAIMED</div>`}
+            <div class="cat-txn shortfall-total"><span class="cat-txn-note">TOTAL</span><span class="cat-txn-amt">${money(r.claimed)}</span></div>
+          </div>
+        </div>
+
+        <div class="shortfall-net">
+          <span>SHORT BY</span><span>${money(Math.abs(r.low))}</span>
+        </div>
+
+        ${noteHtml ? `
+        <div style="margin-top:28px;">
+          <div class="sub-label">WORTH CHECKING</div>
+          <ul class="shortfall-notes">${noteHtml}</ul>
+        </div>` : ""}
+
+        <button class="cta big" style="margin-top:28px;" data-action="shortfall-close">→ GOT IT</button>
+      </div>`;
+    document.body.appendChild(overlay);
+    overlay.querySelectorAll("[data-action=shortfall-close]").forEach(el => {
+      el.addEventListener("click", () => { shortfallOpen = false; render(); });
+    });
   }
 
   // Opened by a paycheck tick. Savings rows are seeded unticked with their
