@@ -10505,11 +10505,22 @@ const UI = (() => {
     // When the dip lands on payday itself, naming the date twice reads like a
     // stutter — say what it means instead.
     const dipOnPayday = !!r.payDate && r.date === r.payDate;
-    const whenPhrase = isToday ? ", WHICH IS TODAY"
-      : dipOnPayday ? " — AND THE LOW IS THAT DAY ITSELF, ONCE ITS BILLS GO OUT"
-      : `, ON ${dayLabel(r.date)}`;
+    // Two different dates belong in this sentence — the payday that closes the
+    // window, and the day the low actually falls on — and running them
+    // together made the second one describe the first: "YOUR NEXT PAYCHECK ON
+    // AUG 5, WHICH IS TODAY" states that the paycheck is today when it is the
+    // dip that is. The low gets its own sentence so neither date can be read
+    // as the other.
+    const windowPhrase = r.payDate
+      ? `YOUR NEXT PAYCHECK ON ${dayLabel(r.payDate)}`
+      : "THE END OF THE HORIZON";
+    const lowSentence = isToday
+      ? "THE LOW POINT IS TODAY."
+      : dipOnPayday
+        ? `THE LOW POINT IS ${dayLabel(r.date)} ITSELF, ONCE THAT DAY'S BILLS GO OUT.`
+        : `THE LOW POINT IS ${dayLabel(r.date)}.`;
     const lead = isSafe
-      ? `SAFE TO SPEND IS <b>${money(r.amount)}</b> — THE LOWEST YOUR BALANCE GETS BETWEEN NOW AND ${r.payDate ? `YOUR NEXT PAYCHECK ON ${dayLabel(r.payDate)}` : "THE END OF THE HORIZON"}${whenPhrase}. SPEND UP TO IT AND EVERY BILL DUE IN THAT STRETCH STILL CLEARS. EVERYTHING BELOW ADDS UP TO EXACTLY THAT.`
+      ? `SAFE TO SPEND IS <b>${money(r.amount)}</b> — THE LOWEST YOUR BALANCE GETS BETWEEN NOW AND ${windowPhrase}. ${lowSentence} SPEND UP TO IT AND EVERY BILL DUE IN THAT STRETCH STILL CLEARS. EVERYTHING BELOW ADDS UP TO EXACTLY THAT.`
       : `YOUR TIGHTEST POINT IS <b>${money(r.amount)}</b>${isToday ? " — AND IT'S TODAY" : `, ON ${dayLabel(r.date)}`}. THAT'S THE LOWEST YOUR BALANCE IS FORECAST TO GET BEFORE ${dayLabel(r.horizonEnd)}, WITH EVERY PAYCHECK DUE BEFORE THEN ALREADY COUNTED IN. EVERYTHING BELOW ADDS UP TO EXACTLY THAT.`;
 
     // Each note is one sentence about one cause, and where the cause can be
