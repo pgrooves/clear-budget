@@ -1706,17 +1706,41 @@ const BudgetEngine = (() => {
 
     let running = start, low = start, lowDate = startISO;
     let windowLow = start, windowLowDate = startISO, monthEnd = start;
+    // The two headline figures split the horizon between them at the next
+    // payday. Reporting the whole-horizon low on the right made it duplicate
+    // Safe To Spend on the left whenever the worst moment happened to fall
+    // before payday — which, with overdue bills pinned to today, is most days.
+    // Splitting the stretch guarantees the second figure says something the
+    // first one didn't.
+    let atWindowEnd = start, afterLow = null, afterLowDate = null;
     events.forEach(e => {
       running += e.amount;
       if (running < low) { low = running; lowDate = e.date; }
-      if ((!windowEnd || e.date <= windowEnd) && running < windowLow) {
-        windowLow = running; windowLowDate = e.date;
+      if (!windowEnd || e.date <= windowEnd) {
+        if (running < windowLow) { windowLow = running; windowLowDate = e.date; }
+        atWindowEnd = running;
+      } else if (afterLow === null || running < afterLow) {
+        afterLow = running; afterLowDate = e.date;
       }
       if (e.date <= monthLast) monthEnd = running;
     });
+    // The stretch after payday starts the moment payday closes, so the balance
+    // at that moment is itself a candidate: a month where nothing further goes
+    // out is at its lowest the second you are paid.
+    if (windowEnd) {
+      if (afterLow === null || atWindowEnd < afterLow) {
+        afterLow = atWindowEnd; afterLowDate = windowEnd;
+      }
+    } else {
+      // No paycheck in the whole horizon, so there is no "after" to report.
+      // The figure falls back to the plain low, and the caller says so rather
+      // than implying a payday that isn't coming.
+      afterLow = low; afterLowDate = lowDate;
+    }
     return {
       low, lowDate, lowDay: Number(lowDate.slice(8, 10)),
       windowLow, windowLowDate, windowEnd, monthEnd,
+      afterLow, afterLowDate, hasAfter: !!windowEnd, atWindowEnd,
       // Where the balance finishes the horizon. A one-day dip and a household
       // genuinely running out of money look identical at the low point and
       // completely different here, so the breakdown gets to say which it is.
@@ -1731,10 +1755,12 @@ const BudgetEngine = (() => {
   function safeToSpend(s) {
     return cashFlowOutlook(s).windowLow;
   }
-  // The lowest point across the whole horizon, wherever it falls. The warning
-  // that sits beside Safe To Spend.
+  // The lowest the balance gets once your next paycheck has landed, through
+  // the end of the horizon. The warning that sits beside Safe To Spend, and
+  // deliberately the OTHER half of the horizon so the two never report the
+  // same moment. With no paycheck in view it falls back to the plain low.
   function tightestPoint(s) {
-    return cashFlowOutlook(s).low;
+    return cashFlowOutlook(s).afterLow;
   }
   // Where the month lands if every expected paycheck arrives and every unpaid
   // bill goes out. The reassuring counterpart to the numbers above.
@@ -1897,10 +1923,23 @@ const BudgetEngine = (() => {
   // The single day between here and the low that takes the most out, with what
   // is on it. This is the actionable one: a dip made by three bills sharing a
   // date is fixed by moving one of them, and you cannot see that from a total.
-  function noteHeaviestDay(s, outlook) {
+  /* Each panel explains its own stretch of the horizon and nothing else, so
+     the same pile-up is never blamed twice. Safe To Spend owns everything up
+     to and including payday; the Tightest Point owns what follows. With no
+     payday in view there is only one stretch and it covers the lot. */
+  function safeSpan(outlook) {
+    return { after: null, to: outlook.windowLowDate };
+  }
+  function tightSpan(outlook) {
+    return { after: outlook.hasAfter ? outlook.windowEnd : null, to: outlook.afterLowDate };
+  }
+  function inSpan(e, span) {
+    return e.date <= span.to && (!span.after || e.date > span.after);
+  }
+  function noteHeaviestDay(s, span) {
     const byDate = new Map();
     horizonEvents(s).forEach(e => {
-      if (e.date > outlook.lowDate || e.amount >= 0) return;
+      if (!inSpan(e, span) || e.amount >= 0) return;
       const cur = byDate.get(e.date) || { date: e.date, amount: 0, items: [] };
       cur.amount += -e.amount;
       cur.items.push({ label: String(e.label || "DUE"), amount: -e.amount });
@@ -1917,7 +1956,7 @@ const BudgetEngine = (() => {
   // inside it. A dip on the far side of two paydays is a different problem
   // from one before you are paid at all, and the number cannot say which.
   function notePayPosition(s, outlook) {
-    const pays = horizonEvents(s).filter(e => e.kind === "income" && e.date <= outlook.lowDate);
+    const pays = horizonEvents(s).filter(e => e.kind === "income" && e.date <= outlook.afterLowDate);
     return {
       kind: "payPosition",
       count: pays.length,
@@ -1928,8 +1967,8 @@ const BudgetEngine = (() => {
   }
   // Card money coming due inside the horizon. It used to be taken off the top
   // the moment it was spent, so it never had a date to point at.
-  function noteCreditDue(s, outlook) {
-    const credit = horizonEvents(s).filter(e => e.kind === "credit" && e.date <= outlook.lowDate);
+  function noteCreditDue(s, span) {
+    const credit = horizonEvents(s).filter(e => e.kind === "credit" && inSpan(e, span));
     if (!credit.length) return null;
     return {
       kind: "creditDue",
@@ -1941,14 +1980,14 @@ const BudgetEngine = (() => {
   // out of money are identical at the low point and nothing alike five weeks
   // out, and only one of them is worth losing sleep over.
   function noteRecovery(s, outlook) {
-    if (outlook.end <= outlook.low) return null;
-    return { kind: "recovery", amount: outlook.end, date: outlook.horizonEnd, low: outlook.low };
+    if (outlook.end <= outlook.afterLow) return null;
+    return { kind: "recovery", amount: outlook.end, date: outlook.horizonEnd, low: outlook.afterLow };
   }
   // What the biggest single claim is costing. Re-running the walk without it
   // turns "RENT is the largest" into what RENT is actually worth here, which
   // is not the same thing once other bills sit under it.
-  function noteBiggestClaim(s, outlook) {
-    const outs = horizonEvents(s).filter(e => e.date <= outlook.lowDate && e.amount < 0);
+  function noteBiggestClaim(s, span) {
+    const outs = horizonEvents(s).filter(e => inSpan(e, span) && e.amount < 0);
     if (outs.length < 2) return null;
     const biggest = outs.slice().sort((a, b) => a.amount - b.amount)[0];
     if (-biggest.amount <= 0) return null;
@@ -1967,7 +2006,24 @@ const BudgetEngine = (() => {
   /* The two sides of a figure, plus what to look at. `targetDate` is the day
      the figure happens on: only what has happened by then made it, and
      anything after is on the far side of the dip and did not cause it. */
-  function walkBreakdown(s, targetDate) {
+  function walkBreakdown(s, targetDate, from) {
+    // `from` scopes the columns to the stretch after a date, opening with the
+    // balance as it stands then. Without it the Tightest Point panel would
+    // re-list every bill that Safe To Spend already accounted for, and the
+    // reader would have to work out which half of the list was theirs.
+    if (from) {
+      const events = horizonEvents(s).filter(e => e.date > from.date && e.date <= targetDate);
+      const incoming = events.filter(e => e.amount > 0)
+        .map(e => ({ label: String(e.label || "INCOME"), amount: e.amount, date: e.date, day: e.day }));
+      const claims = events.filter(e => e.amount < 0)
+        .map(e => ({ label: String(e.label || "DUE"), amount: -e.amount, date: e.date, day: e.day, kind: e.kind === "credit" ? "credit" : "due" }))
+        .sort((a, b) => b.amount - a.amount);
+      const available = from.balance + incoming.reduce((a, e) => a + e.amount, 0);
+      return {
+        balance: from.balance, balanceDate: from.date, incoming, available,
+        claims, claimed: claims.reduce((a, c) => a + c.amount, 0)
+      };
+    }
     const byThen = horizonEvents(s).filter(e => e.date <= targetDate);
     const balance = projectedBalance(s);
     const reserved = totalReserved(s);
@@ -1992,9 +2048,15 @@ const BudgetEngine = (() => {
   // the things that are making it tight — most of which are fixable today.
   function safeToSpendReport(s) {
     const o = cashFlowOutlook(s);
+    // Shape first — a week made tight by three bills sharing a day is fixed
+    // differently from one made tight by a paycheck that never got logged —
+    // then the things that can be put right today.
+    const span = safeSpan(o);
     const notes = compact([
+      noteHeaviestDay(s, span),
       noteOverdueIncome(s, whatIfSafeToSpend),
       noteLateBills(s),
+      noteCreditDue(s, span),
       noteReserved(s, whatIfSafeToSpend),
       noteUncategorized(s),
       noteBigTxns(s),
@@ -2002,11 +2064,11 @@ const BudgetEngine = (() => {
     ]);
     // The pointer across is the last word, not the first: this report is about
     // getting to payday, and the far side of it is the other number's job.
-    if (o.low < o.windowLow) notes.push({ kind: "seeTightest", amount: o.low, date: o.lowDate });
+    if (o.afterLow < o.windowLow) notes.push({ kind: "seeTightest", amount: o.afterLow, date: o.afterLowDate });
     return {
       mode: "safe",
       amount: o.windowLow, date: o.windowLowDate,
-      payDate: o.windowEnd, other: o.low, otherDate: o.lowDate,
+      payDate: o.windowEnd, other: o.afterLow, otherDate: o.afterLowDate,
       startISO: o.startISO, horizonEnd: o.horizonEnd, end: o.end,
       ...walkBreakdown(s, o.windowLowDate),
       notes
@@ -2017,11 +2079,12 @@ const BudgetEngine = (() => {
   // many paychecks are already counted against it, and where it recovers to.
   function tightestPointReport(s) {
     const o = cashFlowOutlook(s);
+    const span = tightSpan(o);
     const notes = compact([
-      noteHeaviestDay(s, o),
+      noteHeaviestDay(s, span),
       notePayPosition(s, o),
-      noteBiggestClaim(s, o),
-      noteCreditDue(s, o),
+      noteBiggestClaim(s, span),
+      noteCreditDue(s, span),
       noteRecovery(s, o),
       noteOverdueIncome(s, whatIfTightest),
       noteLateBills(s),
@@ -2030,10 +2093,14 @@ const BudgetEngine = (() => {
     ]);
     return {
       mode: "tight",
-      amount: o.low, date: o.lowDate,
+      amount: o.afterLow, date: o.afterLowDate, hasAfter: o.hasAfter,
       payDate: o.windowEnd, other: o.windowLow, otherDate: o.windowLowDate,
       startISO: o.startISO, horizonEnd: o.horizonEnd, end: o.end,
-      ...walkBreakdown(s, o.lowDate),
+      // Opens at the balance as payday closes, so the columns cover only the
+      // far stretch and still reconcile: that balance already carries
+      // everything before it.
+      ...walkBreakdown(s, o.afterLowDate,
+        o.hasAfter ? { date: o.windowEnd, balance: o.atWindowEnd } : null),
       notes
     };
   }
@@ -4387,7 +4454,8 @@ const UI = (() => {
     // the balance gets across the whole horizon. Both come out of one walk so
     // they can never contradict each other.
     const safe = outlook.windowLow;
-    const tight = outlook.low;
+    // The far half of the horizon, so it can never restate the left figure.
+    const tight = outlook.afterLow;
     const budgeted = BudgetEngine.totalBudgeted(s);
     const credit = BudgetEngine.totalUnpaidCredit(s);
     const received = BudgetEngine.receivedIncome(s);
@@ -4410,19 +4478,21 @@ const UI = (() => {
     const stillExpected = BudgetEngine.incomeStillExpected(s);
     const anchorAgeDays = anchor ? Util.daysSince(anchor.date) : 0;
     const overdueInc = BudgetEngine.overdueIncome(s);
-    const lowIsToday = outlook.lowDate <= outlook.startISO;
+    const lowIsToday = outlook.afterLowDate <= outlook.startISO;
     // "AUG 6" rather than a bare day number, so the horizon reads as a date.
     // The low can now fall in next month, so it is formatted from the walk's
     // own ISO date rather than being pasted onto the current month.
-    const lowDateLabel = Util.fmtDateShort(outlook.lowDate);
-    // Sub-text under each figure: what window the left one covers, and when
-    // the right one bites.
+    const lowDateLabel = Util.fmtDateShort(outlook.afterLowDate);
+    // Sub-text under each figure. The two split the horizon at the next
+    // payday, so the notes say which stretch each one covers.
     const safeNote = outlook.windowEnd
       ? `UNTIL ${Util.esc(Util.fmtDateShort(outlook.windowEnd))}`
       : "NO PAYDAY IN THE NEXT 5 WEEKS";
-    const tightNote = lowIsToday
-      ? (tight < 0 ? "SHORT TODAY" : "TODAY")
-      : `${tight < 0 ? "SHORT ON" : "LOW ON"} ${Util.esc(lowDateLabel)}`;
+    const tightNote = !outlook.hasAfter
+      ? (lowIsToday ? (tight < 0 ? "SHORT TODAY" : "TODAY") : `${tight < 0 ? "SHORT ON" : "LOW ON"} ${Util.esc(lowDateLabel)}`)
+      : outlook.afterLowDate === outlook.windowEnd
+        ? `AFTER PAYDAY ${Util.esc(lowDateLabel)}`
+        : `${tight < 0 ? "SHORT ON" : "LOW ON"} ${Util.esc(lowDateLabel)}`;
 
     // Per-person spend (was Dashboard-only).
     let peopleHtml = "";
@@ -4517,7 +4587,7 @@ const UI = (() => {
           </div>
           <div class="hero-col">
             <div class="sub-label" data-learn="SUB-LABEL FOR THE TIGHTEST POINT. THE DATE UNDER THE NUMBER IS THE DAY YOUR BALANCE IS FORECAST TO BE AT ITS LOWEST.">TIGHTEST POINT</div>
-            <div class="hero ${tightDanger} tappable" data-action="open-shortfall" data-which="tight" data-learn="THE LOWEST YOUR BALANCE IS FORECAST TO GET OVER THE NEXT FIVE WEEKS, AND THE DAY IT HAPPENS. IT LOOKS PAST YOUR NEXT PAYCHECK TO THE BILLS ON THE OTHER SIDE OF IT, SO A ROUGH PATCH IS VISIBLE IN ADVANCE INSTEAD OF ARRIVING. TAP IT FOR WHICH DAY IS HEAVIEST AND WHAT LANDS ON IT.">${Util.esc(Util.fmtMoney(tight, 0))}</div>
+            <div class="hero ${tightDanger} tappable" data-action="open-shortfall" data-which="tight" data-learn="THE LOWEST YOUR BALANCE IS FORECAST TO GET ONCE YOUR NEXT PAYCHECK HAS LANDED, THROUGH THE NEXT FIVE WEEKS, AND THE DAY IT HAPPENS. THE TWO FIGURES SPLIT THE HORIZON AT YOUR NEXT PAY DAY — SAFE TO SPEND COVERS GETTING THERE, THIS COVERS WHAT'S WAITING ON THE OTHER SIDE — SO A ROUGH PATCH IS VISIBLE IN ADVANCE INSTEAD OF ARRIVING. TAP IT FOR WHICH DAY IS HEAVIEST AND WHAT LANDS ON IT.">${Util.esc(Util.fmtMoney(tight, 0))}</div>
             <div class="hero-note${tight < 0 ? " text-danger" : ""}">${tightNote}</div>
           </div>
         </div>
@@ -7773,7 +7843,7 @@ const UI = (() => {
     const stsAnchored = B.hasAnchor(s);
     const stsOutlook = B.cashFlowOutlook(s);
     const sts = stsOutlook.windowLow;
-    const tightest = stsOutlook.low;
+    const tightest = stsOutlook.afterLow;
     const received = B.receivedIncome(s);
     const expected = B.totalIncome(s);
     const budgeted = B.totalBudgeted(s);
@@ -7781,7 +7851,7 @@ const UI = (() => {
       <div class="pr-block pr-lime" style="padding-top:4px;">
         <div class="pr-label">SAFE TO SPEND</div>
         <div class="pr-hero${stsAnchored && sts < 0 ? " pr-danger" : ""}">${stsAnchored ? Util.esc(Util.fmtMoney(sts, 0)) : "NO BALANCE CONFIRMED"}</div>
-        ${stsAnchored ? `<div class="pr-sub">TIGHTEST POINT ${Util.esc(Util.fmtMoney(tightest, 0))} ON ${Util.esc(Util.fmtDateShort(stsOutlook.lowDate))}${stsOutlook.windowEnd ? " &middot; COVERED UNTIL " + Util.esc(Util.fmtDateShort(stsOutlook.windowEnd)) : ""}</div>` : ""}
+        ${stsAnchored ? `<div class="pr-sub">TIGHTEST POINT ${Util.esc(Util.fmtMoney(tightest, 0))} ON ${Util.esc(Util.fmtDateShort(stsOutlook.afterLowDate))}${stsOutlook.windowEnd ? " &middot; COVERED UNTIL " + Util.esc(Util.fmtDateShort(stsOutlook.windowEnd)) : ""}</div>` : ""}
         <div class="pr-sub">
           ${stsAnchored ? `IN THE ACCOUNT ${Util.esc(Util.fmtMoney(B.projectedBalance(s), 0))} &middot; ` : ""}RECEIVED ${Util.esc(Util.fmtMoney(received, 0))} OF ${Util.esc(Util.fmtMoney(expected, 0))} EXPECTED
           &middot; BUDGETED ${Util.esc(Util.fmtMoney(budgeted, 0))}
@@ -10686,7 +10756,8 @@ const UI = (() => {
           <span class="cat-txn-amt">${money(amount)}</span>
         </div>`;
 
-    const haveRows = row("IN THE ACCOUNT NOW", r.balance)
+    const haveRows = row(r.balanceDate ? "BALANCE ONCE PAYDAY CLEARS" : "IN THE ACCOUNT NOW",
+                         r.balance, r.balanceDate ? "· " + dayLabel(r.balanceDate) : "")
       + r.incoming.map(e => row(e.label, e.amount, "· " + dayLabel(e.date))).join("");
     const claimRows = r.claims.map(c => row(c.label, c.amount, c.date ? "· " + dayLabel(c.date) : "")).join("");
 
@@ -10711,7 +10782,9 @@ const UI = (() => {
         : `THE LOW POINT IS ${dayLabel(r.date)}.`;
     const lead = isSafe
       ? `SAFE TO SPEND IS <b>${money(r.amount)}</b> — THE LOWEST YOUR BALANCE GETS BETWEEN NOW AND ${windowPhrase}. ${lowSentence} SPEND UP TO IT AND EVERY BILL DUE IN THAT STRETCH STILL CLEARS. EVERYTHING BELOW ADDS UP TO EXACTLY THAT.`
-      : `YOUR TIGHTEST POINT IS <b>${money(r.amount)}</b>${isToday ? " — AND IT'S TODAY" : `, ON ${dayLabel(r.date)}`}. THAT'S THE LOWEST YOUR BALANCE IS FORECAST TO GET BEFORE ${dayLabel(r.horizonEnd)}, WITH EVERY PAYCHECK DUE BEFORE THEN ALREADY COUNTED IN. EVERYTHING BELOW ADDS UP TO EXACTLY THAT.`;
+      : r.hasAfter
+        ? `YOUR TIGHTEST POINT IS <b>${money(r.amount)}</b>, ON ${dayLabel(r.date)}. THAT'S THE LOWEST YOUR BALANCE GETS ONCE YOUR ${dayLabel(r.payDate)} PAYCHECK HAS LANDED, THROUGH ${dayLabel(r.horizonEnd)}. SAFE TO SPEND COVERS GETTING TO PAYDAY; THIS IS WHAT'S WAITING ON THE OTHER SIDE OF IT. EVERYTHING BELOW ADDS UP TO EXACTLY THAT.`
+        : `YOUR TIGHTEST POINT IS <b>${money(r.amount)}</b>${isToday ? " — AND IT'S TODAY" : `, ON ${dayLabel(r.date)}`}. NO PAYCHECK IS EXPECTED BEFORE ${dayLabel(r.horizonEnd)}, SO THIS IS SIMPLY THE LOWEST YOUR BALANCE GETS BETWEEN NOW AND THEN. EVERYTHING BELOW ADDS UP TO EXACTLY THAT.`;
 
     // A costed note is only worth stating when undoing the cause actually
     // shifts the figure being explained; rounding to whole dollars means
@@ -10760,7 +10833,7 @@ const UI = (() => {
       }
       // --- Safe To Spend only: the hand-off to the other figure.
       if (n.kind === "seeTightest") {
-        return `<li><b>IT GETS TIGHTER AFTER THAT</b> · ${money(n.amount)} ON ${dayLabel(n.date)}, ON THE FAR SIDE OF YOUR NEXT PAYCHECK. THIS NUMBER ONLY PROMISES TO GET YOU TO PAYDAY. TAP TIGHTEST POINT FOR WHAT HAPPENS AFTER.</li>`;
+        return `<li><b>IT'S TIGHTER ON THE OTHER SIDE OF PAYDAY</b> · ${money(n.amount)} ON ${dayLabel(n.date)}. THIS NUMBER ONLY PROMISES TO GET YOU TO PAYDAY. TAP TIGHTEST POINT FOR WHAT HAPPENS AFTER.</li>`;
       }
       // --- Tightest Point only: shape and timing rather than hygiene.
       if (n.kind === "heaviestDay") {
@@ -10772,7 +10845,7 @@ const UI = (() => {
         if (!n.count) {
           return `<li><b>NO PAYCHECK LANDS BEFORE IT</b> · ${n.nextDate ? `YOUR NEXT ONE IS ${dayLabel(n.nextDate)}, AFTER THIS POINT.` : "NOTHING IS EXPECTED IN THE NEXT FIVE WEEKS."} SO THIS DIP HAS TO BE COVERED OUT OF WHAT'S IN THE ACCOUNT NOW.</li>`;
         }
-        return `<li><b>${n.count} PAYCHECK${n.count === 1 ? " IS" : "S ARE"} ALREADY COUNTED IN THIS</b> · ${money(n.amount)} LANDS BEFORE IT${n.lastDate ? `, THE LAST ON ${dayLabel(n.lastDate)}` : ""}. THE DIP IS WHAT'S LEFT AFTER THAT MONEY ARRIVES, NOT SOMETHING GETTING PAID WOULD FIX.</li>`;
+        return `<li><b>${n.count} PAYCHECK${n.count === 1 ? " IS" : "S ARE"} ALREADY COUNTED IN THIS</b> · ${money(n.amount)} LANDS BEFORE IT${n.lastDate ? `, THE LAST ON ${dayLabel(n.lastDate)}` : ""}. ${short ? "THE DIP IS WHAT'S LEFT AFTER THAT MONEY ARRIVES, NOT SOMETHING GETTING PAID WOULD FIX." : "THIS IS WHAT'S LEFT ONCE THAT MONEY HAS ARRIVED AND THE BILLS BEHIND IT HAVE GONE OUT."}</li>`;
       }
       if (n.kind === "biggestClaim") {
         return `<li><b>${Util.esc(n.label)} IS THE SINGLE BIGGEST CLAIM</b> · ${money(n.amount)} ON ${dayLabel(n.date)}, ${Math.round(n.share * 100)}% OF EVERYTHING GOING OUT BY THEN.</li>`;
@@ -10782,7 +10855,7 @@ const UI = (() => {
         return `<li><b>${money(n.amount)} OF CARD SPENDING COMES DUE BEFORE THEN</b> · ${items}. IT DOESN'T TOUCH CHECKING UNTIL THAT DATE, WHICH IS WHY IT LANDS HERE RATHER THAN THE DAY YOU SPENT IT.</li>`;
       }
       if (n.kind === "recovery") {
-        return `<li><b>IT RECOVERS TO ${money(n.amount)} BY ${dayLabel(n.date)}</b> · SO THIS IS A DIP TO GET THROUGH RATHER THAN THE SHAPE OF THE WHOLE MONTH.</li>`;
+        return `<li><b>IT ${short ? "RECOVERS" : "CLIMBS"} TO ${money(n.amount)} BY ${dayLabel(n.date)}</b> · ${short ? "SO THIS IS A DIP TO GET THROUGH RATHER THAN THE SHAPE OF THE WHOLE MONTH." : "SO THE STRETCH AFTER PAYDAY BUILDS UP RATHER THAN DRAWING DOWN."}</li>`;
       }
       return "";
     }).join("");
@@ -10794,11 +10867,13 @@ const UI = (() => {
     overlay.innerHTML = `
       <div class="overlay-inner" data-scroll-key="shortfall-overlay-inner">
         <button class="link" data-action="shortfall-close">× CLOSE</button>
-        <h2 class="section-label" style="margin-top:16px;">→ ${isSafe ? "WHAT'S LEFT UNTIL PAYDAY" : "WHY IT GETS TIGHT"}</h2>
+        <h2 class="section-label" style="margin-top:16px;">→ ${isSafe
+          ? "WHAT'S LEFT UNTIL PAYDAY"
+          : (short ? "WHY IT GETS TIGHT" : "WHAT'S LEFT AFTER PAYDAY")}</h2>
         <div class="meta" style="margin-top:8px;">${lead}</div>
 
         <div style="margin-top:28px;">
-          <div class="sub-label">${isSafe ? "WHAT YOU HAVE TO WORK WITH" : "WHAT YOU HAVE BY THEN"}</div>
+          <div class="sub-label">${isSafe ? "WHAT YOU HAVE TO WORK WITH" : (r.balanceDate ? "WHAT YOU HAVE FROM PAYDAY ON" : "WHAT YOU HAVE BY THEN")}</div>
           <div class="cat-txns" style="margin-top:8px;">
             ${haveRows}
             <div class="cat-txn shortfall-total"><span class="cat-txn-note">TOTAL</span><span class="cat-txn-amt">${money(r.available)}</span></div>
@@ -10806,7 +10881,7 @@ const UI = (() => {
         </div>
 
         <div style="margin-top:24px;">
-          <div class="sub-label">${isSafe ? "WHAT'S CLAIMING IT BEFORE PAYDAY" : "WHAT'S CLAIMING IT BY THEN"}</div>
+          <div class="sub-label">${isSafe ? "WHAT'S CLAIMING IT BEFORE PAYDAY" : (r.balanceDate ? "WHAT'S CLAIMING IT AFTER PAYDAY" : "WHAT'S CLAIMING IT BY THEN")}</div>
           <div class="cat-txns" style="margin-top:8px;">
             ${claimRows || `<div class="cat-txn-empty">NOTHING CLAIMED</div>`}
             <div class="cat-txn shortfall-total"><span class="cat-txn-note">TOTAL</span><span class="cat-txn-amt">${money(r.claimed)}</span></div>
