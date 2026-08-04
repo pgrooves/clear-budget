@@ -1034,8 +1034,39 @@ const DataService = (() => {
 const BudgetEngine = (() => {
   const num = v => (isFinite(Number(v)) ? Number(v) : 0);
 
+  /* ---------- INCOME FREQUENCY ----------
+     An income's `amount` is what arrives each time it arrives, not what it adds
+     up to per month. Everything else in the app thinks in months, so a source's
+     frequency is what converts between the two. Records with no frequency read
+     as monthly, which is exactly what they meant before this existed. */
+  const INCOME_FREQUENCIES = [
+    { id: "weekly",     label: "WEEKLY",      perMonth: 52 / 12, everyDays: 7 },
+    { id: "biweekly",   label: "EVERY 2 WKS", perMonth: 26 / 12, everyDays: 14 },
+    { id: "semimonthly",label: "TWICE A MO",  perMonth: 2,       everyDays: 15 },
+    { id: "monthly",    label: "MONTHLY",     perMonth: 1,       everyDays: 0 },
+    { id: "quarterly",  label: "QUARTERLY",   perMonth: 1 / 3,   everyDays: 0 },
+    { id: "yearly",     label: "YEARLY",      perMonth: 1 / 12,  everyDays: 0 }
+  ];
+  function incomeFrequency(inc) {
+    const id = inc && inc.frequency;
+    return INCOME_FREQUENCIES.find(f => f.id === id) || INCOME_FREQUENCIES.find(f => f.id === "monthly");
+  }
+  // What this source contributes to a month, whatever its cadence.
+  function incomeMonthlyAmount(inc) {
+    return num(inc && inc.amount) * incomeFrequency(inc).perMonth;
+  }
   function totalIncome(s) {
-    return (s.income || []).reduce((a, i) => a + num(i.amount), 0);
+    return (s.income || []).reduce((a, i) => a + incomeMonthlyAmount(i), 0);
+  }
+  // Pay-date order, which is how they actually arrive. Undated sources sort
+  // last rather than pretending to be the 1st.
+  function incomeByDate(s) {
+    return (s.income || []).slice().sort((a, b) => {
+      const da = num(a.dueDateOfMonth) || 99;
+      const db = num(b.dueDateOfMonth) || 99;
+      if (da !== db) return da - db;
+      return String(a.label || "").localeCompare(String(b.label || ""));
+    });
   }
   function tithePercent(s) {
     return num(s.settings && s.settings.tithePercent != null ? s.settings.tithePercent : 10);
@@ -1238,10 +1269,142 @@ const BudgetEngine = (() => {
     return Math.max(0, totalIncome(s) - receivedIncome(s));
   }
 
-  // What is genuinely free to spend: what the account holds, less everything
-  // still owed out of it this month, less credit not yet paid off.
+  /* ---------- THE CASH-FLOW LOW POINT ----------
+     Holding today's balance against the WHOLE month's bills reads deeply
+     negative for most of every month, because the month's income hasn't
+     arrived yet. It answers "can I cover all of August right now", which is a
+     question nobody asks.
+
+     Reserving only what's due before the next payday has the opposite fault:
+     the window narrows as payday approaches, so the number peaks the day
+     before you get paid — right when the bills that follow are closest.
+
+     So neither end of the month is the answer; the worst moment between here
+     and the end of it is. Walk the days forward, adding income as it lands and
+     taking bills as they fall due, and the lowest the balance ever gets is
+     what's actually free to spend. It stops reading negative when you're
+     merely early, and it can't spike before payday because the dip on the
+     other side is already in the walk. */
+
+  function daysInMonthOf(ym) {
+    const [y, m] = String(ym || "").split("-").map(Number);
+    return new Date(y, m, 0).getDate();
+  }
+  function dayOfMonthToday(s) {
+    return s.currentMonth === Util.currentMonthYM() ? new Date().getDate() : 1;
+  }
+
+  // Dated money movements from today to the end of the month, as
+  // { day, amount, label }. Anything already overdue and unpaid lands on today,
+  // because it is owed now whatever its due date said.
+  function remainingMonthEvents(s) {
+    const today = dayOfMonthToday(s);
+    const last = daysInMonthOf(s.currentMonth);
+    const at = d => Math.max(today, Math.min(last, num(d) || today));
+    // Within a day: money out first, then money in, then the tithe taken from
+    // it. Bills-before-income is the pessimistic reading of a day and the one
+    // worth showing; tithe after income because it cannot be owed on a
+    // paycheck that hasn't landed.
+    const OUT = 0, IN = 1, TITHE = 2;
+    const events = [];
+
+    const paid = (s.billsPaid || {})[s.currentMonth] || {};
+    (s.bills || []).forEach(b => {
+      if (paid[b.id] && paid[b.id].paid) return;
+      events.push({ day: at(b.dueDateOfMonth), seq: OUT, amount: -num(b.amount), label: b.label });
+    });
+
+    // A minimum whose tick already wrote a transaction is spent, not pending.
+    const minPaid = {};
+    (s.transactions || []).forEach(t => {
+      if (t && t.tickPay && t.categoryType === "debt" && t.month === s.currentMonth) minPaid[t.categoryId] = true;
+    });
+    (s.debts || []).forEach(d => {
+      if (minPaid[d.id]) return;
+      if (num(d.minimumPayment) <= 0) return;
+      events.push({ day: at(d.dueDateOfMonth), seq: OUT, amount: -num(d.minimumPayment), label: d.label });
+    });
+
+    // Income not yet marked received. A source whose pay day has already gone
+    // by is deliberately NOT pulled forward to today — money that was due and
+    // hasn't shown up is not money you can spend, and quietly counting it is
+    // how this number would start lying.
+    const cleared = {};
+    (s.incomeLog || []).forEach(e => { if (e && e.month === s.currentMonth) cleared[e.incomeId] = true; });
+    let titheBase = 0;
+    (s.income || []).forEach(i => {
+      if (cleared[i.id]) return;
+      const freq = incomeFrequency(i);
+      const first = num(i.dueDateOfMonth) || 1;
+      const each = num(i.amount);
+      if (each <= 0) return;
+      if (freq.everyDays > 0 && freq.everyDays < 15) {
+        // Weekly and fortnightly sources land several times a month, and where
+        // those landings sit relative to the bills is the whole point.
+        for (let d = first; d <= last; d += freq.everyDays) {
+          if (d < today) continue;
+          events.push({ day: d, seq: IN, amount: each, label: i.label });
+          titheBase += each;
+        }
+      } else {
+        if (first < today) return;
+        const amt = freq.perMonth >= 1 ? each * freq.perMonth : incomeMonthlyAmount(i);
+        events.push({ day: first, seq: IN, amount: amt, label: i.label });
+        titheBase += amt;
+      }
+    });
+
+    // Tithe comes due with the income it is taken from, not on the 1st.
+    // What is still owed gets spread across the paydays still to come, in
+    // proportion to what each one brings, so the events sum to exactly the
+    // outstanding amount however much has already been given.
+    if (titheEnabled(s) && titheBase > 0) {
+      const owed = Math.max(0, unpaidTithe(s));
+      if (owed > 0) {
+        events.slice().forEach(e => {
+          if (e.seq !== IN) return;
+          const cut = owed * (e.amount / titheBase);
+          if (cut > 0) events.push({ day: e.day, seq: TITHE, amount: -cut, label: "TITHE" });
+        });
+      }
+    }
+
+    return events.sort((a, b) => (a.day - b.day) || (a.seq - b.seq) || (a.amount - b.amount));
+  }
+
+  // { low, lowDay, monthEnd } — the worst point between now and month end, and
+  // where the month finishes if everything expected actually happens.
+  function cashFlowOutlook(s) {
+    const start = projectedBalance(s) - totalUnpaidCredit(s);
+    let running = start;
+    let low = start;
+    let lowDay = dayOfMonthToday(s);
+    remainingMonthEvents(s).forEach(e => {
+      running += e.amount;
+      if (running < low) { low = running; lowDay = e.day; }
+    });
+    return { low, lowDay, monthEnd: running };
+  }
+
+  // What is genuinely free to spend: the lowest your balance gets between now
+  // and the end of the month. Spend up to this and every bill still clears.
   function safeToSpend(s) {
-    return projectedBalance(s) - unpaidObligations(s) - totalUnpaidCredit(s);
+    return cashFlowOutlook(s).low;
+  }
+  // Where the month lands if every expected paycheck arrives and every unpaid
+  // bill goes out. The reassuring counterpart to the number above.
+  function monthEndBalance(s) {
+    return cashFlowOutlook(s).monthEnd;
+  }
+  // Income whose pay day has passed with nothing marked received. Counting it
+  // would flatter every figure here, so it is surfaced instead.
+  function overdueIncome(s) {
+    const today = dayOfMonthToday(s);
+    const cleared = {};
+    (s.incomeLog || []).forEach(e => { if (e && e.month === s.currentMonth) cleared[e.incomeId] = true; });
+    return (s.income || []).filter(i =>
+      !cleared[i.id] && num(i.amount) > 0 && (num(i.dueDateOfMonth) || 1) < today
+    );
   }
   function spendingBudgetedTotal(s) {
     return (s.spendingCategories || []).reduce((a, c) => a + num(c.budgeted), 0);
@@ -1388,10 +1551,12 @@ const BudgetEngine = (() => {
   return {
     num,
     totalIncome, receivedIncome, tithePercent, titheEnabled, tithe, titheOnReceived, titheBillView,
+    INCOME_FREQUENCIES, incomeFrequency, incomeMonthlyAmount, incomeByDate,
     billsSubtotal, totalBills, totalDebtMins,
     totalUnpaidCredit, safeToSpend, spendingBudgetedTotal, totalBudgeted, extraForDebt,
     latestAnchor, hasAnchor, isAfterAnchor, projectedBalance, billPaymentsSinceAnchor,
     unpaidBillsTotal, unpaidTithe, unpaidDebtMins, unpaidObligations, incomeStillExpected,
+    remainingMonthEvents, cashFlowOutlook, monthEndBalance, overdueIncome, daysInMonthOf,
     categorySpent, rolloverAmount, categoryRemaining, personSpent,
     categorySpentIn, rolloverAmountIn, categoryRemainingIn, rolloverCandidate, autoAdvancePatch,
     totalDebt, targetDebt, debtOrder, debtStrategy, unpaidCredit, cashToCover,
@@ -2342,6 +2507,13 @@ const UI = (() => {
   let balanceGapNotice = null;
   // { from, to, dismissed } — set when the budget month rolls itself forward.
   let monthRollNotice = null;
+  // The lime block's detail lines. Folded away by default so the two figures
+  // that answer "can I spend this" aren't buried in a wall of stats. Kept in
+  // localStorage rather than the household doc: it's a per-device reading
+  // preference, not shared budget data.
+  let limeExpanded = (() => {
+    try { return localStorage.getItem("clear.limeOpen") === "1"; } catch (e) { return false; }
+  })();
 
   // Log-screen "IMPORT FROM BANK" inline menu
   let importMenuOpen = false;
@@ -2354,6 +2526,9 @@ const UI = (() => {
   // { mode: "ask" | "custom", amount, error }. Transient UI only; the tick's
   // real state lives in the logged transaction.
   const minPayPrompts = {};
+  // billId -> the transaction we think is this bill's payment, awaiting a yes/no.
+  // { txnId, note, amount, date, billLabel }
+  const billLinkPrompts = {};
 
   // Post-import notice — shown on the LOG screen after a batch commits.
   // { total, offMonth, dismissed }. Renders in danger-red when offMonth > 0.
@@ -3447,6 +3622,11 @@ const UI = (() => {
     const projected = BudgetEngine.projectedBalance(s);
     const stillExpected = BudgetEngine.incomeStillExpected(s);
     const anchorAgeDays = anchor ? Util.daysSince(anchor.date) : 0;
+    const outlook = BudgetEngine.cashFlowOutlook(s);
+    const overdueInc = BudgetEngine.overdueIncome(s);
+    const lowIsToday = outlook.lowDay <= BudgetEngine.monthDayInfo(s).day;
+    // "AUG 6" rather than a bare day number, so the horizon reads as a date.
+    const lowDateLabel = Util.fmtDateShort(`${s.currentMonth}-${String(outlook.lowDay).padStart(2, "0")}`);
 
     // Per-person spend (was Dashboard-only).
     let peopleHtml = "";
@@ -3497,8 +3677,14 @@ const UI = (() => {
     // as separate facts rather than blended, so "what's here" never gets
     // confused with "what's coming".
     const balanceHtml = anchored ? `
-      <div class="sub-label" style="margin-top:8px;" data-learn="WHAT YOUR CHECKING ACCOUNT SHOULD HOLD RIGHT NOW: THE LAST BALANCE YOU CONFIRMED, PLUS INCOME LOGGED SINCE, MINUS DEBIT SPENDING LOGGED SINCE. TAP TO CONFIRM A FRESH BALANCE ANY TIME."><span class="stat-lbl">IN THE ACCOUNT</span> <span class="stat-val">${Util.esc(Util.fmtMoney(projected, 0))}</span> <span class="stat-lbl">· CONFIRMED ${anchorAgeDays === 0 ? "TODAY" : anchorAgeDays + " DAY" + (anchorAgeDays === 1 ? "" : "S") + " AGO"}</span> <button class="link" data-action="open-balance">UPDATE →</button></div>
-      ${stillExpected > 0 ? `<div class="sub-label" style="margin-top:8px;" data-learn="EXPECTED INCOME THAT HASN'T ARRIVED YET. IT IS NOT PART OF SAFE TO SPEND — THAT NUMBER ONLY COUNTS MONEY ACTUALLY IN THE ACCOUNT."><span class="stat-lbl">STILL EXPECTED</span> <span class="stat-val">${Util.esc(Util.fmtMoney(stillExpected, 0))}</span> <span class="stat-lbl">NOT YET IN THE ACCOUNT</span></div>` : ""}` : "";
+      <div class="sub-label" style="margin-top:8px;" data-learn="WHAT YOUR CHECKING ACCOUNT SHOULD HOLD RIGHT NOW: THE LAST BALANCE YOU CONFIRMED, PLUS INCOME LOGGED SINCE, MINUS DEBIT SPENDING LOGGED SINCE. TAP TO CONFIRM A FRESH BALANCE ANY TIME."><span class="stat-lbl">IN THE ACCOUNT</span> <span class="stat-val">${Util.esc(Util.fmtMoney(projected, 0))}</span> <span class="stat-lbl">· CONFIRMED ${anchorAgeDays === 0 ? "TODAY" : anchorAgeDays + " DAY" + (anchorAgeDays === 1 ? "" : "S") + " AGO"}</span> <button class="link" data-action="open-balance">UPDATE →</button></div>` : "";
+
+    // The counterpart to the low point: where the month finishes if every
+    // expected paycheck lands and every unpaid bill goes out. Answers "am I
+    // actually in trouble, or just early?" without touching the hero.
+    const outlookHtml = anchored ? `
+      <div class="sub-label" style="margin-top:8px;" data-learn="WHERE YOUR BALANCE ENDS THE MONTH IF EVERY EXPECTED PAYCHECK ARRIVES AND EVERY UNPAID BILL GOES OUT. SAFE TO SPEND DELIBERATELY IGNORES THIS AND ONLY COUNTS MONEY YOU ALREADY HAVE."><span class="stat-lbl">MONTH ENDS AT</span> <span class="stat-val">${Util.esc(Util.fmtMoney(outlook.monthEnd, 0))}</span>${stillExpected > 0 ? ` <span class="stat-lbl">· ${Util.esc(Util.fmtMoney(stillExpected, 0))} STILL TO COME IN</span>` : ""}</div>
+      ${overdueInc.length ? `<div class="sub-label text-danger" style="margin-top:8px;" data-learn="A PAY DAY HAS GONE BY WITH NOTHING MARKED RECEIVED. IT IS NOT COUNTED ANYWHERE ABOVE — MONEY THAT WAS DUE AND HASN'T ARRIVED ISN'T MONEY YOU CAN SPEND. IMPORT OR TICK IT OFF AND EVERY FIGURE HERE UPDATES.">${overdueInc.length} PAY DAY${overdueInc.length === 1 ? "" : "S"} PASSED, NOTHING RECEIVED · ${Util.esc(overdueInc.map(i => i.label).join(", ").slice(0, 40))}</div>` : ""}` : "";
 
     // Gap notice: what the app projected vs what was actually confirmed. Purely
     // informational and dismissible — the number the user typed always wins.
@@ -3526,20 +3712,24 @@ const UI = (() => {
         ${tabLineHtml(tab)}
         ${swipeHintHtml()}
         <div class="meta" style="opacity:0.75; margin:12px 0;" data-learn="EVERY NUMBER IN THIS BLOCK IS FOR THIS MONTH ONLY. USE NEW MONTH IN SETTINGS TO ROLL FORWARD.">MONTH OF ${Util.esc(Util.fmtMonthLong(s.currentMonth))}</div>
-        <div class="sub-label" data-learn="SUB-LABEL FOR THE SAFE TO SPEND NUMBER BELOW.">SAFE TO SPEND</div>
+        <div class="sub-label" data-learn="SUB-LABEL FOR THE SAFE TO SPEND NUMBER BELOW. THE HORIZON BESIDE IT IS THE DAY YOUR BALANCE IS FORECAST TO BE AT ITS LOWEST.">SAFE TO SPEND${anchored && !lowIsToday ? ` <span style="opacity:0.7;">· LOW POINT ${Util.esc(lowDateLabel)}</span>` : ""}</div>
         ${anchored ? `
-        <div class="hero ${heroDanger}" data-learn="WHAT'S ACTUALLY FREE TO SPEND: THE BALANCE IN YOUR ACCOUNT, LESS BILLS, TITHE AND DEBT MINIMUMS YOU STILL OWE THIS MONTH, LESS UNPAID CREDIT. GOES RED WHEN NEGATIVE.">${Util.esc(Util.fmtMoney(safe, 0))}</div>`
+        <div class="hero ${heroDanger}" data-learn="THE LOWEST YOUR BALANCE IS FORECAST TO REACH BETWEEN NOW AND THE END OF THE MONTH, ONCE EVERY UNPAID BILL AND EVERY EXPECTED PAYCHECK IS PUT ON ITS DUE DAY. SPEND UP TO THIS AND EVERYTHING STILL CLEARS. GOES RED WHEN NEGATIVE.">${Util.esc(Util.fmtMoney(safe, 0))}</div>`
         : `
         <div class="hero" data-learn="SAFE TO SPEND IS BASED ON WHAT'S ACTUALLY IN YOUR CHECKING ACCOUNT, SO IT NEEDS A BALANCE TO WORK FROM. TAP TO ENTER IT; IT TAKES A FEW SECONDS AND YOU CAN UPDATE IT ANY TIME."><button class="link" data-action="open-balance">CONFIRM YOUR BALANCE →</button></div>
         <div class="sub-label" style="margin-top:8px;" data-learn="UNTIL A BALANCE IS CONFIRMED THERE IS NOTHING TO BASE SAFE TO SPEND ON. NOTHING ELSE IN THE APP IS AFFECTED.">ENTER WHAT YOUR BANK SAYS RIGHT NOW</div>`}
         ${balanceHtml}
         ${gapHtml}
+        <button class="link" style="margin-top:8px;" data-action="lime-toggle" data-learn="SHOW OR HIDE THE REST OF THIS MONTH'S FIGURES. THE TWO LINES ABOVE ARE THE ONES THAT ANSWER 'CAN I SPEND THIS'; EVERYTHING ELSE IS DETAIL AND STAYS FOLDED AWAY UNTIL YOU WANT IT.">${limeExpanded ? "HIDE DETAILS ⌃" : "SHOW MORE ⌄"}</button>
+        ${limeExpanded ? `
+        ${outlookHtml}
         <div class="sub-label" style="margin-top:8px;" data-learn="HOW MUCH OF YOUR EXPECTED INCOME HAS ACTUALLY ARRIVED THIS MONTH. MARK INCOME AS RECEIVED ON THE LOG INCOME TAB."><span class="stat-lbl">RECEIVED</span> <span class="stat-val">${Util.esc(Util.fmtMoney(received, 0))}</span> <span class="stat-lbl">OF</span> <span class="stat-val">${Util.esc(Util.fmtMoney(expectedIncome, 0))}</span> <span class="stat-lbl">EXPECTED</span></div>
         ${BudgetEngine.titheEnabled(s) ? `<div class="sub-label" style="margin-top:8px;" data-learn="HOW MUCH OF YOUR TITHE HAS BEEN SET ASIDE SO FAR, BASED ON INCOME MARKED RECEIVED THIS MONTH, OF THE FULL TITHE EXPECTED ON YOUR TOTAL EXPECTED INCOME."><span class="stat-lbl">TITHED</span> <span class="stat-val">${Util.esc(Util.fmtMoney(titheReceived, 0))}</span> <span class="stat-lbl">OF</span> <span class="stat-val">${Util.esc(Util.fmtMoney(titheExpected, 0))}</span></div>` : ""}
         <div class="sub-label" style="margin-top:8px;" data-learn="TOTAL BUDGETED = TITHE + BILLS + DEBT MINIMUMS + SPENDING BUDGETS, FOR YOUR FULL EXPECTED MONTH, SO IT DOESN'T MOVE AS PAYCHECKS LAND. ON CREDIT = TOTAL OF THIS MONTH'S CREDIT TRANSACTIONS THAT AREN'T PAID OFF YET."><span class="stat-val">${Util.esc(Util.fmtMoney(budgeted, 0))}</span> <span class="stat-lbl">BUDGETED ·</span> <span class="stat-val">${Util.esc(Util.fmtMoney(credit, 0))}</span> <span class="stat-lbl">ON CREDIT</span></div>
         ${peopleHtml}
         ${dueSoonHtml}
         ${savingsHtml}
+        ` : ""}
         ${staleHtml}
         ${rollHtml}
       </section>`;
@@ -3605,6 +3795,13 @@ const UI = (() => {
       el.addEventListener("click", () => {
         newMonthChoices = {};
         newMonthOpen = true;
+        render();
+      });
+    });
+    root.querySelectorAll("[data-action=lime-toggle]").forEach(el => {
+      el.addEventListener("click", () => {
+        limeExpanded = !limeExpanded;
+        try { localStorage.setItem("clear.limeOpen", limeExpanded ? "1" : "0"); } catch (e) {}
         render();
       });
     });
@@ -3756,16 +3953,22 @@ const UI = (() => {
         </div>
       </div>` : "";
 
+    // Pay-date order: the list reads the way the month actually happens.
     const incExpectedRows = (s.income || []).length
-      ? (s.income || []).map(i => {
+      ? BudgetEngine.incomeByDate(s).map(i => {
           const entry = clearedFor(i.id);
           const expected = Number(i.amount) || 0;
           const actual = entry ? (Number(entry.amount) || 0) : 0;
           const showActual = entry && Math.abs(actual - expected) >= 0.01;
+          const freq = BudgetEngine.incomeFrequency(i);
+          const day = Number(i.dueDateOfMonth) || 0;
+          const monthly = BudgetEngine.incomeMonthlyAmount(i);
+          const showMonthly = freq.id !== "monthly";
           return `
             <div class="inc-row">
               <div>
                 <div class="inc-label">${Util.esc(i.label)}</div>
+                <div class="meta" data-learn="HOW OFTEN THIS SOURCE PAYS, AND WHICH DAY OF THE MONTH IT LANDS. PAY DAY ORDERS THIS LIST AND DRIVES THE SAFE TO SPEND FORECAST.">${Util.esc(freq.label)}${day ? ` · DAY ${day}` : ""}${showMonthly ? ` · ${Util.esc(Util.fmtMoney(monthly, 0))}/MO` : ""}</div>
                 ${showActual ? `<div class="meta">RECEIVED ${Util.esc(Util.fmtMoney(actual, 2))}</div>` : ""}
               </div>
               <div>
@@ -3774,7 +3977,7 @@ const UI = (() => {
                     ? `<input class="wiz-amt" id="inc-exp-input" data-action="inc-exp-input" data-id="${Util.esc(i.id)}" inputmode="decimal" value="${Util.esc(incExpEdit.value)}" aria-label="EXPECTED AMOUNT">`
                     : `<button class="link" style="padding:0;min-height:auto;text-decoration:none;border-bottom:1px solid rgba(26,58,140,0.4);font-size:15px;font-weight:400;letter-spacing:inherit;" data-action="inc-exp-edit" data-id="${Util.esc(i.id)}" data-learn="TAP TO CHANGE WHAT YOU EXPECT FROM THIS SOURCE. IT SAVES WHEN YOU PRESS ENTER OR TAP AWAY. IT ONLY MOVES THE EXPECTED FIGURE; IF THIS SOURCE IS ALREADY MARKED CLEARED, THE AMOUNT YOU ACTUALLY RECEIVED IS LEFT ALONE.">${Util.esc(Util.fmtMoney(expected, 0))}</button>`
                 }</div>
-                ${BudgetEngine.titheEnabled(s) ? `<button class="link" style="padding:0;min-height:auto;display:block;font-size:11px;opacity:0.75;text-align:right;" data-action="goto-tithe-bill" data-learn="THIS SOURCE'S SHARE OF YOUR TITHE. TAP TO SEE IT ON THE BILLS TAB, WHERE THE RATE IS EDITABLE.">(TITHE: ${Util.esc(Util.fmtMoney(expected * BudgetEngine.tithePercent(s) / 100, 2))})</button>` : ""}
+                ${BudgetEngine.titheEnabled(s) ? `<button class="link" style="padding:0;min-height:auto;display:block;font-size:11px;opacity:0.75;text-align:right;" data-action="goto-tithe-bill" data-learn="THIS SOURCE'S SHARE OF YOUR TITHE, ON WHAT IT ADDS UP TO IN A MONTH. TAP TO SEE IT ON THE BILLS TAB, WHERE THE RATE IS EDITABLE.">(TITHE: ${Util.esc(Util.fmtMoney(monthly * BudgetEngine.tithePercent(s) / 100, 2))})</button>` : ""}
               </div>
               <button class="txn-check ${entry ? "checked" : ""}" data-action="inc-toggle" data-id="${Util.esc(i.id)}" aria-label="CLEARED" data-learn="MARK THIS INCOME AS RECEIVED FOR THIS MONTH. CHECKING IT RAISES SAFE TO SPEND BY THE AMOUNT MINUS YOUR TITHE PERCENTAGE. UNCHECKING UNDOES IT EXACTLY."></button>
             </div>
@@ -5267,7 +5470,8 @@ const UI = (() => {
             ${isSavings ? "" : `<span class="${overdue ? "text-danger" : ""}" style="opacity:0.75;">DUE ${due || "-"}</span>`}
           </div>
           <button class="txn-check ${isPaid ? "checked" : ""}" data-action="bill-toggle" data-id="${Util.esc(b.id)}" aria-label="${verb}" data-learn="${isSavings ? "MARK THIS SAVINGS TRANSFER AS SAVED FOR THIS MONTH. THE MONEY COMES OUT OF YOUR TRACKED BALANCE AND STOPS BEING HELD BACK, SO SAFE TO SPEND DOESN'T MOVE — IT WAS ALREADY SET ASIDE FOR THIS." : "MARK THIS BILL AS PAID FOR THIS MONTH. THE MONEY COMES OUT OF YOUR TRACKED BALANCE AND STOPS BEING HELD BACK, SO SAFE TO SPEND DOESN'T MOVE — IT WAS ALREADY SET ASIDE FOR THIS."}"></button>
-        </div>`;
+        </div>
+        ${renderBillLinkPrompt(b)}`;
     };
 
     const byDue = (a, b) => (Number(a.dueDateOfMonth) || 0) - (Number(b.dueDateOfMonth) || 0);
@@ -5399,6 +5603,21 @@ const UI = (() => {
     });
     root.querySelectorAll("[data-action=bill-toggle]").forEach(el => {
       el.addEventListener("click", () => toggleBillPaid(s, el.dataset.id));
+    });
+    root.querySelectorAll("[data-action=bill-link-yes]").forEach(el => {
+      el.addEventListener("click", () => {
+        const billId = el.dataset.id;
+        const p = billLinkPrompts[billId];
+        if (!p) return;
+        const txn = (s.transactions || []).find(t => t && t.id === p.txnId);
+        if (!txn) { delete billLinkPrompts[billId]; render(); return; }
+        toggleBillPaid(s, billId, { txn, tier: "exact", certain: true, confirmed: true });
+      });
+    });
+    root.querySelectorAll("[data-action=bill-link-no]").forEach(el => {
+      // null (not undefined) means "no link" — it stops toggleBillPaid going
+      // back and finding the same candidate again.
+      el.addEventListener("click", () => toggleBillPaid(s, el.dataset.id, null));
     });
     root.querySelectorAll("[data-action=tithe-expand-toggle]").forEach(el => {
       el.addEventListener("click", () => { titheExpanded = !titheExpanded; render(); });
@@ -5553,23 +5772,30 @@ const UI = (() => {
       const delta = Math.abs((Number(t.amount) || 0) - (Number(bill.amount) || 0));
       // A transaction already filed under this bill is the answer outright.
       const direct = t.categoryId === bill.id;
-      const cand = { txn: t, tier: direct ? "exact" : m.tier, delta, direct };
+      // Certain only when the row says so itself: already filed under this
+      // bill, or from a merchant previously confirmed as this bill. A close
+      // amount is NOT certainty — a $134 transfer to savings sits within a
+      // few percent of a $140 electric bill and is nothing to do with it.
+      const learned = key && (s.billMap || {})[key] === bill.id;
+      const certain = direct || !!learned;
+      const cand = { txn: t, tier: direct || learned ? "exact" : m.tier, delta, direct, certain };
       if (!best) { best = cand; continue; }
-      if (best.direct !== cand.direct) { if (cand.direct) best = cand; continue; }
+      if (best.certain !== cand.certain) { if (cand.certain) best = cand; continue; }
       if (best.tier !== "exact" && cand.tier === "exact") { best = cand; continue; }
       if (best.tier === cand.tier && cand.delta < best.delta) best = cand;
     }
-    return best ? { txn: best.txn, tier: best.tier } : null;
+    return best ? { txn: best.txn, tier: best.tier, certain: best.certain, direct: best.direct } : null;
   }
 
   // Clone the whole billsPaid map, mutate only the current month's key, and send
   // the whole map. A nested partial patch would replace the map and destroy
   // sibling months — same pattern monthlyRollover uses in confirmNewMonth.
-  async function toggleBillPaid(s, billId) {
+  async function toggleBillPaid(s, billId, link) {
     const month = s.currentMonth;
     const all = { ...(s.billsPaid || {}) };
     const forMonth = { ...(all[month] || {}) };
     let billLearnPatch = {};
+    delete billLinkPrompts[billId];
     if (forMonth[billId] && forMonth[billId].paid) {
       delete forMonth[billId];
     } else {
@@ -5592,8 +5818,29 @@ const UI = (() => {
         amount = Number(bill.amount) || 0;
       }
       // If this payment is already sitting in the ledger, link to it rather
-      // than recording a second, independent outflow of the same money.
-      const link = bill ? findTxnForBill(s, bill, month) : null;
+      // than recording a second, independent outflow of the same money. But
+      // linking marks a bill paid against a specific transaction, so getting it
+      // wrong hides an unpaid bill AND shifts Safe To Spend. Only a row that
+      // identifies itself — already filed under this bill, or a merchant
+      // confirmed as this bill before — goes through without asking.
+      //
+      // `link` is passed in when the user has just answered the prompt; the
+      // `undefined` case is the first press of the checkbox.
+      if (link === undefined) {
+        const found = bill ? findTxnForBill(s, bill, month) : null;
+        if (found && !found.certain) {
+          billLinkPrompts[billId] = {
+            txnId: found.txn.id,
+            note: found.txn.note || "",
+            amount: Number(found.txn.amount) || 0,
+            date: found.txn.date || "",
+            billLabel: bill ? bill.label : ""
+          };
+          render();
+          return;
+        }
+        link = found;
+      }
       forMonth[billId] = {
         paid: true,
         // The transaction's own date beats "today" when we found one — it's
@@ -5607,10 +5854,11 @@ const UI = (() => {
         source: "manual",
         txnId: link ? link.txn.id : null
       };
-      // Learn the merchant only from a confident match. A wrong one would
-      // silently auto-tick this bill from the wrong merchant on every future
-      // import, which is far worse than being asked again next month.
-      if (link && link.tier === "exact") {
+      // Learn the merchant only from something the user stood behind — a row
+      // already filed under this bill, or a match they just said yes to. A
+      // wrong one would silently auto-tick this bill from the wrong merchant on
+      // every future import, which is far worse than being asked again.
+      if (link && (link.direct || link.confirmed)) {
         const key = link.txn.merchantKey || ImportEngine.normalizeMerchantKey(link.txn.note || "");
         if (key) billLearnPatch = { billMap: { ...(s.billMap || {}), [key]: billId } };
       }
@@ -5760,6 +6008,27 @@ const UI = (() => {
 
   // The confirm step itself. Rendered as a sibling of the row that opened it,
   // from either tab, so both places get the identical prompt.
+  // Asked before a tick is linked to a transaction that only *looks* like this
+  // bill. Saying yes marks it paid against that payment and remembers the
+  // merchant; saying no records the tick as its own outflow and leaves the
+  // transaction where it is. Either answer is safe — the wrong one silently
+  // applied is not.
+  function renderBillLinkPrompt(bill) {
+    const p = billLinkPrompts[bill.id];
+    if (!p) return "";
+    const id = Util.esc(bill.id);
+    return `
+      <div class="inline-form">
+        <div class="sub-label">IS THIS THE PAYMENT FOR ${Util.esc(bill.label)}?</div>
+        <div class="meta" style="margin-top:8px;"><strong>${Util.esc((p.note || "A LOGGED PAYMENT").slice(0, 48))}</strong> · ${Util.esc(Util.fmtMoney(p.amount, 2))}${p.date ? ` · ${Util.esc(Util.fmtDateShort(p.date))}` : ""}</div>
+        <div class="meta" style="margin-top:8px; opacity:0.8;">YES LINKS THEM SO THE PAYMENT ISN'T COUNTED TWICE, AND REMEMBERS THIS MERCHANT FOR NEXT TIME. NO JUST MARKS THE BILL PAID.</div>
+        <div class="row-actions">
+          <button class="cta ghost" data-action="bill-link-no" data-id="${id}">× NO, IT'S SOMETHING ELSE</button>
+          <button class="cta" data-action="bill-link-yes" data-id="${id}">→ YES, THAT'S IT</button>
+        </div>
+      </div>`;
+  }
+
   function renderMinPayPrompt(s, debt) {
     const f = minPayPrompts[debt.id];
     if (!f) return "";
@@ -6162,7 +6431,8 @@ const UI = (() => {
 
     const householdCode = DataService.getId() || "";
 
-    const incomeItems = (s.income||[]).map(i => renderListItem("income", i, s)).join("");
+    // Pay-date order here too, so Settings and the Log tab agree.
+    const incomeItems = BudgetEngine.incomeByDate(s).map(i => renderListItem("income", i, s)).join("");
     const billItems = (s.bills||[]).filter(b => (b.category||"bill") === "bill").map(b => renderListItem("bill", b, s)).join("");
     const savingsItems = (s.bills||[]).filter(b => b.category === "savings").map(b => renderListItem("savings", b, s)).join("");
     const spendingItems = (s.spendingCategories||[]).map(c => renderListItem("spending", c, s)).join("");
@@ -6420,7 +6690,17 @@ const UI = (() => {
       <div class="inline-form" data-edit-form data-kind="${kind}" data-id="${Util.esc(item.id)}">
         <div class="field"><label>LABEL</label><input data-edit-field="label" value="${Util.esc(item.label||'')}"></div>
         <div class="field"><label>${amountLabel}</label><input data-edit-field="${amountField}" value="${Util.esc(item[amountField]==null?'':item[amountField])}" inputmode="decimal"></div>
-        ${hasDate ? `<div class="field"><label>DUE DAY</label><input data-edit-field="dueDateOfMonth" value="${Util.esc(item.dueDateOfMonth||1)}" inputmode="numeric"></div>` : ""}
+        ${hasDate ? `<div class="field"><label>${kind === "income" ? "PAY DAY" : "DUE DAY"}</label><input data-edit-field="dueDateOfMonth" value="${Util.esc(item.dueDateOfMonth||1)}" inputmode="numeric"></div>` : ""}
+        ${kind === "income" ? `
+          <div class="field"><label>HOW OFTEN</label></div>
+          <div class="chips" data-learn="HOW OFTEN THIS SOURCE PAYS. THE AMOUNT ABOVE IS WHAT ARRIVES EACH TIME; CLEAR WORKS OUT WHAT THAT COMES TO IN A MONTH.">
+            ${BudgetEngine.INCOME_FREQUENCIES.map(f => `<button type="button" class="chip ${BudgetEngine.incomeFrequency(item).id === f.id ? "active" : ""}" data-action="edit-freq" data-freq="${Util.esc(f.id)}">${Util.esc(f.label)}</button>`).join("")}
+          </div>
+          <!-- The chips write here rather than into module state, so picking one
+               can't throw away whatever is half-typed in the fields above. -->
+          <input type="hidden" data-edit-field="frequency" value="${Util.esc(BudgetEngine.incomeFrequency(item).id)}">
+          <div class="meta">THE AMOUNT ABOVE IS WHAT LANDS EACH TIME, NOT PER MONTH.</div>
+        ` : ""}
         ${isDebt ? `
           <div class="field"><label>MIN PAYMENT</label><input data-edit-field="minimumPayment" value="${Util.esc(item.minimumPayment==null?'':item.minimumPayment)}" inputmode="decimal"></div>
           <div class="field"><label>INTEREST %</label><input data-edit-field="interestRate" value="${Util.esc(item.interestRate==null?'':item.interestRate)}" inputmode="decimal"></div>
@@ -7464,6 +7744,18 @@ const UI = (() => {
     root.querySelectorAll("[data-action=save-edit]").forEach(el => {
       el.addEventListener("click", () => saveEdit(el.dataset.kind, el.dataset.id, s));
     });
+    // Deliberately no render(): the chip updates its own form in place so the
+    // label and amount you were mid-way through typing survive the tap.
+    root.querySelectorAll("[data-action=edit-freq]").forEach(el => {
+      el.addEventListener("click", () => {
+        const form = el.closest("[data-edit-form]");
+        if (!form) return;
+        const hidden = form.querySelector('[data-edit-field="frequency"]');
+        if (hidden) hidden.value = el.dataset.freq;
+        form.querySelectorAll("[data-action=edit-freq]").forEach(c => c.classList.remove("active"));
+        el.classList.add("active");
+      });
+    });
   }
 
   async function saveEdit(kind, id, s) {
@@ -7473,11 +7765,13 @@ const UI = (() => {
     form.querySelectorAll("[data-edit-field]").forEach(inp => { values[inp.dataset.editField] = inp.value; });
     const patch = {};
     if (kind === "income") {
+      const freqOk = BudgetEngine.INCOME_FREQUENCIES.some(f => f.id === values.frequency);
       const arr = (s.income||[]).map(i => i.id === id ? {
         ...i,
         label: (values.label||i.label).toUpperCase(),
         amount: parseFloat(values.amount) || 0,
-        dueDateOfMonth: parseInt(values.dueDateOfMonth,10) || 1
+        dueDateOfMonth: parseInt(values.dueDateOfMonth,10) || 1,
+        frequency: freqOk ? values.frequency : BudgetEngine.incomeFrequency(i).id
       } : i);
       patch.income = arr;
     } else if (kind === "bill" || kind === "savings") {
@@ -7534,7 +7828,8 @@ const UI = (() => {
     if (!label) { formErrors["add_" + kind] = "LABEL REQUIRED"; render(); return; }
     const patch = {};
     if (kind === "income") {
-      const item = { id: Util.uuid(), label: label.toUpperCase(), amount: parseFloat(f.amount)||0, dueDateOfMonth: parseInt(f.dueDateOfMonth,10)||1 };
+      // Monthly by default; change it on the row's EDIT once it exists.
+      const item = { id: Util.uuid(), label: label.toUpperCase(), amount: parseFloat(f.amount)||0, dueDateOfMonth: parseInt(f.dueDateOfMonth,10)||1, frequency: "monthly" };
       patch.income = [...(s.income||[]), item];
     } else if (kind === "bill" || kind === "savings") {
       const item = { id: Util.uuid(), label: label.toUpperCase(), amount: parseFloat(f.amount)||0, dueDateOfMonth: parseInt(f.dueDateOfMonth,10)||1, category: kind };
