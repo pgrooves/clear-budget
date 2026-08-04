@@ -5916,27 +5916,49 @@ const UI = (() => {
     // subtracted from Safe to Spend as debt minimums, so storing them as real
     // bills would double-count them. Their PAID? tick is the same record the
     // DEBTS tab card uses, so ticking here ticks there and vice versa.
-    const cardBillItems = (s.creditCards || []).map(c => {
-      const d = c.debtId ? (s.debts || []).find(x => x.id === c.debtId) : null;
-      if (!d) return null;
+    // A debt carrying a balance becomes a row here whether or not a card is
+    // attached to it. Shared shape so a card and a loan render and tick
+    // identically; only the label under the name differs.
+    const debtRowItem = (d, label, kindLabel) => {
       const paidTxn = tickPayTxnFor(s, d.id);
-      // A cleared balance normally drops the card out of this list; keep it
+      // A cleared balance normally drops the row out of this list; keep it
       // while its tick is on, or there'd be no way left to undo the payment.
       if ((Number(d.balance) || 0) <= 0 && !paidTxn) return null;
       return {
         debt: d,
-        label: c.label,
+        label: label,
+        kindLabel: kindLabel,
         amount: Number(d.minimumPayment) || 0,
         dueDateOfMonth: Number(d.dueDateOfMonth) || 0,
         paidTxn: paidTxn
       };
+    };
+
+    const cardBillItems = (s.creditCards || []).map(c => {
+      const d = c.debtId ? (s.debts || []).find(x => x.id === c.debtId) : null;
+      if (!d) return null;
+      return debtRowItem(d, c.label, "CARD MINIMUM");
     }).filter(Boolean).sort(byDue);
 
-    const cardRowFor = (c) => {
+    // Loans and anything else in DEBTS with no card attached. These never
+    // appeared here at all: the list was built by walking the cards, so a debt
+    // nothing was linked to had no way in, and a car loan due on the 10th was
+    // invisible on the one tab that answers "what do I still owe this month".
+    // Same reasoning as the cards for staying out of s.bills — their minimums
+    // already reach Safe To Spend as debt minimums, so storing them as bills
+    // would count them twice.
+    const cardDebtIds = {};
+    (s.creditCards || []).forEach(c => { if (c.debtId) cardDebtIds[c.debtId] = true; });
+    const loanBillItems = (s.debts || [])
+      .filter(d => d && !cardDebtIds[d.id])
+      .map(d => debtRowItem(d, d.label, "LOAN MINIMUM"))
+      .filter(Boolean).sort(byDue);
+
+    const debtRowFor = (c) => {
       const due = Number(c.dueDateOfMonth) || 0;
       const paid = !!c.paidTxn;
       const overdue = !paid && sameMonth && due > 0 && due < todayDay;
-      // Nothing to log without a minimum on the linked debt.
+      // Nothing to log without a minimum on the debt.
       const canPay = c.amount > 0;
       const paidNote = paid
         ? ` · PAID ${Util.fmtMoney(Number(c.paidTxn.amount) || 0, 0)}`
@@ -5945,18 +5967,20 @@ const UI = (() => {
         <div class="inc-row">
           <div>
             <div class="inc-label">${Util.esc(c.label)}</div>
-            <div class="meta">CARD MINIMUM${Util.esc(paidNote)}</div>
+            <div class="meta">${Util.esc(c.kindLabel)}${Util.esc(paidNote)}</div>
           </div>
           <div class="inc-amt">
             ${Util.esc(Util.fmtMoney(c.amount, 0))}
             <span class="${overdue ? "text-danger" : ""}" style="opacity:0.75;">DUE ${due || "-"}</span>
           </div>
-          <button class="txn-check ${paid ? "checked" : ""} ${canPay ? "" : "disabled"}"${canPay ? "" : " disabled"} data-action="card-min-toggle" data-id="${Util.esc(c.debt.id)}" aria-label="PAID" data-learn="TICK TO LOG A PAYMENT AGAINST THIS CARD. IT ASKS WHETHER YOU PAID THE MINIMUM OR A DIFFERENT AMOUNT, THEN RECORDS A DEBIT TRANSACTION AND REDUCES THE DEBT BALANCE. IT TICKS ON THE DEBTS TAB TOO; UNTICK TO UNDO BOTH."></button>
+          <button class="txn-check ${paid ? "checked" : ""} ${canPay ? "" : "disabled"}"${canPay ? "" : " disabled"} data-action="card-min-toggle" data-id="${Util.esc(c.debt.id)}" aria-label="PAID" data-learn="TICK TO LOG A PAYMENT AGAINST THIS DEBT. IT ASKS WHETHER YOU PAID THE MINIMUM OR A DIFFERENT AMOUNT, THEN RECORDS A DEBIT TRANSACTION AND REDUCES THE BALANCE. IT TICKS ON THE DEBTS TAB TOO; UNTICK TO UNDO BOTH."></button>
         </div>
         ${renderMinPayPrompt(s, c.debt)}`;
     };
 
-    const cardRowsHtml = cardBillItems.map(cardRowFor).join("");
+    // Cards first, then loans beneath them.
+    const debtBillItems = cardBillItems.concat(loanBillItems);
+    const cardRowsHtml = debtBillItems.map(debtRowFor).join("");
 
     // The header figures describe everything listed in this section, cards
     // included, so the count matches what's actually on screen. These sums are
@@ -5965,14 +5989,14 @@ const UI = (() => {
     // A card's contribution is capped at its minimum: this line is progress
     // toward what's owed, so overpaying a card shouldn't push it past 100%.
     // The full amount paid still shows on the row and in the debt balance.
-    const headerPaidTotal = paidTotal + (titheOn ? titheEffectivePaid : 0) + cardBillItems.reduce((a, c) => {
+    const headerPaidTotal = paidTotal + (titheOn ? titheEffectivePaid : 0) + debtBillItems.reduce((a, c) => {
       if (!c.paidTxn) return a;
       return a + Math.min(Number(c.paidTxn.amount) || 0, Number(c.amount) || 0);
     }, 0);
-    const headerExpectedTotal = expectedTotal + titheAmt + cardBillItems.reduce(
+    const headerExpectedTotal = expectedTotal + titheAmt + debtBillItems.reduce(
       (a, c) => a + (Number(c.amount) || 0), 0);
-    const headerPaidCount = paidCount + (titheFullyCleared ? 1 : 0) + cardBillItems.filter(c => c.paidTxn).length;
-    const headerItemCount = bills.length + (titheOn ? 1 : 0) + cardBillItems.length;
+    const headerPaidCount = paidCount + (titheFullyCleared ? 1 : 0) + debtBillItems.filter(c => c.paidTxn).length;
+    const headerItemCount = bills.length + (titheOn ? 1 : 0) + debtBillItems.length;
 
     // Same add-form machinery Settings uses, surfaced at the end of each group.
     const addLink = (kind, label) => addForms[kind]
@@ -6007,7 +6031,7 @@ const UI = (() => {
 
     const listHtml = `
       <div class="subtab-row" style="margin-top:24px;" data-learn="SWITCH BETWEEN YOUR BILLS AND YOUR SAVINGS TRANSFERS. THE FIGURES ABOVE COVER BOTH. YOUR HALF-FILLED ADD FORM IS KEPT WHEN YOU SWITCH.">
-        <button class="subtab ${billsSubTab === "bills" ? "active" : ""}" data-action="bills-subtab" data-sub="bills" data-learn="MONTHLY BILLS AND FIXED EXPENSES, PLUS THE MINIMUM ON ANY CREDIT CARD CARRYING A BALANCE.">BILLS</button>
+        <button class="subtab ${billsSubTab === "bills" ? "active" : ""}" data-action="bills-subtab" data-sub="bills" data-learn="MONTHLY BILLS AND FIXED EXPENSES, PLUS THE MINIMUM ON ANY CREDIT CARD OR LOAN CARRYING A BALANCE.">BILLS</button>
         <button class="subtab ${billsSubTab === "savings" ? "active" : ""}" data-action="bills-subtab" data-sub="savings" data-learn="MONEY YOU SET ASIDE EACH MONTH. TRACKED THE SAME WAY AS A BILL AND SUBTRACTED FROM SAFE TO SPEND THE SAME WAY.">SAVINGS</button>
       </div>
       ${billsSubTab === "savings"
@@ -6020,8 +6044,8 @@ const UI = (() => {
     return `
         <section class="section lavender" data-learn="BILLS STATUS FOR THIS MONTH. TICK EACH BILL AS IT GETS PAID SO YOU CAN SEE WHAT'S LEFT. THIS IS TRACKING ONLY AND NEVER CHANGES YOUR BUDGET MATH.">
           <div class="section-label">→ RECURRING</div>
-          <div class="sub-label" style="margin-top:16px;" data-learn="HOW MUCH OF YOUR MONTHLY TOTAL YOU'VE MARKED PAID SO FAR THIS MONTH. COVERS EVERYTHING LISTED BELOW: BILLS, SAVINGS, AND ANY CREDIT CARD MINIMUMS.">${Util.esc(Util.fmtMoney(headerPaidTotal, 0))} OF ${Util.esc(Util.fmtMoney(headerExpectedTotal, 0))} PAID</div>
-          <div class="sub-label" style="margin-top:8px;" data-learn="HOW MANY INDIVIDUAL ROWS BELOW ARE TICKED OFF, CREDIT CARDS INCLUDED.">${headerPaidCount} OF ${headerItemCount} CLEARED</div>
+          <div class="sub-label" style="margin-top:16px;" data-learn="HOW MUCH OF YOUR MONTHLY TOTAL YOU'VE MARKED PAID SO FAR THIS MONTH. COVERS EVERYTHING LISTED BELOW: BILLS, SAVINGS, AND ANY CREDIT CARD OR LOAN MINIMUMS.">${Util.esc(Util.fmtMoney(headerPaidTotal, 0))} OF ${Util.esc(Util.fmtMoney(headerExpectedTotal, 0))} PAID</div>
+          <div class="sub-label" style="margin-top:8px;" data-learn="HOW MANY INDIVIDUAL ROWS BELOW ARE TICKED OFF, CREDIT CARDS AND LOANS INCLUDED.">${headerPaidCount} OF ${headerItemCount} CLEARED</div>
           ${listHtml}
         </section>`;
   }
