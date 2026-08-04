@@ -1603,16 +1603,23 @@ const BudgetEngine = (() => {
     const windowEnd = nextPay ? nextPay.date : null;
     const monthLast = `${s.currentMonth}-${String(daysInMonthOf(s.currentMonth)).padStart(2, "0")}`;
 
-    let running = start, low = start, lowDate = startISO, windowLow = start, monthEnd = start;
+    let running = start, low = start, lowDate = startISO;
+    let windowLow = start, windowLowDate = startISO, monthEnd = start;
     events.forEach(e => {
       running += e.amount;
       if (running < low) { low = running; lowDate = e.date; }
-      if (!windowEnd || e.date <= windowEnd) windowLow = Math.min(windowLow, running);
+      if ((!windowEnd || e.date <= windowEnd) && running < windowLow) {
+        windowLow = running; windowLowDate = e.date;
+      }
       if (e.date <= monthLast) monthEnd = running;
     });
     return {
       low, lowDate, lowDay: Number(lowDate.slice(8, 10)),
-      windowLow, windowEnd, monthEnd,
+      windowLow, windowLowDate, windowEnd, monthEnd,
+      // Where the balance finishes the horizon. A one-day dip and a household
+      // genuinely running out of money look identical at the low point and
+      // completely different here, so the breakdown gets to say which it is.
+      end: running,
       startISO, horizonEnd: isoAddDays(startISO, HORIZON_DAYS)
     };
   }
@@ -1643,23 +1650,39 @@ const BudgetEngine = (() => {
       !cleared[i.id] && num(i.amount) > 0 && (num(i.dueDateOfMonth) || 1) < today
     );
   }
-  /* ---------- WHY IT WENT NEGATIVE ----------
-     A red number tells you there's a problem and nothing about which one. The
-     causes are not interchangeable either: income that hasn't been logged, a
-     duplicated purchase, money deliberately set aside and a genuinely
-     overcommitted month all read identically on the headline and want
-     completely different responses.
+  /* ---------- WHY EACH NUMBER IS WHAT IT IS ----------
+     A figure on its own tells you there's a problem and nothing about which
+     one. The causes are not interchangeable either: income that hasn't been
+     logged, a duplicated purchase, money deliberately set aside and a
+     genuinely overcommitted month all read identically on the headline and
+     want completely different responses.
 
-     The figure is the low point of the walk, which means it decomposes exactly:
+     Both headline figures are low points of the same walk, so both decompose
+     exactly:
 
          low = (balance + income landing by then)
-             - (unpaid credit + money set aside + everything due by then)
+             - (money set aside + everything due by then)
 
-     so the report below is arithmetic rather than opinion — the two sides
-     always reconcile to the number on screen. The notes on top of it are the
+     which makes the two columns arithmetic rather than opinion — they always
+     reconcile to the number that was tapped. The notes on top are the
      judgement part, and each one that can be acted on is costed by re-running
      the whole walk with that one thing changed, so "log it and this becomes
-     $1,580" is the real figure rather than a guess. */
+     $1,580" is the real figure rather than a guess.
+
+     The two reports deliberately read differently, because the two numbers
+     fail for different reasons and are fixed in different ways:
+
+       SAFE TO SPEND  is about the stretch you are standing in. It goes wrong
+                      because of things that already happened — a paycheck not
+                      logged, a bill paid but not ticked, spending that got
+                      away from you. Its notes are about the record being
+                      wrong or the week being tight, and most carry a fix.
+       TIGHTEST POINT is about a day you can see coming. It goes wrong because
+                      of how obligations are ARRANGED — too many landing
+                      together, a card falling due, a gap between paychecks.
+                      Its notes are about timing and shape: which day is
+                      heaviest, what is on it, whether the paychecks in
+                      between are already counted, and where it recovers to. */
 
   // Re-runs the walk against a throwaway copy of the household with one change
   // applied. Pure functions all the way down, so nothing leaks back.
@@ -1670,98 +1693,168 @@ const BudgetEngine = (() => {
     return read(copy);
   }
   function whatIfSafeToSpend(s, mutate) { return whatIf(s, mutate, safeToSpend); }
-  // The shortfall report explains the tightest point, so its "and this becomes
-  // X" figures have to be read off the same number.
   function whatIfTightest(s, mutate) { return whatIf(s, mutate, tightestPoint); }
 
-  function shortfallNotes(s) {
-    const m = s.currentMonth;
-    const notes = [];
+  /* Note builders. Each returns one note or null, and takes `after` — the
+     function that re-reads whichever headline is being explained — so the same
+     cause is costed against the number the user actually tapped. */
 
-    // Expected money that never got logged is the most common cause by far,
-    // and the cheapest to fix: the walk deliberately refuses to count it.
+  // Expected money that never got logged. The walk deliberately refuses to
+  // count it, so it is the cheapest thing on either list to fix.
+  function noteOverdueIncome(s, after) {
     const overdue = overdueIncome(s);
-    if (overdue.length) {
-      notes.push({
-        kind: "income",
-        count: overdue.length,
-        amount: overdue.reduce((a, i) => a + num(i.amount), 0),
-        labels: overdue.map(i => String(i.label || "INCOME")),
-        after: whatIfTightest(s, c => {
-          c.incomeLog = (c.incomeLog || []).concat(overdue.map(i => ({
-            id: "whatif-" + i.id, incomeId: i.id, amount: num(i.amount),
-            month: m, date: Util.todayISO(), createdAt: Date.now(), tithe: true
-          })));
-        })
-      });
-    }
-
-    // Money set aside is still yours; it is only held back. Worth saying so,
-    // because this is the one cause that is not a problem at all.
+    if (!overdue.length) return null;
+    const m = s.currentMonth;
+    return {
+      kind: "income",
+      count: overdue.length,
+      amount: overdue.reduce((a, i) => a + num(i.amount), 0),
+      labels: overdue.map(i => String(i.label || "INCOME")),
+      after: after(s, c => {
+        c.incomeLog = (c.incomeLog || []).concat(overdue.map(i => ({
+          id: "whatif-" + i.id, incomeId: i.id, amount: num(i.amount),
+          month: m, date: Util.todayISO(), createdAt: Date.now(), tithe: true
+        })));
+      })
+    };
+  }
+  // Money set aside is still yours; it is only held back. Worth saying so,
+  // because this is the one cause that is not a problem at all.
+  function noteReserved(s, after) {
     const reserved = totalReserved(s);
-    if (reserved > 0) {
-      notes.push({
-        kind: "reserved", amount: reserved,
-        after: whatIfTightest(s, c => { if (c.categoryFunding) delete c.categoryFunding[m]; })
-      });
-    }
-
-    // Overdue and unticked bills are pinned to today by the walk, so a bill
-    // paid last week but never ticked lands its whole amount on the number now.
-    const paid = (s.billsPaid || {})[m] || {};
+    if (reserved <= 0) return null;
+    const m = s.currentMonth;
+    return {
+      kind: "reserved", amount: reserved,
+      after: after(s, c => { if (c.categoryFunding) delete c.categoryFunding[m]; })
+    };
+  }
+  // Overdue and unticked bills are pinned to today by the walk, so a bill paid
+  // last week but never ticked lands its whole amount on the number now.
+  function noteLateBills(s) {
+    const paid = (s.billsPaid || {})[s.currentMonth] || {};
     const today = dayOfMonthToday(s);
     const late = (s.bills || []).filter(b =>
       !(paid[b.id] && paid[b.id].paid) && num(b.dueDateOfMonth) > 0 && num(b.dueDateOfMonth) < today);
-    if (late.length) {
-      notes.push({
-        kind: "lateBills", count: late.length,
-        amount: late.reduce((a, b) => a + num(b.amount), 0),
-        labels: late.map(b => String(b.label || "BILL")),
-        // Carried so the breakdown can offer the tick right there. A bill that
-        // already went out is the one cause on this list the user can clear in
-        // a single tap, and making them go and find it on another tab is why
-        // they were still sitting here unticked.
-        bills: late.map(b => ({ id: b.id, label: String(b.label || "BILL"), amount: num(b.amount) }))
-      });
-    }
-
-    // Everything here is carried forward from the last confirmed balance, so
-    // the older that is, the more room there has been for it to drift.
+    if (!late.length) return null;
+    return {
+      kind: "lateBills", count: late.length,
+      amount: late.reduce((a, b) => a + num(b.amount), 0),
+      // Carried so the breakdown can offer the tick right there. A bill that
+      // already went out is the one cause on this list the user can clear in a
+      // single tap, and making them go and find it on another tab is why they
+      // were still sitting here unticked.
+      bills: late.map(b => ({ id: b.id, label: String(b.label || "BILL"), amount: num(b.amount) }))
+    };
+  }
+  // Everything is carried forward from the last confirmed balance, so the
+  // older that is, the more room there has been for it to drift.
+  function noteStaleAnchor(s) {
     const anchor = latestAnchor(s);
-    if (anchor) {
-      const age = Util.daysSince(anchor.date);
-      if (age >= 7) notes.push({ kind: "staleAnchor", days: age });
-    }
-
-    // One fat-fingered amount or an import landing twice shows up here.
+    if (!anchor) return null;
+    const age = Util.daysSince(anchor.date);
+    return age >= 7 ? { kind: "staleAnchor", days: age } : null;
+  }
+  // One fat-fingered amount or an import landing twice shows up here.
+  function noteBigTxns(s) {
+    const anchor = latestAnchor(s);
     const big = (s.transactions || [])
       .filter(t => t && t.paymentType !== "credit" && isAfterAnchor(t, anchor))
       .slice()
       .sort((x, y) => num(y.amount) - num(x.amount))
       .slice(0, 3)
       .filter(t => num(t.amount) > 0);
-    if (big.length) {
-      notes.push({
-        kind: "bigTxns",
-        items: big.map(t => ({ note: String(t.note || "NO DESCRIPTION"), amount: num(t.amount), date: t.date || "" }))
-      });
-    }
-
+    if (!big.length) return null;
+    return {
+      kind: "bigTxns",
+      items: big.map(t => ({ note: String(t.note || "NO DESCRIPTION"), amount: num(t.amount), date: t.date || "" }))
+    };
+  }
+  function noteUncategorized(s) {
     const uncat = uncategorizedSpent(s);
-    if (uncat > 0) {
-      notes.push({ kind: "uncategorized", amount: uncat, count: uncategorizedTxns(s).length });
-    }
-    return notes;
+    if (uncat <= 0) return null;
+    return { kind: "uncategorized", amount: uncat, count: uncategorizedTxns(s).length };
   }
 
-  // The two sides of the number, and what to look at. Callers should gate on
-  // low < 0; nothing here breaks when it isn't, it just reads oddly.
-  function shortfallReport(s) {
-    const outlook = cashFlowOutlook(s);
-    const lowDate = outlook.lowDate;
-    // Only what has happened by the low point made the low point. Anything
-    // after it is on the far side of the dip and did not cause it.
-    const byThen = horizonEvents(s).filter(e => e.date <= lowDate);
+  /* Tightest-point notes. These are about shape rather than hygiene: the
+     figure is usually not caused by a mistake, it is caused by several
+     ordinary obligations landing on top of each other. */
+
+  // The single day between here and the low that takes the most out, with what
+  // is on it. This is the actionable one: a dip made by three bills sharing a
+  // date is fixed by moving one of them, and you cannot see that from a total.
+  function noteHeaviestDay(s, outlook) {
+    const byDate = new Map();
+    horizonEvents(s).forEach(e => {
+      if (e.date > outlook.lowDate || e.amount >= 0) return;
+      const cur = byDate.get(e.date) || { date: e.date, amount: 0, items: [] };
+      cur.amount += -e.amount;
+      cur.items.push({ label: String(e.label || "DUE"), amount: -e.amount });
+      byDate.set(e.date, cur);
+    });
+    let worst = null;
+    byDate.forEach(d => { if (!worst || d.amount > worst.amount) worst = d; });
+    // One bill on its own is not a pile-up, and calling it one would be noise.
+    if (!worst || worst.items.length < 2) return null;
+    worst.items.sort((a, b) => b.amount - a.amount);
+    return { kind: "heaviestDay", date: worst.date, amount: worst.amount, items: worst.items.slice(0, 4), count: worst.items.length };
+  }
+  // Where the low sits relative to the paychecks, and how many are already
+  // inside it. A dip on the far side of two paydays is a different problem
+  // from one before you are paid at all, and the number cannot say which.
+  function notePayPosition(s, outlook) {
+    const pays = horizonEvents(s).filter(e => e.kind === "income" && e.date <= outlook.lowDate);
+    return {
+      kind: "payPosition",
+      count: pays.length,
+      amount: pays.reduce((a, e) => a + e.amount, 0),
+      nextDate: outlook.windowEnd,
+      lastDate: pays.length ? pays[pays.length - 1].date : null
+    };
+  }
+  // Card money coming due inside the horizon. It used to be taken off the top
+  // the moment it was spent, so it never had a date to point at.
+  function noteCreditDue(s, outlook) {
+    const credit = horizonEvents(s).filter(e => e.kind === "credit" && e.date <= outlook.lowDate);
+    if (!credit.length) return null;
+    return {
+      kind: "creditDue",
+      amount: credit.reduce((a, e) => a + -e.amount, 0),
+      items: credit.map(e => ({ label: String(e.label || "UNPAID CREDIT"), amount: -e.amount, date: e.date }))
+    };
+  }
+  // Where it ends up. A single bad Tuesday and a household genuinely running
+  // out of money are identical at the low point and nothing alike five weeks
+  // out, and only one of them is worth losing sleep over.
+  function noteRecovery(s, outlook) {
+    if (outlook.end <= outlook.low) return null;
+    return { kind: "recovery", amount: outlook.end, date: outlook.horizonEnd, low: outlook.low };
+  }
+  // What the biggest single claim is costing. Re-running the walk without it
+  // turns "RENT is the largest" into what RENT is actually worth here, which
+  // is not the same thing once other bills sit under it.
+  function noteBiggestClaim(s, outlook) {
+    const outs = horizonEvents(s).filter(e => e.date <= outlook.lowDate && e.amount < 0);
+    if (outs.length < 2) return null;
+    const biggest = outs.slice().sort((a, b) => a.amount - b.amount)[0];
+    if (-biggest.amount <= 0) return null;
+    return {
+      kind: "biggestClaim",
+      label: String(biggest.label || "DUE"),
+      amount: -biggest.amount,
+      date: biggest.date,
+      share: outs.reduce((a, e) => a + -e.amount, 0) > 0
+        ? -biggest.amount / outs.reduce((a, e) => a + -e.amount, 0) : 0
+    };
+  }
+
+  function compact(list) { return list.filter(Boolean); }
+
+  /* The two sides of a figure, plus what to look at. `targetDate` is the day
+     the figure happens on: only what has happened by then made it, and
+     anything after is on the far side of the dip and did not cause it. */
+  function walkBreakdown(s, targetDate) {
+    const byThen = horizonEvents(s).filter(e => e.date <= targetDate);
     const balance = projectedBalance(s);
     const reserved = totalReserved(s);
 
@@ -1778,12 +1871,61 @@ const BudgetEngine = (() => {
 
     const available = balance + incoming.reduce((a, e) => a + e.amount, 0);
     const claimed = claims.reduce((a, c) => a + c.amount, 0);
+    return { balance, incoming, available, claims, claimed };
+  }
+
+  // Why Safe To Spend is what it is: the stretch between here and payday, and
+  // the things that are making it tight — most of which are fixable today.
+  function safeToSpendReport(s) {
+    const o = cashFlowOutlook(s);
+    const notes = compact([
+      noteOverdueIncome(s, whatIfSafeToSpend),
+      noteLateBills(s),
+      noteReserved(s, whatIfSafeToSpend),
+      noteUncategorized(s),
+      noteBigTxns(s),
+      noteStaleAnchor(s)
+    ]);
+    // The pointer across is the last word, not the first: this report is about
+    // getting to payday, and the far side of it is the other number's job.
+    if (o.low < o.windowLow) notes.push({ kind: "seeTightest", amount: o.low, date: o.lowDate });
     return {
-      low: outlook.low, lowDate, lowDay: outlook.lowDay, startISO: outlook.startISO,
-      windowLow: outlook.windowLow, windowEnd: outlook.windowEnd,
-      balance, incoming, available, claims, claimed,
-      notes: shortfallNotes(s)
+      mode: "safe",
+      amount: o.windowLow, date: o.windowLowDate,
+      payDate: o.windowEnd, other: o.low, otherDate: o.lowDate,
+      startISO: o.startISO, horizonEnd: o.horizonEnd, end: o.end,
+      ...walkBreakdown(s, o.windowLowDate),
+      notes
     };
+  }
+
+  // Why the Tightest Point is what it is: which day, what lands on it, how
+  // many paychecks are already counted against it, and where it recovers to.
+  function tightestPointReport(s) {
+    const o = cashFlowOutlook(s);
+    const notes = compact([
+      noteHeaviestDay(s, o),
+      notePayPosition(s, o),
+      noteBiggestClaim(s, o),
+      noteCreditDue(s, o),
+      noteRecovery(s, o),
+      noteOverdueIncome(s, whatIfTightest),
+      noteLateBills(s),
+      noteReserved(s, whatIfTightest),
+      noteStaleAnchor(s)
+    ]);
+    return {
+      mode: "tight",
+      amount: o.low, date: o.lowDate,
+      payDate: o.windowEnd, other: o.windowLow, otherDate: o.windowLowDate,
+      startISO: o.startISO, horizonEnd: o.horizonEnd, end: o.end,
+      ...walkBreakdown(s, o.lowDate),
+      notes
+    };
+  }
+
+  function shortfallReport(s, mode) {
+    return mode === "safe" ? safeToSpendReport(s) : tightestPointReport(s);
   }
 
   function spendingBudgetedTotal(s) {
@@ -2023,7 +2165,7 @@ const BudgetEngine = (() => {
     latestAnchor, hasAnchor, isAfterAnchor, projectedBalance, billPaymentsSinceAnchor,
     unpaidBillsTotal, unpaidTithe, unpaidDebtMins, unpaidObligations, incomeStillExpected,
     remainingMonthEvents, horizonEvents, cashFlowOutlook, monthEndBalance, overdueIncome, daysInMonthOf,
-    shortfallReport, shortfallNotes, whatIfSafeToSpend, whatIfTightest,
+    shortfallReport, safeToSpendReport, tightestPointReport, whatIfSafeToSpend, whatIfTightest,
     categorySpent, rolloverAmount, categoryRemaining, personSpent,
     categoryTarget, categoryFunded, totalFunded, categoryReserve, totalReserved,
     fundedShare, fundingPlan, fundingPlanTotal,
@@ -2972,7 +3114,9 @@ const UI = (() => {
   const UNCAT_KEY = "__uncategorized__";
   let dashCatOpen = null;
 
-  // The "why is it negative" panel, and whether its one-shot hint has played.
+  // Which headline figure's breakdown is open — false, "safe" or "tight" —
+  // and whether its one-shot hint has played. The two read differently, so the
+  // panel has to remember which number was tapped.
   let shortfallOpen = false;
   let shortfallHintShown = false;
 
@@ -4249,12 +4393,12 @@ const UI = (() => {
         <div class="hero-pair">
           <div class="hero-col">
             <div class="sub-label" data-learn="SUB-LABEL FOR SAFE TO SPEND. THE DATE UNDER THE NUMBER IS THE PAY DAY IT COVERS YOU UP TO.">SAFE TO SPEND</div>
-            <div class="hero ${heroDanger}${tight < 0 ? " tappable" : ""}"${tight < 0 ? ` data-action="open-shortfall"` : ""} data-learn="THE LOWEST YOUR BALANCE IS FORECAST TO REACH BETWEEN NOW AND YOUR NEXT PAYCHECK, ONCE EVERY UNPAID BILL DUE IN THAT WINDOW IS PUT ON ITS DUE DAY. SPEND UP TO THIS AND EVERYTHING DUE BEFORE YOU'RE PAID AGAIN STILL CLEARS. THIS IS THE NUMBER TO DECIDE AGAINST IN A SHOP.">${Util.esc(Util.fmtMoney(safe, 0))}</div>
+            <div class="hero ${heroDanger} tappable" data-action="open-shortfall" data-which="safe" data-learn="THE LOWEST YOUR BALANCE IS FORECAST TO REACH BETWEEN NOW AND YOUR NEXT PAYCHECK, ONCE EVERY UNPAID BILL DUE IN THAT WINDOW IS PUT ON ITS DUE DAY. SPEND UP TO THIS AND EVERYTHING DUE BEFORE YOU'RE PAID AGAIN STILL CLEARS. THIS IS THE NUMBER TO DECIDE AGAINST IN A SHOP. TAP IT FOR WHAT'S CLAIMING IT BEFORE PAYDAY.">${Util.esc(Util.fmtMoney(safe, 0))}</div>
             <div class="hero-note">${safeNote}</div>
           </div>
           <div class="hero-col">
             <div class="sub-label" data-learn="SUB-LABEL FOR THE TIGHTEST POINT. THE DATE UNDER THE NUMBER IS THE DAY YOUR BALANCE IS FORECAST TO BE AT ITS LOWEST.">TIGHTEST POINT</div>
-            <div class="hero ${tightDanger}${tight < 0 ? " tappable" : ""}"${tight < 0 ? ` data-action="open-shortfall"` : ""} data-learn="THE LOWEST YOUR BALANCE IS FORECAST TO GET OVER THE NEXT FIVE WEEKS, AND THE DAY IT HAPPENS. IT LOOKS PAST YOUR NEXT PAYCHECK TO THE BILLS ON THE OTHER SIDE OF IT, SO A ROUGH PATCH IS VISIBLE IN ADVANCE INSTEAD OF ARRIVING. GOES RED WHEN NEGATIVE, AND TAPPING IT THEN BREAKS DOWN WHY.">${Util.esc(Util.fmtMoney(tight, 0))}</div>
+            <div class="hero ${tightDanger} tappable" data-action="open-shortfall" data-which="tight" data-learn="THE LOWEST YOUR BALANCE IS FORECAST TO GET OVER THE NEXT FIVE WEEKS, AND THE DAY IT HAPPENS. IT LOOKS PAST YOUR NEXT PAYCHECK TO THE BILLS ON THE OTHER SIDE OF IT, SO A ROUGH PATCH IS VISIBLE IN ADVANCE INSTEAD OF ARRIVING. TAP IT FOR WHICH DAY IS HEAVIEST AND WHAT LANDS ON IT.">${Util.esc(Util.fmtMoney(tight, 0))}</div>
             <div class="hero-note${tight < 0 ? " text-danger" : ""}">${tightNote}</div>
           </div>
         </div>
@@ -4349,7 +4493,10 @@ const UI = (() => {
     // Only rendered onto the hero while the figure is negative, so there is
     // nothing to unbind when it recovers.
     root.querySelectorAll("[data-action=open-shortfall]").forEach(el => {
-      el.addEventListener("click", () => { shortfallOpen = true; render(); });
+      el.addEventListener("click", () => {
+        shortfallOpen = el.dataset.which === "safe" ? "safe" : "tight";
+        render();
+      });
     });
     root.querySelectorAll("[data-action=dismiss-gap]").forEach(el => {
       el.addEventListener("click", () => {
@@ -4395,7 +4542,7 @@ const UI = (() => {
     }
     if (wantNewMonth) renderNewMonthOverlay(s);
     if (wantImport) renderImportOverlay(s);
-    if (wantShortfall) renderShortfallOverlay(s);
+    if (wantShortfall) renderShortfallOverlay(s, shortfallOpen);
     if (wantPayday) renderPaydayOverlay(s);
     // Last, so confirming a balance straight after an import sits on top.
     if (wantBalance) renderBalanceOverlay(s);
@@ -10322,16 +10469,26 @@ const UI = (() => {
     overlay.querySelector("[data-action=bal-save]").addEventListener("click", () => saveBalance(s));
   }
 
-  /* The breakdown behind a negative Safe To Spend. Two columns that reconcile
-     to the number exactly — what you have against what is already claiming it —
-     then the things worth looking at, most fixable first. */
-  function renderShortfallOverlay(s) {
-    const r = BudgetEngine.shortfallReport(s);
+  /* The breakdown behind one of the two headline figures. Two columns that
+     reconcile to that figure exactly — what you have against what is already
+     claiming it — then the things worth looking at.
+
+     `which` decides which number is being explained, and the two read
+     differently on purpose. Safe To Spend is about the stretch you're standing
+     in and the things you can fix today; the Tightest Point is about a day you
+     can see coming and how the obligations around it are arranged. Sharing one
+     renderer keeps the arithmetic identical; the wording and the note list are
+     where they diverge. */
+  function renderShortfallOverlay(s, which) {
+    const mode = which === "safe" ? "safe" : "tight";
+    const r = BudgetEngine.shortfallReport(s, mode);
+    const isSafe = mode === "safe";
     const money = (n, d) => Util.esc(Util.fmtMoney(n, d == null ? 0 : d));
     // Dates come off the walk as full ISO now, because the low point can fall
     // in next month and a bare day number could not say which.
     const dayLabel = iso => Util.esc(Util.fmtDateShort(iso));
-    const lowIsToday = r.lowDate <= r.startISO;
+    const isToday = r.date <= r.startISO;
+    const short = r.amount < 0;
 
     const row = (label, amount, sub) => `
         <div class="cat-txn">
@@ -10342,6 +10499,18 @@ const UI = (() => {
     const haveRows = row("IN THE ACCOUNT NOW", r.balance)
       + r.incoming.map(e => row(e.label, e.amount, "· " + dayLabel(e.date))).join("");
     const claimRows = r.claims.map(c => row(c.label, c.amount, c.date ? "· " + dayLabel(c.date) : "")).join("");
+
+    // The opening sentence: what the figure means, over what stretch, and how
+    // it relates to the other one.
+    // When the dip lands on payday itself, naming the date twice reads like a
+    // stutter — say what it means instead.
+    const dipOnPayday = !!r.payDate && r.date === r.payDate;
+    const whenPhrase = isToday ? ", WHICH IS TODAY"
+      : dipOnPayday ? " — AND THE LOW IS THAT DAY ITSELF, ONCE ITS BILLS GO OUT"
+      : `, ON ${dayLabel(r.date)}`;
+    const lead = isSafe
+      ? `SAFE TO SPEND IS <b>${money(r.amount)}</b> — THE LOWEST YOUR BALANCE GETS BETWEEN NOW AND ${r.payDate ? `YOUR NEXT PAYCHECK ON ${dayLabel(r.payDate)}` : "THE END OF THE HORIZON"}${whenPhrase}. SPEND UP TO IT AND EVERY BILL DUE IN THAT STRETCH STILL CLEARS. EVERYTHING BELOW ADDS UP TO EXACTLY THAT.`
+      : `YOUR TIGHTEST POINT IS <b>${money(r.amount)}</b>${isToday ? " — AND IT'S TODAY" : `, ON ${dayLabel(r.date)}`}. THAT'S THE LOWEST YOUR BALANCE IS FORECAST TO GET BEFORE ${dayLabel(r.horizonEnd)}, WITH EVERY PAYCHECK DUE BEFORE THEN ALREADY COUNTED IN. EVERYTHING BELOW ADDS UP TO EXACTLY THAT.`;
 
     // Each note is one sentence about one cause, and where the cause can be
     // undone the sentence carries what the number would become.
@@ -10379,6 +10548,32 @@ const UI = (() => {
       if (n.kind === "uncategorized") {
         return `<li><b>${money(n.amount)} ISN'T IN A CATEGORY</b> · ${n.count} TRANSACTION${n.count === 1 ? "" : "S"}. NOTHING IS EVER SET ASIDE FOR THESE, SO THEY COME STRAIGHT OFF THIS NUMBER.</li>`;
       }
+      // --- Safe To Spend only: the hand-off to the other figure.
+      if (n.kind === "seeTightest") {
+        return `<li><b>IT GETS TIGHTER AFTER THAT</b> · ${money(n.amount)} ON ${dayLabel(n.date)}, ON THE FAR SIDE OF YOUR NEXT PAYCHECK. THIS NUMBER ONLY PROMISES TO GET YOU TO PAYDAY. TAP TIGHTEST POINT FOR WHAT HAPPENS AFTER.</li>`;
+      }
+      // --- Tightest Point only: shape and timing rather than hygiene.
+      if (n.kind === "heaviestDay") {
+        const items = n.items.map(i => `${Util.esc(i.label)} ${money(i.amount)}`).join(" · ");
+        const more = n.count > n.items.length ? ` AND ${n.count - n.items.length} MORE` : "";
+        return `<li><b>${dayLabel(n.date)} IS THE HEAVIEST DAY · ${money(n.amount)} GOES OUT AT ONCE</b> · ${items}${more}. THIS IS THE PILE-UP THAT MAKES THE DIP. MOVING ONE OF THESE TO A DIFFERENT DAY WOULD DO MORE THAN CUTTING ANY OF THEM.</li>`;
+      }
+      if (n.kind === "payPosition") {
+        if (!n.count) {
+          return `<li><b>NO PAYCHECK LANDS BEFORE IT</b> · ${n.nextDate ? `YOUR NEXT ONE IS ${dayLabel(n.nextDate)}, AFTER THIS POINT.` : "NOTHING IS EXPECTED IN THE NEXT FIVE WEEKS."} SO THIS DIP HAS TO BE COVERED OUT OF WHAT'S IN THE ACCOUNT NOW.</li>`;
+        }
+        return `<li><b>${n.count} PAYCHECK${n.count === 1 ? " IS" : "S ARE"} ALREADY COUNTED IN THIS</b> · ${money(n.amount)} LANDS BEFORE IT${n.lastDate ? `, THE LAST ON ${dayLabel(n.lastDate)}` : ""}. THE DIP IS WHAT'S LEFT AFTER THAT MONEY ARRIVES, NOT SOMETHING GETTING PAID WOULD FIX.</li>`;
+      }
+      if (n.kind === "biggestClaim") {
+        return `<li><b>${Util.esc(n.label)} IS THE SINGLE BIGGEST CLAIM</b> · ${money(n.amount)} ON ${dayLabel(n.date)}, ${Math.round(n.share * 100)}% OF EVERYTHING GOING OUT BY THEN.</li>`;
+      }
+      if (n.kind === "creditDue") {
+        const items = n.items.map(i => `${Util.esc(i.label)} ${money(i.amount)} ${dayLabel(i.date)}`).join(" · ");
+        return `<li><b>${money(n.amount)} OF CARD SPENDING COMES DUE BEFORE THEN</b> · ${items}. IT DOESN'T TOUCH CHECKING UNTIL THAT DATE, WHICH IS WHY IT LANDS HERE RATHER THAN THE DAY YOU SPENT IT.</li>`;
+      }
+      if (n.kind === "recovery") {
+        return `<li><b>IT RECOVERS TO ${money(n.amount)} BY ${dayLabel(n.date)}</b> · SO THIS IS A DIP TO GET THROUGH RATHER THAN THE SHAPE OF THE WHOLE MONTH.</li>`;
+      }
       return "";
     }).join("");
 
@@ -10389,11 +10584,11 @@ const UI = (() => {
     overlay.innerHTML = `
       <div class="overlay-inner" data-scroll-key="shortfall-overlay-inner">
         <button class="link" data-action="shortfall-close">× CLOSE</button>
-        <h2 class="section-label" style="margin-top:16px;">→ WHY IT'S NEGATIVE</h2>
-        <div class="meta" style="margin-top:8px;">YOUR TIGHTEST POINT IS <b>${money(r.low)}</b>${lowIsToday ? " — AND IT'S TODAY" : `, ON ${dayLabel(r.lowDate)}`}. EVERYTHING BELOW ADDS UP TO EXACTLY THAT.${r.windowLow > r.low ? ` SAFE TO SPEND IS <b>${money(r.windowLow)}</b>, BECAUSE ${r.windowEnd ? "YOU'RE PAID ON " + dayLabel(r.windowEnd) + " BEFORE THIS HITS" : "NOTHING LANDS BEFORE IT"}.` : ""}</div>
+        <h2 class="section-label" style="margin-top:16px;">→ ${isSafe ? "WHAT'S LEFT UNTIL PAYDAY" : "WHY IT GETS TIGHT"}</h2>
+        <div class="meta" style="margin-top:8px;">${lead}</div>
 
         <div style="margin-top:28px;">
-          <div class="sub-label">WHAT YOU HAVE</div>
+          <div class="sub-label">${isSafe ? "WHAT YOU HAVE TO WORK WITH" : "WHAT YOU HAVE BY THEN"}</div>
           <div class="cat-txns" style="margin-top:8px;">
             ${haveRows}
             <div class="cat-txn shortfall-total"><span class="cat-txn-note">TOTAL</span><span class="cat-txn-amt">${money(r.available)}</span></div>
@@ -10401,7 +10596,7 @@ const UI = (() => {
         </div>
 
         <div style="margin-top:24px;">
-          <div class="sub-label">WHAT'S ALREADY CLAIMING IT</div>
+          <div class="sub-label">${isSafe ? "WHAT'S CLAIMING IT BEFORE PAYDAY" : "WHAT'S CLAIMING IT BY THEN"}</div>
           <div class="cat-txns" style="margin-top:8px;">
             ${claimRows || `<div class="cat-txn-empty">NOTHING CLAIMED</div>`}
             <div class="cat-txn shortfall-total"><span class="cat-txn-note">TOTAL</span><span class="cat-txn-amt">${money(r.claimed)}</span></div>
@@ -10409,12 +10604,12 @@ const UI = (() => {
         </div>
 
         <div class="shortfall-net">
-          <span>SHORT BY</span><span>${money(Math.abs(r.low))}</span>
+          <span>${short ? "SHORT BY" : "LEAVES"}</span><span>${money(Math.abs(r.amount))}</span>
         </div>
 
         ${noteHtml ? `
         <div style="margin-top:28px;">
-          <div class="sub-label">WORTH CHECKING</div>
+          <div class="sub-label">${isSafe ? "WORTH CHECKING" : "WHAT'S DRIVING IT"}</div>
           <ul class="shortfall-notes">${noteHtml}</ul>
         </div>` : ""}
 
