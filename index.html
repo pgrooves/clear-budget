@@ -395,6 +395,27 @@
   }
   .inc-row > * { min-width: 0; }
   .inc-label { font-size: 15px; font-weight: 400; overflow-wrap: anywhere; }
+
+  /* A source that pays more than once a month collapses to one row, and the
+     chevron in the CLEAR column opens it into one sub-row per pay day. The
+     sub-rows share the parent grid so the three columns stay in line. */
+  .inc-sub {
+    display: grid; grid-template-columns: minmax(0,1fr) auto 92px;
+    align-items: center; gap: 8px; min-height: 46px; padding-left: 18px;
+    border-top: 1px dashed rgba(26,58,140,0.22);
+    max-width: 100%; overflow: hidden;
+  }
+  .inc-sub > * { min-width: 0; }
+  .inc-sub-label { font-size: 14px; font-weight: 400; }
+  .inc-chev {
+    background: transparent; border: 0; color: var(--cobalt); cursor: pointer;
+    font-size: 13px; letter-spacing: 0.12em; font-weight: 600;
+    display: flex; align-items: center; gap: 6px; padding: 0; min-height: 44px;
+  }
+  .inc-chev .arrow { display: inline-block; transition: transform 0.18s ease; font-size: 15px; }
+  .inc-chev.open .arrow { transform: rotate(180deg); }
+  .inc-chev.all-clear { color: var(--success); }
+  @media (prefers-reduced-motion: reduce) { .inc-chev .arrow { transition: none; } }
   .wiz-amt, .wiz-day {
     background: transparent; border: 0; border-bottom: 1px solid var(--cobalt);
     color: var(--cobalt); font: inherit; font-size: 14px; text-align: right;
@@ -1146,6 +1167,41 @@ const BudgetEngine = (() => {
     }
     return out;
   }
+  /* ---------- ONE SLOT PER LANDING ----------
+     A source that pays fortnightly lands two or three times in a month, so a
+     single "cleared?" flag cannot say which of them has actually arrived.
+     Every landing gets its own slot, and an incomeLog entry occupies one.
+
+     Entries tagged with a landingIndex claim that slot outright. Untagged ones
+     — everything logged before this existed, every entry from the LOG INCOME
+     form, every import — fill the earliest unclaimed slots in order, which is
+     exactly the rule the walk used when a source could only be ticked once.
+     That is what keeps existing data reading the way it always has.
+
+     More entries than landings is allowed and deliberate: a bonus or a
+     correction filed against a source still counts as received income, it just
+     has no slot to tick. */
+  function landingsForMonth(s, inc, ym) {
+    if (!inc) return [];
+    const slots = incomeLandings(inc, daysInMonthOf(ym)).map((l, index) => ({
+      index, day: l.day, date: isoOf(ym, l.day), amount: l.amount, entry: null
+    }));
+    const entries = (s.incomeLog || [])
+      .filter(e => e && e.incomeId === inc.id && e.month === ym)
+      .slice()
+      .sort((a, b) => num(a.createdAt) - num(b.createdAt));
+    const untagged = [];
+    entries.forEach(e => {
+      const idx = e.landingIndex;
+      if (typeof idx === "number" && slots[idx] && !slots[idx].entry) slots[idx].entry = e;
+      else untagged.push(e);
+    });
+    untagged.forEach(e => {
+      const slot = slots.find(l => !l.entry);
+      if (slot) slot.entry = e;
+    });
+    return slots;
+  }
   // Pay-date order, which is how they actually arrive. Undated sources sort
   // last rather than pretending to be the 1st.
   function incomeByDate(s) {
@@ -1508,28 +1564,23 @@ const BudgetEngine = (() => {
         out(isoOf(ym, d.dueDateOfMonth), -num(d.minimumPayment), d.label, "debt");
       });
 
-      // Income not yet marked received. A source whose pay day has already gone
-      // by is deliberately NOT pulled forward to today — money that was due and
-      // hasn't shown up is not money you can spend, and quietly counting it is
-      // how this number would start lying.
-      // Logged paychecks are counted, not treated as a flag on the source. A
-      // fortnightly earner is paid two or three times a month, so marking the
-      // first one received says nothing about the ones still to come.
-      const loggedCount = {};
-      (s.incomeLog || []).forEach(e => {
-        if (e && e.month === ym) loggedCount[e.incomeId] = (loggedCount[e.incomeId] || 0) + 1;
-      });
+      // Income not yet marked received. A landing whose pay day has already
+      // gone by is deliberately NOT pulled forward to today — money that was
+      // due and hasn't shown up is not money you can spend, and quietly
+      // counting it is how this number would start lying.
+      //
+      // Slots rather than a count: a filled slot has arrived and is inside the
+      // balance, an empty one is still ahead. Counting entries could only say
+      // how MANY had landed, so ticking the second of three paychecks silently
+      // cancelled the first instead of leaving it standing.
       const landed = [];
       (s.income || []).forEach(i => {
         if (num(i.amount) <= 0) return;
-        // Paychecks arrive in date order, so N logged entries account for that
-        // month's N earliest landings; the rest are still ahead.
-        const pending = incomeLandings(i, daysInMonthOf(ym)).slice(loggedCount[i.id] || 0);
-        pending.forEach(l => {
-          const date = isoOf(ym, l.day);
-          if (date < startISO || date > endISO) return;
-          add(date, IN, l.amount, i.label, "income");
-          landed.push({ date, amount: l.amount });
+        landingsForMonth(s, i, ym).forEach(l => {
+          if (l.entry) return;
+          if (l.date < startISO || l.date > endISO) return;
+          add(l.date, IN, l.amount, i.label, "income");
+          landed.push({ date: l.date, amount: l.amount });
         });
       });
 
@@ -1640,15 +1691,25 @@ const BudgetEngine = (() => {
   function monthEndBalance(s) {
     return cashFlowOutlook(s).monthEnd;
   }
-  // Income whose pay day has passed with nothing marked received. Counting it
-  // would flatter every figure here, so it is surfaced instead.
+  // Landings whose pay day has passed with nothing marked received. Counting
+  // them would flatter every figure here, so they are surfaced instead. One
+  // per landing, not one per source: a fortnightly earner who has logged the
+  // first of the month but not the fifteenth is owed one paycheck, and saying
+  // "this source is fine" because something arrived would hide it.
   function overdueIncome(s) {
-    const today = dayOfMonthToday(s);
-    const cleared = {};
-    (s.incomeLog || []).forEach(e => { if (e && e.month === s.currentMonth) cleared[e.incomeId] = true; });
-    return (s.income || []).filter(i =>
-      !cleared[i.id] && num(i.amount) > 0 && (num(i.dueDateOfMonth) || 1) < today
-    );
+    const startISO = walkStartISO(s);
+    const out = [];
+    (s.income || []).forEach(i => {
+      if (num(i.amount) <= 0) return;
+      landingsForMonth(s, i, s.currentMonth).forEach(l => {
+        if (l.entry || l.date >= startISO) return;
+        out.push({
+          id: i.id, label: i.label, dueDateOfMonth: i.dueDateOfMonth,
+          amount: l.amount, landingIndex: l.index, landingDate: l.date
+        });
+      });
+    });
+    return out;
   }
   /* ---------- WHY EACH NUMBER IS WHAT IT IS ----------
      A figure on its own tells you there's a problem and nothing about which
@@ -1711,9 +1772,12 @@ const BudgetEngine = (() => {
       amount: overdue.reduce((a, i) => a + num(i.amount), 0),
       labels: overdue.map(i => String(i.label || "INCOME")),
       after: after(s, c => {
+        // Tagged with the landing they fill, so two missing paychecks from one
+        // source claim two slots instead of both landing on the first.
         c.incomeLog = (c.incomeLog || []).concat(overdue.map(i => ({
-          id: "whatif-" + i.id, incomeId: i.id, amount: num(i.amount),
-          month: m, date: Util.todayISO(), createdAt: Date.now(), tithe: true
+          id: "whatif-" + i.id + "-" + i.landingIndex, incomeId: i.id,
+          landingIndex: i.landingIndex, amount: num(i.amount),
+          month: m, date: i.landingDate || Util.todayISO(), createdAt: Date.now(), tithe: true
         })));
       })
     };
@@ -2160,6 +2224,7 @@ const BudgetEngine = (() => {
     num,
     totalIncome, receivedIncome, tithePercent, titheEnabled, tithe, titheOnReceived, titheBillView,
     INCOME_FREQUENCIES, incomeFrequency, incomeMonthlyAmount, incomeByDate, incomeLandings,
+    landingsForMonth,
     billsSubtotal, totalBills, totalDebtMins,
     totalUnpaidCredit, safeToSpend, tightestPoint, spendingBudgetedTotal, totalBudgeted, extraForDebt,
     latestAnchor, hasAnchor, isAfterAnchor, projectedBalance, billPaymentsSinceAnchor,
@@ -3114,6 +3179,9 @@ const UI = (() => {
   const UNCAT_KEY = "__uncategorized__";
   let dashCatOpen = null;
 
+  // Which multi-pay-day income rows are open, by source id. Purely a view
+  // state: it holds no data and is safe to lose on reload.
+  let incExpanded = {};
   // Which headline figure's breakdown is open — false, "safe" or "tight" —
   // and whether its one-shot hint has played. The two read differently, so the
   // panel has to remember which number was tapped.
@@ -4673,14 +4741,37 @@ const UI = (() => {
     // Pay-date order: the list reads the way the month actually happens.
     const incExpectedRows = (s.income || []).length
       ? BudgetEngine.incomeByDate(s).map(i => {
-          const entry = clearedFor(i.id);
+          // One slot per pay day this month. A source that pays once has a
+          // single slot and keeps the plain checkbox it always had; anything
+          // that pays more often collapses behind a chevron.
+          const landings = BudgetEngine.landingsForMonth(s, i, logMonth);
+          const multi = landings.length > 1;
+          const open = !!incExpanded[i.id];
+          const clearedCount = landings.filter(l => l.entry).length;
+          const entry = landings.length ? landings[0].entry : clearedFor(i.id);
           const expected = Number(i.amount) || 0;
           const actual = entry ? (Number(entry.amount) || 0) : 0;
-          const showActual = entry && Math.abs(actual - expected) >= 0.01;
+          const showActual = !multi && entry && Math.abs(actual - expected) >= 0.01;
           const freq = BudgetEngine.incomeFrequency(i);
           const day = Number(i.dueDateOfMonth) || 0;
           const monthly = BudgetEngine.incomeMonthlyAmount(i);
           const showMonthly = freq.id !== "monthly";
+          // Each pay day, its own amount, its own tick. Received amounts that
+          // differ from the expected one are shown per landing rather than
+          // rolled up, because that is the whole reason to split them out.
+          const subRows = multi && open ? landings.map(l => {
+            const got = l.entry ? (Number(l.entry.amount) || 0) : 0;
+            const differs = l.entry && Math.abs(got - l.amount) >= 0.01;
+            return `
+              <div class="inc-sub">
+                <div>
+                  <div class="inc-sub-label">${Util.esc(Util.fmtDateShort(l.date))}</div>
+                  ${differs ? `<div class="meta">RECEIVED ${Util.esc(Util.fmtMoney(got, 2))}</div>` : ""}
+                </div>
+                <div class="inc-amt">${Util.esc(Util.fmtMoney(l.amount, 0))}</div>
+                <button class="txn-check ${l.entry ? "checked" : ""}" data-action="inc-toggle" data-id="${Util.esc(i.id)}" data-idx="${l.index}" aria-label="RECEIVED ON ${Util.esc(Util.fmtDateShort(l.date))}" data-learn="MARK THIS ONE PAY DAY AS RECEIVED. EACH PAY DAY IS TRACKED SEPARATELY, SO TICKING THIS ONE LEAVES THE OTHERS ALONE. SAFE TO SPEND STOPS WAITING ON THIS PAYCHECK AND COUNTS IT AS MONEY YOU HAVE."></button>
+              </div>`;
+          }).join("") : "";
           return `
             <div class="inc-row">
               <div>
@@ -4696,8 +4787,11 @@ const UI = (() => {
                 }</div>
                 ${BudgetEngine.titheEnabled(s) ? `<button class="link" style="padding:0;min-height:auto;display:block;font-size:11px;opacity:0.75;text-align:right;" data-action="goto-tithe-bill" data-learn="THIS SOURCE'S SHARE OF YOUR TITHE, ON WHAT IT ADDS UP TO IN A MONTH. TAP TO SEE IT ON THE BILLS TAB, WHERE THE RATE IS EDITABLE.">(TITHE: ${Util.esc(Util.fmtMoney(monthly * BudgetEngine.tithePercent(s) / 100, 2))})</button>` : ""}
               </div>
-              <button class="txn-check ${entry ? "checked" : ""}" data-action="inc-toggle" data-id="${Util.esc(i.id)}" aria-label="CLEARED" data-learn="MARK THIS INCOME AS RECEIVED FOR THIS MONTH. CHECKING IT RAISES SAFE TO SPEND BY THE AMOUNT MINUS YOUR TITHE PERCENTAGE. UNCHECKING UNDOES IT EXACTLY."></button>
+              ${multi
+                ? `<button class="inc-chev ${open ? "open" : ""}${clearedCount === landings.length ? " all-clear" : ""}" data-action="inc-expand" data-id="${Util.esc(i.id)}" aria-expanded="${open ? "true" : "false"}" aria-label="${clearedCount} OF ${landings.length} PAY DAYS CLEARED · ${open ? "COLLAPSE" : "EXPAND"}" data-learn="THIS SOURCE PAYS MORE THAN ONCE A MONTH, SO ONE CHECKBOX COULDN'T SAY WHICH PAYCHECK HAD ARRIVED. THE COUNT IS HOW MANY OF THIS MONTH'S PAY DAYS HAVE LANDED; OPEN IT FOR A ROW PER PAY DAY, EACH WITH ITS OWN TICK.">${clearedCount}/${landings.length} <span class="arrow">⌄</span></button>`
+                : `<button class="txn-check ${entry ? "checked" : ""}" data-action="inc-toggle" data-id="${Util.esc(i.id)}" data-idx="0" aria-label="CLEARED" data-learn="MARK THIS INCOME AS RECEIVED FOR THIS MONTH. CHECKING IT RAISES SAFE TO SPEND BY THE AMOUNT MINUS YOUR TITHE PERCENTAGE. UNCHECKING UNDOES IT EXACTLY."></button>`}
             </div>
+            ${subRows}
             <div style="margin-top:-4px;">
               <button class="link" style="padding:0;min-height:auto;font-size:11px;letter-spacing:0.14em;" data-action="edit-item" data-kind="income" data-id="${Util.esc(i.id)}" data-learn="EDIT THIS INCOME SOURCE'S NAME, EXPECTED AMOUNT, OR DUE DAY. IT'S THE SAME RECORD SETTINGS EDITS, SO CHANGES SHOW IN BOTH PLACES.">EDIT →</button>
             </div>
@@ -4906,7 +5000,14 @@ const UI = (() => {
       el.addEventListener("click", () => submitIncome(s));
     });
     root.querySelectorAll("[data-action=inc-toggle]").forEach(el => {
-      el.addEventListener("click", () => toggleIncomeCleared(s, el.dataset.id));
+      el.addEventListener("click", () => toggleIncomeCleared(s, el.dataset.id, Number(el.dataset.idx)));
+    });
+    root.querySelectorAll("[data-action=inc-expand]").forEach(el => {
+      el.addEventListener("click", () => {
+        const id = el.dataset.id;
+        incExpanded[id] = !incExpanded[id];
+        render();
+      });
     });
     // Each income row's "(TITHE: $X)" note links to the Bills tab, where the
     // tithe row (and its EDIT link for the rate) lives.
@@ -5610,27 +5711,42 @@ const UI = (() => {
     } catch (e) { alert("COULDN'T SAVE; CHECK CONNECTION"); console.warn(e); }
   }
 
-  // Checkbox on the expected-income list. Checking creates an entry at the
-  // expected amount; unchecking removes whatever entry exists for that source
-  // this month, regardless of whether it came from manual entry or an import.
-  async function toggleIncomeCleared(s, incomeId) {
+  // Checkbox on the expected-income list. One pay day at a time: `landingIndex`
+  // says which of this month's landings for the source is being ticked, so a
+  // fortnightly earner can clear the first paycheck and leave the second
+  // standing. Checking creates an entry tagged with that slot; unchecking
+  // removes exactly the entry occupying it, whether it was ticked here, typed
+  // into LOG INCOME, or imported.
+  async function toggleIncomeCleared(s, incomeId, landingIndex) {
+    const src = (s.income || []).find(i => i.id === incomeId);
+    if (!src) return;
     const log = s.incomeLog || [];
-    const existing = log.find(e => e && e.incomeId === incomeId && e.month === s.currentMonth);
+    const idx = Number.isFinite(landingIndex) ? landingIndex : 0;
+    const slots = BudgetEngine.landingsForMonth(s, src, s.currentMonth);
+    const slot = slots[idx] || slots[0] || null;
+    const existing = slot ? slot.entry : null;
     try {
       if (existing) {
+        // By identity, not by source: the other pay days this month have their
+        // own entries and must survive. Falls back to object identity for any
+        // entry old enough not to carry an id.
         await DataService.update({
-          incomeLog: log.filter(e => !(e && e.incomeId === incomeId && e.month === s.currentMonth))
+          incomeLog: log.filter(e => existing.id ? (e && e.id !== existing.id) : e !== existing)
         });
       } else {
-        const src = (s.income || []).find(i => i.id === incomeId);
-        if (!src) return;
         const isCouple = s.settings && s.settings.mode === "couple";
-        const date = Util.todayISO();
+        // The landing's own pay day, not today, when it has already been and
+        // gone. The date decides whether the money is treated as arriving
+        // after your last confirmed balance, and a paycheck from the 1st
+        // ticked on the 22nd is already inside a balance confirmed since.
+        const today = Util.todayISO();
+        const date = slot && slot.date < today ? slot.date : today;
         const entry = {
           id: Util.uuid(),
           incomeId: incomeId,
+          landingIndex: idx,
           label: (src.label || "").toUpperCase().slice(0, 60),
-          amount: Math.round((Number(src.amount) || 0) * 100) / 100,
+          amount: Math.round((slot ? slot.amount : Number(src.amount) || 0) * 100) / 100,
           date: date,
           month: s.currentMonth,
           person: isCouple ? "JOINT" : (s.settings.names[0] || "ME").toUpperCase(),
@@ -10523,15 +10639,24 @@ const UI = (() => {
       ? `SAFE TO SPEND IS <b>${money(r.amount)}</b> — THE LOWEST YOUR BALANCE GETS BETWEEN NOW AND ${windowPhrase}. ${lowSentence} SPEND UP TO IT AND EVERY BILL DUE IN THAT STRETCH STILL CLEARS. EVERYTHING BELOW ADDS UP TO EXACTLY THAT.`
       : `YOUR TIGHTEST POINT IS <b>${money(r.amount)}</b>${isToday ? " — AND IT'S TODAY" : `, ON ${dayLabel(r.date)}`}. THAT'S THE LOWEST YOUR BALANCE IS FORECAST TO GET BEFORE ${dayLabel(r.horizonEnd)}, WITH EVERY PAYCHECK DUE BEFORE THEN ALREADY COUNTED IN. EVERYTHING BELOW ADDS UP TO EXACTLY THAT.`;
 
+    // A costed note is only worth stating when undoing the cause actually
+    // shifts the figure being explained; rounding to whole dollars means
+    // anything under fifty cents is the same number on screen.
+    const moves = after => after != null && Math.abs(after - r.amount) >= 0.5;
+
     // Each note is one sentence about one cause, and where the cause can be
     // undone the sentence carries what the number would become.
     const noteHtml = r.notes.map(n => {
       if (n.kind === "income") {
         const names = n.labels.slice(0, 2).join(", ") + (n.labels.length > 2 ? " AND OTHERS" : "");
-        return `<li><b>${n.count} PAYCHECK${n.count === 1 ? " HASN'T" : "S HAVEN'T"} BEEN LOGGED</b> · ${Util.esc(names)}, ${money(n.amount)} EXPECTED. THIS DELIBERATELY DOESN'T COUNT MONEY THAT HASN'T ARRIVED.${n.after == null ? "" : ` LOG IT AND THIS BECOMES ${money(n.after)}.`}</li>`;
+        // A paycheck logged against a pay day that predates your last
+        // confirmed balance is already inside that balance, so logging it
+        // moves nothing. Printing "AND THIS BECOMES" with the number that is
+        // already on screen reads like a bug, so say what actually happens.
+        return `<li><b>${n.count} PAYCHECK${n.count === 1 ? " HASN'T" : "S HAVEN'T"} BEEN LOGGED</b> · ${Util.esc(names)}, ${money(n.amount)} EXPECTED. THIS DELIBERATELY DOESN'T COUNT MONEY THAT HASN'T ARRIVED.${moves(n.after) ? ` LOG IT AND THIS BECOMES ${money(n.after)}.` : n.after == null ? "" : ` LOGGING IT WON'T MOVE THIS FIGURE, BUT IT CLEARS THE WARNING.`}</li>`;
       }
       if (n.kind === "reserved") {
-        return `<li><b>${money(n.amount)} IS SET ASIDE IN CATEGORIES</b> · THAT MONEY IS STILL YOURS, JUST SPOKEN FOR, SO IT ISN'T COUNTED HERE.${n.after == null ? "" : ` RELEASE IT AND THIS BECOMES ${money(n.after)}.`}</li>`;
+        return `<li><b>${money(n.amount)} IS SET ASIDE IN CATEGORIES</b> · THAT MONEY IS STILL YOURS, JUST SPOKEN FOR, SO IT ISN'T COUNTED HERE.${moves(n.after) ? ` RELEASE IT AND THIS BECOMES ${money(n.after)}.` : ""}</li>`;
       }
       if (n.kind === "lateBills") {
         // Tickable right here. A bill that already left the account is being
