@@ -10,7 +10,9 @@ const suites = [
   "./income-landings.test",
   "./tithe.test",
   "./monotonic.test",
-  "./debt.test"
+  "./debt.test",
+  "./bills.test",
+  "./pending.test"
 ];
 
 let failures = 0;

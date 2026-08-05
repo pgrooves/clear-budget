@@ -1388,8 +1388,74 @@ const BudgetEngine = (() => {
     }
     return { key: landing.key, rec: null };
   }
+  /* ---------- BILLS THAT LAND MORE THAN ONCE ----------
+     "Recurring" is not the same as "monthly". A weekly cleaner and a
+     fortnightly invoice both land several times in a month, and the amount is
+     not the same every time — anything billed on usage moves with what you
+     used. So a bill carries a cadence the way an income source does, and each
+     occurrence in the month is its own tickable line with its own amount.
+
+     Nothing about an existing bill changes: no frequency means monthly, which
+     is one occurrence keyed by the bill's own id, exactly as before, so every
+     paid record already written still lands where it always did.
+
+     Amount overrides live in s.billAmounts[month][key] — the same month-keyed
+     shape as rollover and category funding — so a heavy month is recorded
+     against that month and never leaks into the next one. */
+  const BILL_FREQUENCIES = INCOME_FREQUENCIES.filter(
+    f => ["weekly", "biweekly", "semimonthly", "monthly"].indexOf(f.id) >= 0);
+  function billFrequency(b) {
+    const id = b && b.frequency;
+    return BILL_FREQUENCIES.find(f => f.id === id) || BILL_FREQUENCIES.find(f => f.id === "monthly");
+  }
+  // Occurrence zero keeps the bare bill id so every paid record ever written,
+  // and every tick that matched one, still resolves.
+  function billOccurrenceKey(bill, index) {
+    return index === 0 ? bill.id : bill.id + ":" + index;
+  }
+  function billOccurrences(s, bill, ym) {
+    if (!bill) return [];
+    const month = ym || s.currentMonth;
+    const freq = billFrequency(bill);
+    const last = daysInMonthOf(month);
+    const first = Math.max(1, Math.min(last, num(bill.dueDateOfMonth) || 1));
+    const days = [];
+    if (freq.everyDays > 0 && freq.everyDays < 15) {
+      for (let d = first; d <= last; d += freq.everyDays) days.push(d);
+    } else if (freq.id === "semimonthly") {
+      days.push(first);
+      days.push(Math.min(first + 15, last));
+    } else {
+      days.push(first);
+    }
+    const paid = (s.billsPaid || {})[month] || {};
+    const over = (s.billAmounts || {})[month] || {};
+    return days.map((day, index) => {
+      const key = billOccurrenceKey(bill, index);
+      const rec = paid[key];
+      return {
+        index, day, date: isoOf(month, day), key, billId: bill.id, label: bill.label,
+        amount: over[key] != null ? num(over[key]) : num(bill.amount),
+        overridden: over[key] != null,
+        rec: rec || null,
+        paid: !!(rec && rec.paid)
+      };
+    });
+  }
+  // Resolve an occurrence key back to its bill and occurrence. Accepts a bare
+  // bill id too, which is occurrence zero.
+  function billOccurrenceFor(s, key, ym) {
+    const raw = String(key || "");
+    const cut = raw.lastIndexOf(":");
+    const billId = cut > 0 ? raw.slice(0, cut) : raw;
+    const bill = (s.bills || []).find(b => b && b.id === billId);
+    if (!bill) return null;
+    const occ = billOccurrences(s, bill, ym).find(o => o.key === raw);
+    return occ ? { bill, occ } : null;
+  }
   function billsSubtotal(s) {
-    return (s.bills || []).reduce((a, b) => a + num(b.amount), 0);
+    return (s.bills || []).reduce(
+      (a, b) => a + billOccurrences(s, b).reduce((x, o) => x + o.amount, 0), 0);
   }
   // Sum of stored bills only. Tithe is a display-only locked line and is
   // subtracted separately in safeToSpend / extraForDebt as the FIRST allocation from income.
@@ -1453,7 +1519,13 @@ const BudgetEngine = (() => {
   // already reserved separately as unpaid credit.
   function debitSinceAnchor(s, anchor) {
     return (s.transactions || [])
-      .filter(t => t && t.paymentType !== "credit" && isAfterAnchor(t, anchor))
+      // Pending charges are counted whatever their date. The anchor test asks
+      // "could the balance you typed already know about this?", and for
+      // something the bank has not posted the answer is no — the money is gone
+      // from the moment the card is swiped but the balance still shows it.
+      // Gating them on the anchor would let a swipe made before you last
+      // confirmed your balance vanish from the figure entirely.
+      .filter(t => t && t.paymentType !== "credit" && (t.pending || isAfterAnchor(t, anchor)))
       .reduce((a, t) => a + num(t.amount), 0);
   }
   function incomeSinceAnchor(s, anchor) {
@@ -1501,10 +1573,8 @@ const BudgetEngine = (() => {
   // again would understate what is spendable. This is the mirror image of the
   // old flow-based math, which subtracted every bill whether paid or not.
   function unpaidBillsTotal(s) {
-    const paid = (s.billsPaid || {})[s.currentMonth] || {};
-    return (s.bills || [])
-      .filter(b => !(paid[b.id] && paid[b.id].paid))
-      .reduce((a, b) => a + num(b.amount), 0);
+    return (s.bills || []).reduce((a, b) => a + billOccurrences(s, b)
+      .reduce((x, o) => x + (o.paid ? 0 : o.amount), 0), 0);
   }
   // Tithe is a display-only line rather than a stored bill, and it can be
   // ticked either as one total or per income source, so its paid amount is
@@ -1709,11 +1779,14 @@ const BudgetEngine = (() => {
     }
 
     months.forEach(ym => {
-      const paid = (s.billsPaid || {})[ym] || {};
+      // One event per unpaid occurrence, at that occurrence's own date and its
+      // own amount — a bill that lands weekly hits the walk weekly, and a
+      // heavy month for a usage-based bill hits it for what it actually is.
       (s.bills || []).forEach(b => {
-        if (paid[b.id] && paid[b.id].paid) return;
-        if (num(b.amount) <= 0) return;
-        out(isoOf(ym, b.dueDateOfMonth), -num(b.amount), b.label, "bill");
+        billOccurrences(s, b, ym).forEach(o => {
+          if (o.paid || o.amount <= 0) return;
+          out(o.date, -o.amount, b.label, "bill");
+        });
       });
 
       // A minimum whose tick already wrote a transaction is spent, not pending.
@@ -1995,14 +2068,19 @@ const BudgetEngine = (() => {
   // Overdue and unticked bills are pinned to today by the walk, so a bill paid
   // last week but never ticked lands its whole amount on the number now.
   function noteLateBills(s) {
-    const paid = (s.billsPaid || {})[s.currentMonth] || {};
-    const today = dayOfMonthToday(s);
-    const late = (s.bills || []).filter(b =>
-      !(paid[b.id] && paid[b.id].paid) && num(b.dueDateOfMonth) > 0 && num(b.dueDateOfMonth) < today);
+    const startISO = walkStartISO(s);
+    const late = [];
+    (s.bills || []).forEach(b => {
+      billOccurrences(s, b).forEach(o => {
+        if (o.paid || o.amount <= 0) return;
+        if (num(b.dueDateOfMonth) <= 0 || o.date >= startISO) return;
+        late.push({ id: o.key, label: b.label, amount: o.amount });
+      });
+    });
     if (!late.length) return null;
     return {
       kind: "lateBills", count: late.length,
-      amount: late.reduce((a, b) => a + num(b.amount), 0),
+      amount: late.reduce((a, b) => a + b.amount, 0),
       // Carried so the breakdown can offer the tick right there. A bill that
       // already went out is the one cause on this list the user can clear in a
       // single tap, and making them go and find it on another tab is why they
@@ -2529,6 +2607,7 @@ const BudgetEngine = (() => {
     INCOME_FREQUENCIES, incomeFrequency, incomeMonthlyAmount, incomeByDate, incomeLandings,
     landingsForMonth,
     billsSubtotal, totalBills, totalDebtMins,
+    BILL_FREQUENCIES, billFrequency, billOccurrences, billOccurrenceKey, billOccurrenceFor,
     totalUnpaidCredit, safeToSpend, tightestPoint, spendingBudgetedTotal, totalBudgeted, extraForDebt,
     debtPaymentsByMonth, observedDebtPace, debtPace,
     latestAnchor, hasAnchor, isAfterAnchor, projectedBalance, billPaymentsSinceAnchor,
@@ -2839,7 +2918,13 @@ function buildDefaultData(mode, names, withExamples, titheOn) {
     incomeLog: [],
     // Month-keyed paid-status map, same shape as monthlyRollover:
     // billsPaid[month][billId] = { paid, paidDate, amount, source, txnId }
+    // A bill that lands more than once a month keys its later occurrences
+    // "<billId>:<n>"; the first keeps the bare id so old records still resolve.
     billsPaid: {},
+    // What a bill actually came to in a given month, when that differs from its
+    // usual amount — anything billed on usage. Same month-keyed shape and the
+    // same occurrence keys: billAmounts[month][key] = amount.
+    billAmounts: {},
     // Dated observations of what the checking account actually held:
     // { id, date, amount, createdAt, source }. A list rather than a single
     // field so re-anchoring mid-month is the same operation as anchoring on
@@ -3635,6 +3720,10 @@ const UI = (() => {
   // Which multi-pay-day income rows are open, by source id. Purely a view
   // state: it holds no data and is safe to lose on reload.
   let incExpanded = {};
+  // Same, for bills that land more than once a month, plus the inline
+  // amount editor: { key, value } while one is open.
+  let billExpanded = {};
+  let billAmtEdit = null;
   // Which headline figure's breakdown is open — false, "safe" or "tight" —
   // and whether its one-shot hint has played. The two read differently, so the
   // panel has to remember which number was tapped.
@@ -3783,7 +3872,7 @@ const UI = (() => {
     askDate: null,
     assumeDate: null,
     // How many not-yet-posted rows were dropped, for the review header.
-    pendingSkipped: 0,
+    pendingKept: 0,
     // Closing balance lifted off the import, when the layout carries one.
     // Offered as a pre-fill on the balance overlay after the import commits;
     // never saved without confirmation, since a statement's closing balance is
@@ -5853,6 +5942,10 @@ const UI = (() => {
     } else {
       tag = "DEBIT";
     }
+    // Not posted at the bank yet. It still counts against Safe To Spend from
+    // the day it was swiped, so say why the bank's balance and this list
+    // disagree rather than leaving it looking like a mistake.
+    if (t.pending) tag = tag + " · PENDING";
     const edit = txnEdits[t.id];
     const expanded = !!edit;
     const err = formErrors["txn_" + t.id];
@@ -6861,35 +6954,80 @@ const UI = (() => {
       ${titheEdit.open ? renderTitheEditForm() : ""}
       ${titheSubRowsHtml}` : "";
 
+    /* An amount that can be corrected in place. A bill is a recurring charge,
+       but plenty of them are billed on usage, so the figure that matters this
+       month is not always the usual one. Tapping it opens an input; what you
+       type is stored against THIS month only and drives Safe To Spend, the
+       bills total and the tick — the bill's standing amount is left alone. */
+    const amountCell = (occ, isSavings, overdue, due) => {
+      const editing = billAmtEdit && billAmtEdit.key === occ.key;
+      return `
+        <div class="inc-amt">
+          ${editing
+            ? `<input class="wiz-amt" id="bill-amt-input" data-action="bill-amt-input" data-key="${Util.esc(occ.key)}" inputmode="decimal" value="${Util.esc(billAmtEdit.value)}" aria-label="AMOUNT THIS MONTH">`
+            : `<button class="link" style="padding:0;min-height:auto;text-decoration:none;border-bottom:1px solid rgba(26,58,140,0.4);font-size:15px;font-weight:400;letter-spacing:inherit;" data-action="bill-amt-edit" data-key="${Util.esc(occ.key)}" data-learn="TAP TO CHANGE WHAT THIS ONE COSTS THIS MONTH. USE IT WHEN A USAGE-BASED BILL COMES IN HIGHER OR LOWER THAN USUAL. IT ONLY AFFECTS THIS MONTH; THE BILL'S NORMAL AMOUNT IS UNCHANGED.">${Util.esc(Util.fmtMoney(occ.amount, 0))}</button>`}
+          ${occ.overridden ? `<span style="opacity:0.75;">·THIS MO</span>` : ""}
+          ${/* Sub-rows carry their own date in the label, so the DUE badge is
+                noise there — it is passed null and skipped. */""}
+          ${isSavings || due == null ? "" : `<span class="${overdue ? "text-danger" : ""}" style="opacity:0.75;">DUE ${due || "-"}</span>`}
+        </div>`;
+    };
+
     const rowFor = (b) => {
-      const rec = paidMap[b.id];
-      const isPaid = !!(rec && rec.paid);
       const isSavings = b.category === "savings";
-      const due = Number(b.dueDateOfMonth) || 0;
-      // Overdue styling only for unpaid rows whose due day has already passed
-      // in the month we're actually looking at.
-      const overdue = !isPaid && sameMonth && due > 0 && due < todayDay;
-      const fromImport = isPaid && rec.source === "import";
-      // Ticking a bill can silently link it to a transaction already in the
-      // ledger, which is what stops the same payment being counted twice.
-      // Silent is fine; invisible is not — say which payment it found.
-      const linkedTxn = (isPaid && rec.txnId && !fromImport)
-        ? (s.transactions || []).find(t => t && t.id === rec.txnId)
-        : null;
       const verb = isSavings ? "SAVED" : "PAID";
+      const occs = BudgetEngine.billOccurrences(s, b);
+      const multi = occs.length > 1;
+      const open = !!billExpanded[b.id];
+      const doneCount = occs.filter(o => o.paid).length;
+      const freq = BudgetEngine.billFrequency(b);
+      const first = occs[0] || { key: b.id, amount: Number(b.amount) || 0, paid: false, rec: null, day: 0 };
+
+      const noteFor = (occ) => {
+        const rec = occ.rec;
+        if (!rec || !rec.paid) return "";
+        const fromImport = rec.source === "import";
+        const linkedTxn = (rec.txnId && !fromImport)
+          ? (s.transactions || []).find(t => t && t.id === rec.txnId) : null;
+        if (fromImport) return `<div class="meta">${verb} ${Util.esc(Util.fmtMoney(Number(rec.amount)||0, 2))} ON ${Util.esc(Util.fmtDateShort(rec.paidDate))} · FROM IMPORT</div>`;
+        if (linkedTxn) return `<div class="meta" data-learn="THIS TICK WAS MATCHED TO A TRANSACTION ALREADY IN YOUR LOG, SO THE PAYMENT IS ONLY COUNTED ONCE AGAINST YOUR BALANCE. UNTICK AND RE-TICK IF IT PICKED THE WRONG ONE.">${verb} ${Util.esc(Util.fmtMoney(Number(rec.amount)||0, 2))} ON ${Util.esc(Util.fmtDateShort(rec.paidDate))} · MATCHED ${Util.esc((linkedTxn.note || "A LOGGED PAYMENT").slice(0, 24))}</div>`;
+        return "";
+      };
+      const tick = (occ, label) => `<button class="txn-check ${occ.paid ? "checked" : ""}" data-action="bill-toggle" data-id="${Util.esc(occ.key)}" aria-label="${Util.esc(label)}" data-learn="${isSavings ? "MARK THIS SAVINGS TRANSFER AS SAVED. THE MONEY COMES OUT OF YOUR TRACKED BALANCE AND STOPS BEING HELD BACK, SO SAFE TO SPEND DOESN'T MOVE — IT WAS ALREADY SET ASIDE FOR THIS." : "MARK THIS ONE AS PAID. THE MONEY COMES OUT OF YOUR TRACKED BALANCE AND STOPS BEING HELD BACK, SO SAFE TO SPEND DOESN'T MOVE — IT WAS ALREADY SET ASIDE FOR THIS."}"></button>`;
+
+      const subRows = multi && open ? occs.map(o => {
+        const od = !o.paid && sameMonth && o.day < todayDay;
+        return `
+          <div class="inc-sub">
+            <div>
+              <div class="inc-sub-label ${od ? "text-danger" : ""}">${Util.esc(Util.fmtDateShort(o.date))}</div>
+              ${noteFor(o)}
+            </div>
+            ${amountCell(o, isSavings, od, null)}
+            ${tick(o, verb + " " + Util.fmtDateShort(o.date))}
+          </div>`;
+      }).join("") : "";
+
+      const due = Number(b.dueDateOfMonth) || 0;
+      const overdue = !first.paid && sameMonth && due > 0 && due < todayDay;
       return `
         <div class="inc-row">
           <div>
             <div class="inc-label">${Util.esc(b.label)}</div>
-            ${fromImport ? `<div class="meta">${verb} ${Util.esc(Util.fmtMoney(Number(rec.amount)||0, 2))} ON ${Util.esc(Util.fmtDateShort(rec.paidDate))} · FROM IMPORT</div>` : ""}
-            ${linkedTxn ? `<div class="meta" data-learn="THIS TICK WAS MATCHED TO A TRANSACTION ALREADY IN YOUR LOG, SO THE PAYMENT IS ONLY COUNTED ONCE AGAINST YOUR BALANCE. UNTICK AND RE-TICK IF IT PICKED THE WRONG ONE.">${verb} ${Util.esc(Util.fmtMoney(Number(rec.amount)||0, 2))} ON ${Util.esc(Util.fmtDateShort(rec.paidDate))} · MATCHED ${Util.esc((linkedTxn.note || "A LOGGED PAYMENT").slice(0, 24))}</div>` : ""}
+            ${multi ? `<div class="meta">${Util.esc(freq.label)} · ${occs.length} THIS MONTH · ${Util.esc(Util.fmtMoney(occs.reduce((a,o)=>a+o.amount,0), 0))} TOTAL</div>` : noteFor(first)}
           </div>
-          <div class="inc-amt">
-            ${Util.esc(Util.fmtMoney(Number(b.amount) || 0, 0))}
-            ${isSavings ? "" : `<span class="${overdue ? "text-danger" : ""}" style="opacity:0.75;">DUE ${due || "-"}</span>`}
-          </div>
-          <button class="txn-check ${isPaid ? "checked" : ""}" data-action="bill-toggle" data-id="${Util.esc(b.id)}" aria-label="${verb}" data-learn="${isSavings ? "MARK THIS SAVINGS TRANSFER AS SAVED FOR THIS MONTH. THE MONEY COMES OUT OF YOUR TRACKED BALANCE AND STOPS BEING HELD BACK, SO SAFE TO SPEND DOESN'T MOVE — IT WAS ALREADY SET ASIDE FOR THIS." : "MARK THIS BILL AS PAID FOR THIS MONTH. THE MONEY COMES OUT OF YOUR TRACKED BALANCE AND STOPS BEING HELD BACK, SO SAFE TO SPEND DOESN'T MOVE — IT WAS ALREADY SET ASIDE FOR THIS."}"></button>
+          ${multi
+            ? `<div class="inc-amt">${Util.esc(Util.fmtMoney(occs.reduce((a,o)=>a+o.amount,0), 0))}</div>`
+            : amountCell(first, isSavings, overdue, due)}
+          ${multi
+            ? `<button class="inc-chev ${open ? "open" : ""}${doneCount === occs.length ? " all-clear" : ""}" data-action="bill-expand" data-id="${Util.esc(b.id)}" aria-expanded="${open ? "true" : "false"}" aria-label="${doneCount} OF ${occs.length} ${verb} · ${open ? "COLLAPSE" : "EXPAND"}" data-learn="THIS ONE LANDS MORE THAN ONCE A MONTH, SO A SINGLE CHECKBOX COULDN'T SAY WHICH ONES HAVE GONE OUT. OPEN IT FOR A ROW PER DATE, EACH WITH ITS OWN AMOUNT AND ITS OWN TICK.">${doneCount}/${occs.length} <span class="arrow">⌄</span></button>`
+            : tick(first, verb)}
         </div>
+        <div style="margin-top:-4px;">
+          <button class="link" style="padding:0;min-height:auto;font-size:11px;letter-spacing:0.14em;" data-action="edit-item" data-kind="${isSavings ? "savings" : "bill"}" data-id="${Util.esc(b.id)}" data-learn="EDIT THIS BILL'S NAME, USUAL AMOUNT, DUE DAY, OR HOW OFTEN IT LANDS. IT'S THE SAME RECORD SETTINGS EDITS, SO CHANGES SHOW IN BOTH PLACES.">EDIT →</button>
+        </div>
+        ${editStates[(isSavings ? "savings" : "bill") + "_" + b.id] ? renderEditForm(isSavings ? "savings" : "bill", b) : ""}
+        ${subRows}
         ${renderBillLinkPrompt(b)}`;
     };
 
@@ -7040,10 +7178,53 @@ const UI = (() => {
   }
 
   function bindBillsEvents(s) {
+    // Bills are editable from this tab now, not only from Settings, so the
+    // edit affordances have to be wired here too — the handlers live on the
+    // container that was rendered, and this one is not Settings.
+    root.querySelectorAll("[data-action=edit-item]").forEach(el => {
+      el.addEventListener("click", () => {
+        const key = el.dataset.kind + "_" + el.dataset.id;
+        editStates[key] = !editStates[key];
+        render();
+      });
+    });
+    bindEditFormEvents(s);
     ensureScrollHintObserver("bills", '[data-scroll-key="bills-scroll-bill"]');
     root.querySelectorAll("[data-action=bills-subtab]").forEach(el => {
       el.addEventListener("click", () => { billsSubTab = el.dataset.sub; render(); });
     });
+    root.querySelectorAll("[data-action=bill-expand]").forEach(el => {
+      el.addEventListener("click", () => {
+        const id = el.dataset.id;
+        billExpanded[id] = !billExpanded[id];
+        render();
+      });
+    });
+    root.querySelectorAll("[data-action=bill-amt-edit]").forEach(el => {
+      el.addEventListener("click", () => {
+        const found = BudgetEngine.billOccurrenceFor(s, el.dataset.key, s.currentMonth);
+        billAmtEdit = { key: el.dataset.key, value: found ? String(found.occ.amount) : "" };
+        render();
+      });
+    });
+    // Committed on Enter or on leaving the field. Blank or unparseable clears
+    // the override and the bill goes back to its usual amount.
+    const billAmt = root.querySelector("#bill-amt-input");
+    if (billAmt) {
+      billAmt.focus();
+      billAmt.select();
+      const commit = () => {
+        const key = billAmt.dataset.key;
+        const raw = String(billAmt.value).replace(/[^0-9.]/g, "");
+        billAmtEdit = null;
+        saveBillAmount(s, key, raw === "" ? null : parseFloat(raw));
+      };
+      billAmt.addEventListener("keydown", e => {
+        if (e.key === "Enter") { e.preventDefault(); commit(); }
+        else if (e.key === "Escape") { billAmtEdit = null; render(); }
+      });
+      billAmt.addEventListener("blur", commit);
+    }
     root.querySelectorAll("[data-action=bill-toggle]").forEach(el => {
       el.addEventListener("click", () => toggleBillPaid(s, el.dataset.id));
     });
@@ -7233,6 +7414,22 @@ const UI = (() => {
   // Clone the whole billsPaid map, mutate only the current month's key, and send
   // the whole map. A nested partial patch would replace the map and destroy
   // sibling months — same pattern monthlyRollover uses in confirmNewMonth.
+  /* What one occurrence costs THIS month. Stored per month per occurrence, so
+     a heavy power bill in August is August's problem and September goes back
+     to the usual figure on its own. Passing null clears the override. */
+  async function saveBillAmount(s, key, amount) {
+    const month = s.currentMonth;
+    const all = { ...(s.billAmounts || {}) };
+    const forMonth = { ...(all[month] || {}) };
+    if (amount == null || !isFinite(amount) || amount < 0) delete forMonth[key];
+    else forMonth[key] = Math.round(amount * 100) / 100;
+    all[month] = forMonth;
+    try {
+      await DataService.update({ billAmounts: all });
+      render();
+    } catch (e) { alert("COULDN'T SAVE; CHECK CONNECTION"); console.warn(e); render(); }
+  }
+
   async function toggleBillPaid(s, billId, link) {
     const month = s.currentMonth;
     const all = { ...(s.billsPaid || {}) };
@@ -7267,9 +7464,14 @@ const UI = (() => {
           amount = (Number(src.amount) || 0) * BudgetEngine.tithePercent(s) / 100;
         }
       } else {
-        bill = (s.bills || []).find(b => b.id === billId);
-        if (!bill) return;
-        amount = Number(bill.amount) || 0;
+        // A bill id, or "<billId>:<n>" for the nth occurrence of a bill that
+        // lands more than once a month. Either way the amount comes from the
+        // occurrence, so a month where the usage was heavy records what was
+        // actually owed rather than the usual figure.
+        const found = BudgetEngine.billOccurrenceFor(s, billId, month);
+        if (!found) return;
+        bill = found.bill;
+        amount = found.occ.amount;
       }
       // If this payment is already sitting in the ledger, link to it rather
       // than recording a second, independent outflow of the same money. But
@@ -8293,15 +8495,17 @@ const UI = (() => {
         <div class="field"><label>LABEL</label><input data-edit-field="label" value="${Util.esc(item.label||'')}"></div>
         <div class="field"><label>${amountLabel}</label><input data-edit-field="${amountField}" value="${Util.esc(item[amountField]==null?'':item[amountField])}" inputmode="decimal"></div>
         ${hasDate ? `<div class="field"><label>${kind === "income" ? "PAY DAY" : "DUE DAY"}</label><input data-edit-field="dueDateOfMonth" value="${Util.esc(item.dueDateOfMonth||1)}" inputmode="numeric"></div>` : ""}
-        ${kind === "income" ? `
+        ${kind === "income" || kind === "bill" || kind === "savings" ? `
           <div class="field"><label>HOW OFTEN</label></div>
-          <div class="chips" data-learn="HOW OFTEN THIS SOURCE PAYS. THE AMOUNT ABOVE IS WHAT ARRIVES EACH TIME; CLEAR WORKS OUT WHAT THAT COMES TO IN A MONTH.">
-            ${BudgetEngine.INCOME_FREQUENCIES.map(f => `<button type="button" class="chip ${BudgetEngine.incomeFrequency(item).id === f.id ? "active" : ""}" data-action="edit-freq" data-freq="${Util.esc(f.id)}">${Util.esc(f.label)}</button>`).join("")}
+          <div class="chips" data-learn="${kind === "income"
+            ? "HOW OFTEN THIS SOURCE PAYS. THE AMOUNT ABOVE IS WHAT ARRIVES EACH TIME; CLEAR WORKS OUT WHAT THAT COMES TO IN A MONTH."
+            : "HOW OFTEN THIS ONE LANDS. ANYTHING MORE OFTEN THAN MONTHLY GETS A ROW PER DATE ON THE BILLS TAB, EACH WITH ITS OWN AMOUNT AND ITS OWN TICK — WHICH IS WHAT YOU WANT FOR ANYTHING BILLED ON USAGE."}">
+            ${(kind === "income" ? BudgetEngine.INCOME_FREQUENCIES : BudgetEngine.BILL_FREQUENCIES).map(f => `<button type="button" class="chip ${(kind === "income" ? BudgetEngine.incomeFrequency(item) : BudgetEngine.billFrequency(item)).id === f.id ? "active" : ""}" data-action="edit-freq" data-freq="${Util.esc(f.id)}">${Util.esc(f.label)}</button>`).join("")}
           </div>
           <!-- The chips write here rather than into module state, so picking one
                can't throw away whatever is half-typed in the fields above. -->
-          <input type="hidden" data-edit-field="frequency" value="${Util.esc(BudgetEngine.incomeFrequency(item).id)}">
-          <div class="meta">THE AMOUNT ABOVE IS WHAT LANDS EACH TIME, NOT PER MONTH.</div>
+          <input type="hidden" data-edit-field="frequency" value="${Util.esc((kind === "income" ? BudgetEngine.incomeFrequency(item) : BudgetEngine.billFrequency(item)).id)}">
+          <div class="meta">THE AMOUNT ABOVE IS WHAT ${kind === "income" ? "LANDS" : "GOES OUT"} EACH TIME, NOT PER MONTH.</div>
         ` : ""}
         ${isDebt ? `
           <div class="field"><label>MIN PAYMENT</label><input data-edit-field="minimumPayment" value="${Util.esc(item.minimumPayment==null?'':item.minimumPayment)}" inputmode="decimal"></div>
@@ -9386,11 +9590,15 @@ const UI = (() => {
       } : i);
       patch.income = arr;
     } else if (kind === "bill" || kind === "savings") {
+      // Same guard as income: an unrecognised cadence falls back to what the
+      // bill already had rather than writing something the engine can't read.
+      const freqOk = BudgetEngine.BILL_FREQUENCIES.some(f => f.id === values.frequency);
       const arr = (s.bills||[]).map(b => b.id === id ? {
         ...b,
         label: (values.label||b.label).toUpperCase(),
         amount: parseFloat(values.amount) || 0,
-        dueDateOfMonth: parseInt(values.dueDateOfMonth,10) || 1
+        dueDateOfMonth: parseInt(values.dueDateOfMonth,10) || 1,
+        frequency: freqOk ? values.frequency : BudgetEngine.billFrequency(b).id
       } : b);
       patch.bills = arr;
     } else if (kind === "spending") {
@@ -9529,7 +9737,7 @@ const UI = (() => {
     importFlow.shotsBusy = false;
     importFlow.askDate = null;
     importFlow.assumeDate = null;
-    importFlow.pendingSkipped = 0;
+    importFlow.pendingKept = 0;
     importFlow.detectedBalance = null;
     importFlow.choicePanelOpen = false;
     importFlow.autoMatchResult = null;
@@ -9732,15 +9940,26 @@ const UI = (() => {
       render();
       return;
     }
-    // Not-yet-posted rows are dropped: the amount can still change, the
-    // balance beside them is a placeholder that would break the arithmetic
-    // check, and they arrive again for real once they clear — on a different
-    // date, which is exactly the shape the duplicate check is worst at.
+    /* Not-yet-posted rows used to be dropped. That was wrong in the way that
+       matters most: the money is gone the moment the card is swiped, and a
+       Safe To Spend that ignores it is telling you that you have money you
+       have already spent. They are kept and carried as pending, so they come
+       off the figure from their own date.
+
+       The two real reasons they were dropped are still handled, just not by
+       throwing the row away:
+         - The running balance printed beside a pending row is a placeholder,
+           so pending rows are excluded from the closing-balance detection
+           below rather than allowed to poison it.
+         - They arrive again for real when they clear, usually on a different
+           date and sometimes for a different amount. settlePending (see the
+           commit path) matches the posted row to the pending one already
+           stored and updates it in place instead of writing a second copy. */
     const posted = parsed.items.filter(i => !i.pending);
-    importFlow.pendingSkipped = parsed.items.length - posted.length;
-    importFlow.pasteItems = posted.length ? posted : parsed.items;
+    importFlow.pendingKept = parsed.items.length - posted.length;
+    importFlow.pasteItems = parsed.items;
     importFlow.pasteStructure = parsed.structure;
-    importFlow.detectedBalance = ImportEngine.closingBalanceOf(importFlow.pasteItems);
+    importFlow.detectedBalance = ImportEngine.closingBalanceOf(posted.length ? posted : parsed.items);
 
     const fp = ImportEngine.computePasteFingerprint(parsed.structure);
     const profile = (s.importProfiles || []).find(p => p.profileType === "paste" && p.formatFingerprint === fp);
@@ -10018,6 +10237,9 @@ const UI = (() => {
         id: Util.uuid(),
         date: it.date,
         amount: absAmt,
+        // Carried through so the written transaction knows it has not posted
+        // yet, and so a later import can settle it rather than duplicate it.
+        pending: !!it.pending,
         originalSigned: signed,
         description: (cleanedDesc || it.description || "").toUpperCase().slice(0, 60),
         merchantKey,
@@ -10217,8 +10439,45 @@ const UI = (() => {
       };
       if (r.merchantKey) txn.merchantKey = r.merchantKey;
       if (!r.categoryId) txn.needsCategory = true;
+      if (r.pending) txn.pending = true;
       newTxns.push(txn);
       if (r.merchantKey && r.categoryId) mapUpdates[r.merchantKey] = r.categoryId;
+    }
+
+    /* A pending row imported last week comes back once it clears — later date,
+       sometimes a different amount (a tip, a fuel hold, a currency rate). Left
+       alone that is two transactions for one purchase, and the balance drifts
+       by the amount every single time.
+
+       So each incoming POSTED row first looks for a pending transaction it
+       plausibly settles: same merchant, within a fortnight before it, and
+       within a few dollars or a tenth of the amount. A match is updated in
+       place — final date, final amount, pending cleared — and the incoming row
+       is dropped rather than added. */
+    const settled = {};
+    const pendingHeld = (s.transactions || []).filter(t => t && t.pending);
+    if (pendingHeld.length) {
+      const taken = new Set();
+      for (let i = newTxns.length - 1; i >= 0; i--) {
+        const t = newTxns[i];
+        if (t.pending) continue;
+        const hit = pendingHeld.find(p => {
+          if (taken.has(p.id)) return false;
+          if (p.paymentType !== t.paymentType) return false;
+          if (!p.date || !t.date || p.date > t.date) return false;
+          if (Util.daysSince(p.date) - Util.daysSince(t.date) > 14) return false;
+          const a = Number(p.amount) || 0, b = Number(t.amount) || 0;
+          const near = Math.abs(a - b) <= Math.max(3, a * 0.1);
+          if (!near) return false;
+          const pk = p.merchantKey || ImportEngine.normalizeMerchantKey(p.note || "");
+          const tk = t.merchantKey || ImportEngine.normalizeMerchantKey(t.note || "");
+          return !!pk && pk === tk;
+        });
+        if (!hit) continue;
+        taken.add(hit.id);
+        settled[hit.id] = { date: t.date, amount: t.amount, month: t.month, note: t.note };
+        newTxns.splice(i, 1);
+      }
     }
     // Second pass: confirmed income matches become incomeLog entries. Deposit
     // rows are still never written as transactions.
@@ -10304,7 +10563,21 @@ const UI = (() => {
     }
     // Everything goes out in ONE patch.
     const patch = {};
-    if (newTxns.length) patch.transactions = DataService.appendTxns(newTxns);
+    const settledIds = Object.keys(settled);
+    if (settledIds.length) {
+      // Settling rewrites existing rows, so the whole list goes out rather
+      // than an append. New rows are concatenated here for the same reason.
+      const merged = (s.transactions || []).map(t => {
+        const up = t && settled[t.id];
+        if (!up) return t;
+        const next = { ...t, date: up.date, amount: up.amount, month: up.month };
+        delete next.pending;
+        return next;
+      });
+      patch.transactions = merged.concat(newTxns);
+    } else if (newTxns.length) {
+      patch.transactions = DataService.appendTxns(newTxns);
+    }
     if (newIncome.length) patch.incomeLog = DataService.appendTxns(newIncome);
     if (billsPaidCount) patch.billsPaid = billsPaidPatch;
     if (Object.keys(mapUpdates).length) {
@@ -10772,8 +11045,8 @@ const UI = (() => {
         ? `<div class="overlay-sub text-success" style="opacity:0.85;" data-learn="EVERY ROW'S RUNNING BALANCE MATCHES THE ONE BELOW IT PLUS ITS OWN AMOUNT. THAT MEANS THE AMOUNTS WERE READ CORRECTLY — IT IS ARITHMETIC, NOT A GUESS.">✓ BALANCES CHECK OUT ACROSS EVERY ROW</div>`
         : `<div class="overlay-sub text-danger" style="opacity:0.9;" data-learn="THE RUNNING BALANCES DON'T ALL ADD UP, WHICH USUALLY MEANS AN AMOUNT WAS MISREAD OR A ROW IS MISSING. CHECK THE AMOUNTS BELOW AGAINST YOUR BANK BEFORE IMPORTING.">× SOME BALANCES DON'T ADD UP · CHECK THE AMOUNTS BELOW</div>`
     ) : "";
-    const pendingHtml = importFlow.pendingSkipped ? `
-      <div class="overlay-sub" style="opacity:0.7;" data-learn="PENDING TRANSACTIONS HAVEN'T POSTED YET. THE AMOUNT CAN STILL CHANGE AND THEY'LL SHOW UP AGAIN ONCE THEY CLEAR, SO THEY'RE LEFT OUT TO AVOID IMPORTING THEM TWICE.">${importFlow.pendingSkipped} PENDING ROW${importFlow.pendingSkipped === 1 ? "" : "S"} SKIPPED · THEY'LL IMPORT ONCE THEY POST</div>` : "";
+    const pendingHtml = importFlow.pendingKept ? `
+      <div class="overlay-sub" style="opacity:0.7;" data-learn="PENDING TRANSACTIONS HAVEN'T POSTED AT THE BANK YET, BUT THE MONEY IS ALREADY SPENT, SO THEY COUNT AGAINST SAFE TO SPEND FROM THE DAY THEY WERE SWIPED. WHEN THE POSTED VERSION TURNS UP IN A LATER IMPORT IT UPDATES THE SAME ROW — WITH THE FINAL AMOUNT AND DATE — INSTEAD OF ADDING A SECOND ONE.">${importFlow.pendingKept} PENDING ROW${importFlow.pendingKept === 1 ? "" : "S"} INCLUDED · COUNTED FROM THE DAY THEY WERE SWIPED</div>` : "";
     const choicePanel = importFlow.choicePanelOpen ? `
       <div class="settings-group" style="margin-top:16px; background: var(--gray-light);">
         <h3 class="text-danger">${uncatCount} OF ${importable} ROWS HAVE NO CATEGORY</h3>
