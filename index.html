@@ -1476,11 +1476,13 @@ const BudgetEngine = (() => {
                         payday. Spend up to this and everything due before you
                         are paid again still clears. This is the number you
                         make a decision against in a shop.
-       TIGHTEST POINT — the lowest it gets across the whole horizon, with the
-                        date it happens. This is the warning, and it sits
-                        beside Safe To Spend rather than replacing it, so a
-                        rough patch three weeks out is visible without making
-                        today's grocery money read as zero.
+       AFTER PAYDAY   — the lowest it gets on the far side of that payday,
+                        through the end of the horizon, with the date it
+                        happens. This is the warning, and it sits beside Safe
+                        To Spend rather than replacing it, so a rough patch
+                        three weeks out is visible without making today's
+                        grocery money read as zero. The two split the horizon
+                        between them, so they never report the same moment.
 
      The horizon deliberately runs a rolling 35 days rather than stopping at
      month end. A hard stop on the 31st counted the bills due on the 28th but
@@ -1856,7 +1858,7 @@ const BudgetEngine = (() => {
                       logged, a bill paid but not ticked, spending that got
                       away from you. Its notes are about the record being
                       wrong or the week being tight, and most carry a fix.
-       TIGHTEST POINT is about a day you can see coming. It goes wrong because
+       AFTER PAYDAY   is about a day you can see coming. It goes wrong because
                       of how obligations are ARRANGED — too many landing
                       together, a card falling due, a gap between paychecks.
                       Its notes are about timing and shape: which day is
@@ -4530,11 +4532,10 @@ const UI = (() => {
     const safeNote = outlook.windowEnd
       ? `UNTIL ${Util.esc(Util.fmtDateShort(outlook.windowEnd))}`
       : "NO PAYDAY IN THE NEXT 5 WEEKS";
-    const tightNote = !outlook.hasAfter
-      ? (lowIsToday ? (tight < 0 ? "SHORT TODAY" : "TODAY") : `${tight < 0 ? "SHORT ON" : "LOW ON"} ${Util.esc(lowDateLabel)}`)
-      : outlook.afterLowDate === outlook.windowEnd
-        ? `AFTER PAYDAY ${Util.esc(lowDateLabel)}`
-        : `${tight < 0 ? "SHORT ON" : "LOW ON"} ${Util.esc(lowDateLabel)}`;
+    // The label already says "AFTER PAYDAY", so the note only carries when.
+    const tightNote = lowIsToday && !outlook.hasAfter
+      ? (tight < 0 ? "SHORT TODAY" : "TODAY")
+      : `${tight < 0 ? "SHORT ON" : "LOW ON"} ${Util.esc(lowDateLabel)}`;
 
     // Per-person spend (was Dashboard-only).
     let peopleHtml = "";
@@ -4628,8 +4629,8 @@ const UI = (() => {
             <div class="hero-note">${safeNote}</div>
           </div>
           <div class="hero-col">
-            <div class="sub-label" data-learn="SUB-LABEL FOR THE TIGHTEST POINT. THE DATE UNDER THE NUMBER IS THE DAY YOUR BALANCE IS FORECAST TO BE AT ITS LOWEST.">TIGHTEST POINT</div>
-            <div class="hero ${tightDanger} tappable" data-action="open-shortfall" data-which="tight" data-learn="THE LOWEST YOUR BALANCE IS FORECAST TO GET ONCE YOUR NEXT PAYCHECK HAS LANDED, THROUGH THE NEXT FIVE WEEKS, AND THE DAY IT HAPPENS. THE TWO FIGURES SPLIT THE HORIZON AT YOUR NEXT PAY DAY — SAFE TO SPEND COVERS GETTING THERE, THIS COVERS WHAT'S WAITING ON THE OTHER SIDE — SO A ROUGH PATCH IS VISIBLE IN ADVANCE INSTEAD OF ARRIVING. TAP IT FOR WHICH DAY IS HEAVIEST AND WHAT LANDS ON IT.">${Util.esc(Util.fmtMoney(tight, 0))}</div>
+            <div class="sub-label" data-learn="SUB-LABEL FOR THE AFTER PAYDAY FIGURE. THE DATE UNDER THE NUMBER IS THE DAY YOUR BALANCE IS AT ITS LOWEST ON THAT SIDE OF PAYDAY.">AFTER PAYDAY</div>
+            <div class="hero ${tightDanger} tappable" data-action="open-shortfall" data-which="tight" data-learn="THE LOWEST YOUR BALANCE IS FORECAST TO GET ONCE YOUR NEXT PAYCHECK HAS LANDED, THROUGH THE NEXT FIVE WEEKS, AND THE DAY IT HAPPENS. THE TWO FIGURES SPLIT THE HORIZON AT YOUR NEXT PAY DAY — SAFE TO SPEND COVERS GETTING THERE, THIS COVERS WHAT'S WAITING ON THE OTHER SIDE — SO THEY NEVER REPORT THE SAME MOMENT AND A ROUGH PATCH IS VISIBLE IN ADVANCE INSTEAD OF ARRIVING. TAP IT FOR WHICH DAY IS HEAVIEST AND WHAT LANDS ON IT.">${Util.esc(Util.fmtMoney(tight, 0))}</div>
             <div class="hero-note${tight < 0 ? " text-danger" : ""}">${tightNote}</div>
           </div>
         </div>
@@ -7893,7 +7894,7 @@ const UI = (() => {
       <div class="pr-block pr-lime" style="padding-top:4px;">
         <div class="pr-label">SAFE TO SPEND</div>
         <div class="pr-hero${stsAnchored && sts < 0 ? " pr-danger" : ""}">${stsAnchored ? Util.esc(Util.fmtMoney(sts, 0)) : "NO BALANCE CONFIRMED"}</div>
-        ${stsAnchored ? `<div class="pr-sub">TIGHTEST POINT ${Util.esc(Util.fmtMoney(tightest, 0))} ON ${Util.esc(Util.fmtDateShort(stsOutlook.afterLowDate))}${stsOutlook.windowEnd ? " &middot; COVERED UNTIL " + Util.esc(Util.fmtDateShort(stsOutlook.windowEnd)) : ""}</div>` : ""}
+        ${stsAnchored ? `<div class="pr-sub">AFTER PAYDAY ${Util.esc(Util.fmtMoney(tightest, 0))} ON ${Util.esc(Util.fmtDateShort(stsOutlook.afterLowDate))}${stsOutlook.windowEnd ? " &middot; COVERED UNTIL " + Util.esc(Util.fmtDateShort(stsOutlook.windowEnd)) : ""}</div>` : ""}
         <div class="pr-sub">
           ${stsAnchored ? `IN THE ACCOUNT ${Util.esc(Util.fmtMoney(B.projectedBalance(s), 0))} &middot; ` : ""}RECEIVED ${Util.esc(Util.fmtMoney(received, 0))} OF ${Util.esc(Util.fmtMoney(expected, 0))} EXPECTED
           &middot; BUDGETED ${Util.esc(Util.fmtMoney(budgeted, 0))}
@@ -10825,8 +10826,8 @@ const UI = (() => {
     const lead = isSafe
       ? `SAFE TO SPEND IS <b>${money(r.amount)}</b> — THE LOWEST YOUR BALANCE GETS BETWEEN NOW AND ${windowPhrase}. ${lowSentence} SPEND UP TO IT AND EVERY BILL DUE IN THAT STRETCH STILL CLEARS. EVERYTHING BELOW ADDS UP TO EXACTLY THAT.`
       : r.hasAfter
-        ? `YOUR TIGHTEST POINT IS <b>${money(r.amount)}</b>, ON ${dayLabel(r.date)}. THAT'S THE LOWEST YOUR BALANCE GETS ONCE YOUR ${dayLabel(r.payDate)} PAYCHECK HAS LANDED, THROUGH ${dayLabel(r.horizonEnd)}. SAFE TO SPEND COVERS GETTING TO PAYDAY; THIS IS WHAT'S WAITING ON THE OTHER SIDE OF IT. EVERYTHING BELOW ADDS UP TO EXACTLY THAT.`
-        : `YOUR TIGHTEST POINT IS <b>${money(r.amount)}</b>${isToday ? " — AND IT'S TODAY" : `, ON ${dayLabel(r.date)}`}. NO PAYCHECK IS EXPECTED BEFORE ${dayLabel(r.horizonEnd)}, SO THIS IS SIMPLY THE LOWEST YOUR BALANCE GETS BETWEEN NOW AND THEN. EVERYTHING BELOW ADDS UP TO EXACTLY THAT.`;
+        ? `AFTER PAYDAY YOU'RE AT <b>${money(r.amount)}</b> ON ${dayLabel(r.date)} — THE LOWEST YOUR BALANCE GETS ONCE YOUR ${dayLabel(r.payDate)} PAYCHECK HAS LANDED, THROUGH ${dayLabel(r.horizonEnd)}. SAFE TO SPEND COVERS GETTING TO PAYDAY; THIS IS WHAT'S WAITING ON THE OTHER SIDE OF IT. EVERYTHING BELOW ADDS UP TO EXACTLY THAT.`
+        : `THE LOWEST YOUR BALANCE GETS IS <b>${money(r.amount)}</b>${isToday ? " — AND IT'S TODAY" : `, ON ${dayLabel(r.date)}`}. NO PAYCHECK IS EXPECTED BEFORE ${dayLabel(r.horizonEnd)}, SO THERE IS NO "AFTER PAYDAY" TO REPORT AND THIS IS SIMPLY THE LOW BETWEEN NOW AND THEN. EVERYTHING BELOW ADDS UP TO EXACTLY THAT.`;
 
     // A costed note is only worth stating when undoing the cause actually
     // shifts the figure being explained; rounding to whole dollars means
@@ -10875,7 +10876,7 @@ const UI = (() => {
       }
       // --- Safe To Spend only: the hand-off to the other figure.
       if (n.kind === "seeTightest") {
-        return `<li><b>IT'S TIGHTER ON THE OTHER SIDE OF PAYDAY</b> · ${money(n.amount)} ON ${dayLabel(n.date)}. THIS NUMBER ONLY PROMISES TO GET YOU TO PAYDAY. TAP TIGHTEST POINT FOR WHAT HAPPENS AFTER.</li>`;
+        return `<li><b>IT'S TIGHTER ON THE OTHER SIDE OF PAYDAY</b> · ${money(n.amount)} ON ${dayLabel(n.date)}. THIS NUMBER ONLY PROMISES TO GET YOU TO PAYDAY. TAP AFTER PAYDAY FOR WHAT HAPPENS NEXT.</li>`;
       }
       // --- Tightest Point only: shape and timing rather than hygiene.
       if (n.kind === "heaviestDay") {
@@ -10911,7 +10912,7 @@ const UI = (() => {
         <button class="link" data-action="shortfall-close">× CLOSE</button>
         <h2 class="section-label" style="margin-top:16px;">→ ${isSafe
           ? "WHAT'S LEFT UNTIL PAYDAY"
-          : (short ? "WHY IT GETS TIGHT" : "WHAT'S LEFT AFTER PAYDAY")}</h2>
+          : (short ? "WHY IT'S SHORT AFTER PAYDAY" : "WHAT'S LEFT AFTER PAYDAY")}</h2>
         <div class="meta" style="margin-top:8px;">${lead}</div>
 
         <div style="margin-top:28px;">
