@@ -29,7 +29,8 @@ const code = [
   block(src, "const Util = (() => {"),
   block(src, "const BudgetEngine = (() => {"),
   block(src, "const DebtEngine = (() => {"),
-  "return { Util, BudgetEngine, DebtEngine };"
+  block(src, "const ImportEngine = (() => {"),
+  "return { Util, BudgetEngine, DebtEngine, ImportEngine };"
 ].join("\n");
 
 // `Date` resolves at call time, not here, so tests can move the clock after

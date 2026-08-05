@@ -3101,11 +3101,28 @@ const ImportEngine = (() => {
     const emptyStruct = { hasDates: false, hasBalance: false, linesPerTxn: 1, datePos: "start", amountPos: "first", detected: 0 };
     if (!lines.length) return { items: [], structure: emptyStruct };
 
-    const lineData = lines.map(l => ({
-      line: l,
-      date: findDate(l, refYear, today),
-      amounts: findAmounts(l)
-    }));
+    /* A $0.00 is never a transaction. Banks print one all over a feed — an
+       authorisation hold, a rewards or cash-back line, a fee that was waived,
+       a running balance that happens to be zero — and none of them move money.
+
+       Left in, they do real damage. A merchant name that wraps onto a second
+       line carries the $0.00 with it, that line then counts as money-bearing,
+       and one purchase becomes two transactions: the real amount and a
+       phantom zero. Filtered here, such a line has no amounts at all and is
+       read as what it is — more of the description above it. */
+    const lineData = lines.map(l => {
+      const all = findAmounts(l);
+      return {
+        line: l,
+        date: findDate(l, refYear, today),
+        amounts: all.filter(a => Math.abs(a.value) >= 0.005),
+        // Kept so the description can be cleaned of them. A stray "$0.00" left
+        // in the text changes the merchant key, which is what merchant
+        // learning, the duplicate check and the pending-settle match all key
+        // off — so the same shop would stop looking like itself.
+        zeros: all.filter(a => Math.abs(a.value) < 0.005)
+      };
+    });
 
     const dated = lineData.filter(x => x.date).length;
     // No date anywhere — a screenshot taken below the heading, or a heading the
@@ -3184,6 +3201,9 @@ const ImportEngine = (() => {
 
       const chosen = effAmountPos === "last" ? allAmts[allAmts.length - 1] : allAmts[0];
       const txnAmt = chosen.value;
+      // Belt and braces behind the zero filter on lineData: a row that somehow
+      // still resolves to nothing moves no money and must not become an item.
+      if (Math.abs(txnAmt) < 0.005) continue;
 
       // Running balance, when the layout has one. Previously the non-picked
       // amount was simply thrown away; it's the account balance as of this row,
@@ -3204,9 +3224,17 @@ const ImportEngine = (() => {
       } else {
         desc = desc.split(chosen.raw).join(" ");
       }
+      for (const l of g) for (const z of (l.zeros || [])) desc = desc.split(z.raw).join(" ");
       desc = desc.replace(/\s+/g, " ").trim();
 
-      items.push({ date: dEntry.date.iso, amount: txnAmt, description: desc, runningBalance });
+      items.push({
+        date: dEntry.date.iso, amount: txnAmt, description: desc, runningBalance,
+        // Detected here as well as in the date-heading layout. Without it, a
+        // statement that carries a date on every row would import pending
+        // charges as though they had posted — no PENDING tag, and nothing for
+        // the later posted row to settle against, so it would double up.
+        pending: /\bPENDING\b/i.test(desc)
+      });
     }
     structure.detected = items.length;
     return { items, structure };
@@ -3301,6 +3329,7 @@ const ImportEngine = (() => {
         for (const l of g.lines) l.amounts.forEach(a => allAmts.push(a));
         if (!allAmts.length || !g.date) continue;
         const chosen = pos === "last" ? allAmts[allAmts.length - 1] : allAmts[0];
+        if (Math.abs(chosen.value) < 0.005) continue;
         let runningBalance = null;
         if (effSecondIsBalance && allAmts.length >= 2) {
           const other = allAmts.filter(a => a !== chosen);
@@ -3312,6 +3341,7 @@ const ImportEngine = (() => {
         } else {
           desc = desc.split(chosen.raw).join(" ");
         }
+        for (const l of g.lines) for (const z of (l.zeros || [])) desc = desc.split(z.raw).join(" ");
         desc = desc.replace(/\s+/g, " ").trim();
         items.push({
           date: g.date.iso,
@@ -10050,6 +10080,9 @@ const UI = (() => {
       const amtToks = ImportEngine.findAmounts(amtRaw) || [];
       const amount = amtToks.length ? amtToks[0].value : parseFloat(String(amtRaw).replace(/[^0-9.\-]/g, ""));
       if (!isFinite(amount)) continue;
+      // Same rule as the screenshot parser: a zero row is a placeholder, not a
+      // transaction, and importing it only makes a purchase look like two.
+      if (Math.abs(amount) < 0.005) continue;
       // Only read when a balance column was mapped for this bank's layout.
       let runningBalance = null;
       if (profile.balanceColumn != null) {

@@ -12,7 +12,8 @@ const suites = [
   "./monotonic.test",
   "./debt.test",
   "./bills.test",
-  "./pending.test"
+  "./pending.test",
+  "./import-parse.test"
 ];
 
 let failures = 0;
