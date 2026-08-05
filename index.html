@@ -745,6 +745,75 @@
     opacity: var(--lb-msg, 1);
     transition: opacity 200ms linear;
   }
+  /* ---------- PAYOFF CELEBRATION ----------
+     The same white sunburst the app opens with, fired when a balance reaches
+     zero. Clearing a card is the single best thing that happens in here and it
+     used to pass in silence — the number just went to nothing and the row sat
+     there looking the same as every other row.
+
+     Built from the loading screen's own two ingredients so it reads as the
+     same app: a radial white bloom, and the cobalt wordmark painted through a
+     sweeping highlight. It sits above everything, ignores taps so it can never
+     trap you, and takes itself down when it is done. */
+  .payoff-burst {
+    position: fixed; inset: 0; z-index: 400;
+    display: flex; align-items: center; justify-content: center;
+    pointer-events: none;
+    animation: payoff-fade 3400ms ease-out forwards;
+  }
+  .payoff-burst .ray {
+    position: absolute; left: 50%; top: 50%;
+    width: 10px; height: 10px; border-radius: 50%;
+    background: radial-gradient(closest-side, #FFFFFF 0%, rgba(255,255,255,0.92) 45%, rgba(255,255,255,0) 100%);
+    transform: translate(-50%, -50%) scale(1);
+    animation: payoff-bloom 3400ms cubic-bezier(0.16, 0.9, 0.3, 1) forwards;
+  }
+  .payoff-burst .word {
+    position: relative;
+    font-size: clamp(40px, 13vw, 72px); font-weight: 500; letter-spacing: 0.08em;
+    white-space: nowrap;
+    background: linear-gradient(108deg,
+      var(--cobalt) 0%, var(--cobalt) 42%,
+      rgba(255,255,255,0.85) 50%,
+      var(--cobalt) 58%, var(--cobalt) 100%);
+    background-size: 260% 100%;
+    background-position: 120% 0;
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent; color: transparent;
+    animation: payoff-word 3400ms ease-out forwards;
+  }
+  .payoff-burst .who {
+    position: absolute; left: 0; right: 0; text-align: center;
+    top: calc(50% + clamp(38px, 9vw, 62px));
+    font-size: 13px; font-weight: 600; letter-spacing: 0.18em; color: var(--cobalt);
+    animation: payoff-word 3400ms ease-out forwards;
+  }
+  @keyframes payoff-bloom {
+    0%   { transform: translate(-50%, -50%) scale(1);   opacity: 0; }
+    12%  { transform: translate(-50%, -50%) scale(60);  opacity: 1; }
+    45%  { transform: translate(-50%, -50%) scale(190); opacity: 1; }
+    100% { transform: translate(-50%, -50%) scale(240); opacity: 0; }
+  }
+  @keyframes payoff-word {
+    0%   { opacity: 0; background-position: 120% 0; transform: scale(0.94); }
+    16%  { opacity: 1; transform: scale(1); }
+    55%  { opacity: 1; background-position: -40% 0; }
+    100% { opacity: 0; background-position: -60% 0; transform: scale(1.02); }
+  }
+  @keyframes payoff-fade { 0%, 92% { opacity: 1; } 100% { opacity: 0; } }
+  /* Reduced motion still gets the moment, just without the sweep and scale. */
+  @media (prefers-reduced-motion: reduce) {
+    .payoff-burst .ray {
+      animation: none; opacity: 0.9;
+      transform: translate(-50%, -50%) scale(200);
+    }
+    .payoff-burst .word, .payoff-burst .who {
+      animation: none; opacity: 1;
+      background-position: 50% 0;
+    }
+    .payoff-burst { animation: payoff-fade 2200ms linear forwards; }
+  }
+
   /* Full-viewport white flash used for the handoff. */
   .load-flash {
     position: fixed; inset: 0; z-index: 200;
@@ -2159,8 +2228,65 @@ const BudgetEngine = (() => {
   function totalBudgeted(s) {
     return billsSubtotal(s) + tithe(s) + totalDebtMins(s) + spendingBudgetedTotal(s);
   }
+  // What the budget leaves over once everything else is allocated. This is a
+  // CAPACITY figure — the most you could put at debt if you spent nothing
+  // else — and for a long time the payoff projection quietly treated it as a
+  // promise, which is what made that date years too early. It is still worth
+  // showing; it just is not what you are doing.
   function extraForDebt(s) {
     return totalIncome(s) - tithe(s) - totalBills(s) - totalDebtMins(s) - spendingBudgetedTotal(s);
+  }
+
+  /* ---------- WHAT YOU ACTUALLY PAY ----------
+     Every debt payment writes a transaction, so the ledger already knows the
+     answer. Reading the pace out of it rather than out of the budget is the
+     difference between a forecast and a wish. */
+  function debtPaymentsByMonth(s) {
+    const out = {};
+    (s.transactions || []).forEach(t => {
+      if (!t || t.categoryType !== "debt") return;
+      const m = t.month || String(t.date || "").slice(0, 7);
+      if (!m) return;
+      out[m] = (out[m] || 0) + num(t.amount);
+    });
+    return out;
+  }
+  // Average monthly debt payment over the last few COMPLETE months. The month
+  // in progress is left out: it is half-finished and would drag the average
+  // down every time, making the forecast worse the earlier in the month you
+  // looked at it.
+  function observedDebtPace(s, monthsBack) {
+    const byMonth = debtPaymentsByMonth(s);
+    const months = Object.keys(byMonth)
+      .filter(m => m < s.currentMonth)
+      .sort()
+      .slice(-(monthsBack || 3));
+    if (!months.length) return null;
+    return {
+      perMonth: months.reduce((a, m) => a + byMonth[m], 0) / months.length,
+      months: months.length,
+      from: months[0],
+      to: months[months.length - 1]
+    };
+  }
+  /* The pace the projection should run at, and where that number came from:
+
+       "observed" — you have payment history, so we use it
+       "minimums" — no history yet, so we assume the minimums and nothing more
+
+     Never the budget surplus. Paying yourself a forecast out of money you have
+     not committed is exactly how the old date got years ahead of the truth. */
+  function debtPace(s) {
+    const mins = totalDebtMins(s);
+    const seen = observedDebtPace(s);
+    if (!seen) return { basis: "minimums", perMonth: mins, extra: 0, mins };
+    // Below the minimums usually means a month was missed or a payment never
+    // got logged; either way the honest floor is the minimums themselves.
+    const perMonth = Math.max(mins, seen.perMonth);
+    return {
+      basis: "observed", perMonth, extra: Math.max(0, perMonth - mins), mins,
+      months: seen.months, from: seen.from, to: seen.to
+    };
   }
   function categorySpent(s, id) {
     const m = s.currentMonth;
@@ -2330,6 +2456,11 @@ const BudgetEngine = (() => {
   function debtOrder(debts, strategy) {
     const strat = strategy === "snowball" ? "snowball" : "avalanche";
     return (debts || []).slice().sort((a, b) => {
+      // Cleared debts drop to the bottom whatever the strategy says. Avalanche
+      // would otherwise put a paid-off high-rate card at the top of the list
+      // labelled as the one you are attacking.
+      const done = (num(a.balance) <= 0) - (num(b.balance) <= 0);
+      if (done !== 0) return done;
       if (strat === "avalanche") {
         const r = num(b.interestRate) - num(a.interestRate);
         if (r !== 0) return r;
@@ -2389,6 +2520,7 @@ const BudgetEngine = (() => {
     landingsForMonth,
     billsSubtotal, totalBills, totalDebtMins,
     totalUnpaidCredit, safeToSpend, tightestPoint, spendingBudgetedTotal, totalBudgeted, extraForDebt,
+    debtPaymentsByMonth, observedDebtPace, debtPace,
     latestAnchor, hasAnchor, isAfterAnchor, projectedBalance, billPaymentsSinceAnchor,
     unpaidBillsTotal, unpaidTithe, unpaidDebtMins, unpaidObligations, incomeStillExpected,
     remainingMonthEvents, horizonEvents, cashFlowOutlook, monthEndBalance, overdueIncome, daysInMonthOf,
@@ -2406,84 +2538,207 @@ const BudgetEngine = (() => {
 /* ============================================================
    DEBT ENGINE — pure snowball simulation
    ============================================================ */
+/* ============================================================
+   DEBT ENGINE — what payoff actually looks like
+
+   The projection used to be optimistic in three separate ways, and they
+   compounded. On a real $50,000 book — four cards around 25% and two loans —
+   it read MAR 2028 where the truth was five and a half years later.
+
+   1. It assumed you pay your whole budget surplus at the debt, every month,
+      forever. That is where nearly all of the error came from: the headline
+      said "AT CURRENT PACE" while modelling a pace nobody had agreed to. A
+      $1,500 surplus turned 63 months into 20. The projection now runs on what
+      you have ACTUALLY been paying, read out of the ledger, and says so.
+
+   2. It charged interest on the balance AFTER the payment landed, so every
+      month's interest was understated.
+
+   3. It held card minimums flat. A card minimum is a percentage of the
+      balance, so it falls as the balance falls, and the tail of the payoff
+      stretches out badly. Loans are fixed installments and do stay flat.
+
+   None of these make the app kinder. They make it wrong in the direction that
+   costs the most, because the month you think you'll be free is the month you
+   plan the rest of your life around.
+   ============================================================ */
 const DebtEngine = (() => {
   const monthNames = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
+  const MAX_MONTHS = 720; // 60 years; past this it is "never" in any useful sense
 
-  // strategy: "avalanche" (default) or "snowball". Sort order controls both which debt
-  // receives the extra payment AND the cascade order when a debt is paid off.
-  function simulate(debtsInput, extraPerMonth, startMonth, strategy) {
-    const empty = { payoffByDebt: {}, debtFreeDate: null, months: 0, order: [] };
-    if (!debtsInput || !debtsInput.length) return empty;
+  // A card minimum is a slice of the balance — typically 1–3%, floored at
+  // twenty or thirty dollars — so it shrinks as you pay down and the last
+  // stretch drags. A loan is a fixed installment and holds steady. We know
+  // which is which because cards carry a cardId.
+  const MIN_FLOOR = 25;
+  function isRevolving(d) { return !!d.cardId; }
+
+  function prepare(debtsInput, strategy) {
     const strat = strategy === "snowball" ? "snowball" : "avalanche";
+    return (debtsInput || []).map(d => {
+      const balance = Number(d.balance) || 0;
+      const min = Number(d.minimumPayment) || 0;
+      return {
+        id: d.id,
+        label: d.label,
+        balance,
+        startBalance: balance,
+        min,
+        rate: Number(d.interestRate) || 0,
+        revolving: isRevolving(d),
+        // The percentage this minimum represents today, carried forward as the
+        // balance falls. Guarded so a zero balance can't produce nonsense.
+        minPct: balance > 0 ? min / balance : 0
+      };
+    }).filter(d => d.balance > 0)
+      .sort((a, b) => strat === "avalanche"
+        ? (b.rate - a.rate) || (a.balance - b.balance)
+        : (a.balance - b.balance) || (b.rate - a.rate));
+  }
 
-    const sim = debtsInput.map(d => ({
-      id: d.id,
-      label: d.label,
-      balance: Number(d.balance) || 0,
-      min: Number(d.minimumPayment) || 0,
-      rate: Number(d.interestRate) || 0
-    })).filter(d => d.balance > 0)
-      .sort((a, b) => {
-        if (strat === "avalanche") return (b.rate - a.rate) || (a.balance - b.balance);
-        return (a.balance - b.balance) || (b.rate - a.rate);
-      });
+  // What this debt asks for this month. Never more than clearing it outright.
+  function minimumDue(d, decliningMinimums) {
+    if (d.balance <= 0) return 0;
+    const asked = (decliningMinimums && d.revolving)
+      ? Math.max(MIN_FLOOR, d.balance * d.minPct)
+      : d.min;
+    return Math.min(asked, d.balance);
+  }
 
+  /* The projection.
+       extraPerMonth  — on top of every minimum, every month
+       extraOnce      — a single lump in the first month
+       decliningMinimums — model card minimums as a percentage (default on)
+     Returns months, the payoff month per debt, the debt-free month, the total
+     interest that will be paid getting there, and — when the minimums cannot
+     keep up with the interest — which debts are going backwards. */
+  function project(debtsInput, opts) {
+    const o = opts || {};
+    const empty = {
+      payoffByDebt: {}, debtFreeDate: null, months: 0, order: [],
+      totalInterest: 0, totalPaid: 0, neverPaysOff: false, stuck: [], startBalance: 0
+    };
+    const sim = prepare(debtsInput, o.strategy);
     if (!sim.length) return empty;
 
-    const order = sim.map(d => d.id);
-    const payoff = {};
-    let [year, month] = (startMonth || Util.currentMonthYM()).split("-").map(Number);
-    let cascadedMin = 0;
-    let iter = 0;
-    const MAX = 720; // 60 years cap safety
+    const declining = o.decliningMinimums !== false;
+    const extraPerMonth = Math.max(0, Number(o.extraPerMonth) || 0);
+    let oneOff = Math.max(0, Number(o.extraOnce) || 0);
 
-    while (sim.some(d => d.balance > 0) && iter < MAX) {
-      // 1. Minimum payments to all still-active debts
+    const order = sim.map(d => d.id);
+    const startBalance = sim.reduce((a, d) => a + d.balance, 0);
+    const payoff = {};
+    let [year, month] = (o.startMonth || Util.currentMonthYM()).split("-").map(Number);
+    let cascaded = 0, totalInterest = 0, totalPaid = 0, iter = 0;
+
+    while (sim.some(d => d.balance > 0) && iter < MAX_MONTHS) {
+      // 1. Interest first, on the balance you actually carried into the month.
       for (const d of sim) {
         if (d.balance <= 0) continue;
-        d.balance -= d.min;
-        if (d.balance < 0) d.balance = 0;
+        const charge = d.balance * (d.rate / 12 / 100);
+        d.balance += charge;
+        totalInterest += charge;
       }
-      // 2. Apply interest to all still-active debts
+      // 2. Minimums.
       for (const d of sim) {
-        if (d.balance <= 0) continue;
-        d.balance += d.balance * (d.rate / 12 / 100);
+        const due = minimumDue(d, declining);
+        d.balance = Math.max(0, d.balance - due);
+        totalPaid += due;
       }
-      // 3. Send extra + cascaded to smallest still-active, cascade overflow
-      let extra = (Number(extraPerMonth) || 0) + cascadedMin;
+      // 3. Extra, the freed-up minimums of anything already cleared, and any
+      //    one-off, all aimed down the strategy order.
+      let pot = extraPerMonth + cascaded + oneOff;
+      oneOff = 0;
       for (const d of sim) {
-        if (d.balance <= 0) continue;
-        if (extra <= 0) break;
-        const applied = Math.min(extra, d.balance);
+        if (d.balance <= 0 || pot <= 0) continue;
+        const applied = Math.min(pot, d.balance);
         d.balance -= applied;
-        extra -= applied;
+        pot -= applied;
+        totalPaid += applied;
       }
-      // 4. Record any new payoffs, cascade their minimums into future extras
+      // 4. Record payoffs; a cleared debt's minimum joins the pot from here on.
       for (const d of sim) {
         if (d.balance <= 0 && !payoff[d.id]) {
           payoff[d.id] = `${monthNames[month - 1]} ${year}`;
-          cascadedMin += d.min;
+          cascaded += d.min;
         }
       }
       iter++;
       if (sim.every(d => d.balance <= 0)) break;
-      // Advance month
       month++;
       if (month > 12) { month = 1; year++; }
     }
 
-    // Debt-free date is the latest payoff month
-    let latest = null;
-    let latestKey = -1;
+    // Anything still standing after the cap is not on a payoff path at all.
+    // Naming the debts whose minimum cannot cover their own interest is more
+    // use than a date that will never arrive.
+    const stuck = sim.filter(d => d.balance > 0).map(d => d.id);
+    const neverPaysOff = stuck.length > 0;
+
+    let latest = null, latestKey = -1;
     for (const id in payoff) {
       const [mo, yr] = payoff[id].split(" ");
       const k = Number(yr) * 12 + monthNames.indexOf(mo);
       if (k > latestKey) { latestKey = k; latest = payoff[id]; }
     }
-    return { payoffByDebt: payoff, debtFreeDate: latest, months: iter, order };
+    return {
+      payoffByDebt: payoff,
+      debtFreeDate: neverPaysOff ? null : latest,
+      months: neverPaysOff ? null : iter,
+      order, totalInterest, totalPaid, neverPaysOff, stuck, startBalance
+    };
   }
 
-  return { simulate };
+  // Kept so existing callers keep working while they are migrated.
+  function simulate(debtsInput, extraPerMonth, startMonth, strategy) {
+    return project(debtsInput, { extraPerMonth, startMonth, strategy });
+  }
+
+  /* Where each minimum actually goes this month. This is the line that
+     explains why a balance sits still: on a card at 27% carrying $6,100, a
+     $155 minimum is $147 of interest and $8 of progress. */
+  function principalSplit(debtsInput) {
+    return (debtsInput || []).map(d => {
+      const balance = Number(d.balance) || 0;
+      const min = Number(d.minimumPayment) || 0;
+      const interest = balance * (Number(d.interestRate) || 0) / 12 / 100;
+      return {
+        id: d.id, label: d.label, balance, min, interest,
+        principal: min - interest,
+        // Under water: the balance grows even though you paid.
+        underwater: min < interest,
+        // Months to clear at this rate if nothing changes and the payment
+        // stays flat. Null when it never does.
+        share: min > 0 ? Math.max(0, min - interest) / min : 0
+      };
+    }).sort((a, b) => a.principal - b.principal);
+  }
+
+  /* The smallest extra per month that gets everything cleared within
+     `targetMonths`. Binary search over the projection because the payoff curve
+     is monotonic in the extra but nowhere near linear — cascades and interest
+     make a closed form more trouble than it is worth. Returns null when even
+     an absurd payment cannot do it, which only happens for a nonsense target. */
+  function extraNeededForMonths(debtsInput, targetMonths, opts) {
+    const base = Object.assign({}, opts);
+    const fits = extra => {
+      const r = project(debtsInput, Object.assign({}, base, { extraPerMonth: extra }));
+      return r.months != null && r.months <= targetMonths;
+    };
+    if (fits(0)) return 0;
+    let hi = 100;
+    const ceiling = (debtsInput || []).reduce((a, d) => a + (Number(d.balance) || 0), 0) + 1000;
+    while (hi < ceiling && !fits(hi)) hi *= 2;
+    if (!fits(hi)) return null;
+    let lo = 0;
+    for (let i = 0; i < 24; i++) {
+      const mid = (lo + hi) / 2;
+      if (fits(mid)) hi = mid; else lo = mid;
+    }
+    return Math.ceil(hi);
+  }
+
+  return { project, simulate, principalSplit, extraNeededForMonths, isRevolving };
 })();
 
 /* ============================================================
@@ -3300,7 +3555,28 @@ const UI = (() => {
   let incExpEdit = null;
 
   // Debts screen extra-payment preview
-  let extraPreview = 0; // +100, +200, +500
+  /* WHAT IF? state. `amount` + `freq` are the custom payment; `freq` carries
+     a one-off as well as the recurring options, because "I can throw my tax
+     refund at it" is a different question from "I can find $50 a week" and
+     both change the date. */
+  let whatIf = { amount: "", freq: "monthly", surplus: false };
+  // Set when a re-render was triggered by typing, so the caret can be put back.
+  let whatIfFocus = null;
+  const WHATIF_FREQS = [
+    { id: "once", label: "ONE-OFF", perMonth: 0 },
+    { id: "weekly", label: "WEEKLY", perMonth: 52 / 12 },
+    { id: "biweekly", label: "EVERY 2 WKS", perMonth: 26 / 12 },
+    { id: "monthly", label: "MONTHLY", perMonth: 1 }
+  ];
+  // The custom payment as the projection needs it: a monthly figure, plus a
+  // separate lump for the one-off case.
+  function whatIfExtra() {
+    const amt = parseFloat(String(whatIf.amount).replace(/[^0-9.]/g, ""));
+    if (!isFinite(amt) || amt <= 0) return { perMonth: 0, once: 0 };
+    if (whatIf.freq === "once") return { perMonth: 0, once: amt };
+    const f = WHATIF_FREQS.find(x => x.id === whatIf.freq) || WHATIF_FREQS[3];
+    return { perMonth: amt * f.perMonth, once: 0 };
+  }
 
   // Add-item inline form state
   const addForms = {
@@ -4362,11 +4638,70 @@ const UI = (() => {
     if (typeof refreshScrollBtn === "function") refreshScrollBtn();
   }
 
+  /* ---------- PAYOFF CELEBRATION ----------
+     Watched at the render boundary rather than wired into each payment path,
+     because a balance can reach zero half a dozen ways: the payment form, the
+     minimum tick, an import, an edit, or your partner's phone arriving over
+     the sync. One watcher catches all of them and cannot drift out of step
+     with a path someone adds later.
+
+     `null` means we have not seen a snapshot yet: the first one only sets the
+     baseline, so opening the app on a card that was already cleared does not
+     throw a party for something you did last month. */
+  let lastDebtBalances = null;
+
+  function watchForPayoff(s) {
+    const now = {};
+    (s.debts || []).forEach(d => { if (d && d.id) now[d.id] = Number(d.balance) || 0; });
+    if (lastDebtBalances) {
+      (s.debts || []).forEach(d => {
+        if (!d || !d.id) return;
+        const before = lastDebtBalances[d.id];
+        if (before == null) return;              // newly added debt, not a payoff
+        if (before > 0 && (Number(d.balance) || 0) <= 0) playPayoffBurst(d);
+      });
+    }
+    lastDebtBalances = now;
+  }
+
+  function playPayoffBurst(debt) {
+    document.querySelectorAll(".payoff-burst").forEach(el => el.remove());
+    const el = document.createElement("div");
+    el.className = "payoff-burst";
+    el.setAttribute("aria-hidden", "true");
+    el.innerHTML = `
+      <div class="ray"></div>
+      <div class="word">C L E A R !</div>
+      <div class="who">${Util.esc(String(debt.label || "PAID OFF").toUpperCase())} IS PAID OFF</div>`;
+    document.body.appendChild(el);
+    // Announced separately so a screen reader gets the news without having to
+    // interpret a decorative animation.
+    announce(`${String(debt.label || "That debt")} is paid off`);
+    const done = () => el.remove();
+    el.addEventListener("animationend", e => { if (e.target === el) done(); });
+    setTimeout(done, 4200); // belt and braces if the animation never fires
+  }
+
+  // Polite live region, created once, for anything worth saying out loud.
+  function announce(text) {
+    let live = document.getElementById("live-region");
+    if (!live) {
+      live = document.createElement("div");
+      live.id = "live-region";
+      live.setAttribute("aria-live", "polite");
+      live.setAttribute("role", "status");
+      live.style.cssText = "position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;";
+      document.body.appendChild(live);
+    }
+    live.textContent = text;
+  }
+
   function _renderCore() {
     const id = DataService.getHouseholdId();
     if (!id) { activeView = "setup"; renderSetup(); syncOverlays(null); return; }
     const s = DataService.get();
     if (!s) { renderLoading("SYNCING..."); return; }
+    watchForPayoff(s);
     maybeAdvanceMonth(s);
     // NOTE: overlays must be synced on the settings path too — NEW MONTH is
     // launched from inside Settings, and an early return here used to skip the
@@ -7181,11 +7516,48 @@ const UI = (() => {
       const bal = Number(d.balance) || 0;
       return a + (isFinite(orig) && orig > bal ? orig - bal : 0);
     }, 0);
-    const baseExtra = Math.max(0, BudgetEngine.extraForDebt(s));
-    const totalExtra = baseExtra + extraPreview;
     const strat = BudgetEngine.debtStrategy(s);
-    const sim = DebtEngine.simulate(s.debts||[], totalExtra, s.currentMonth, strat);
+    const debtsList = s.debts || [];
+    // The pace you are ACTUALLY on — read from logged payments, or the
+    // minimums when there is no history yet. Never the budget surplus.
+    const pace = BudgetEngine.debtPace(s);
+    const surplus = Math.max(0, BudgetEngine.extraForDebt(s));
+    const custom = whatIfExtra();
+    const projectOpts = extra => Object.assign(
+      { startMonth: s.currentMonth, strategy: strat }, extra);
+
+    const now = DebtEngine.project(debtsList, projectOpts({ extraPerMonth: pace.extra }));
+    // The same book with whatever the WHAT IF panel is currently proposing.
+    const tryExtra = pace.extra + custom.perMonth + (whatIf.surplus ? Math.max(0, surplus - pace.extra) : 0);
+    const hasProposal = tryExtra > pace.extra + 0.005 || custom.once > 0;
+    const sim = hasProposal
+      ? DebtEngine.project(debtsList, projectOpts({ extraPerMonth: tryExtra, extraOnce: custom.once }))
+      : now;
     const debtFree = sim.debtFreeDate || "NOT YET";
+    const split = DebtEngine.principalSplit(debtsList);
+    const underwater = split.filter(x => x.underwater);
+    const crawling = split.filter(x => !x.underwater && x.min > 0 && x.share < 0.25);
+
+    /* WHAT IT TAKES: the extra needed to be clear in one, two and three
+       years, worked backwards from the same projection. Targets already
+       reachable on your current pace are dropped rather than shown at $0,
+       which would read as "no effort required" for a date you are only
+       hitting because it is far enough away. */
+    const targets = debtsList.length ? [12, 24, 36, 60].map(m => ({
+      months: m,
+      extra: DebtEngine.extraNeededForMonths(debtsList, m,
+        { startMonth: s.currentMonth, strategy: strat })
+    })).filter(x => x.extra != null && x.extra > pace.extra) : [];
+    const targetsHtml = !debtsList.length ? "" : (targets.length ? `
+          <div class="cat-txns" style="margin-top:12px;">
+            ${targets.map(x => `
+              <div class="cat-txn">
+                <span class="cat-txn-note">DEBT-FREE IN ${x.months === 12 ? "1 YEAR" : (x.months / 12) + " YEARS"}</span>
+                <span class="cat-txn-amt">+${Util.esc(Util.fmtMoney(x.extra - pace.extra, 0))}/MO</span>
+              </div>`).join("")}
+          </div>
+          <div class="sub-label" style="margin-top:12px; opacity:0.8;">ON TOP OF WHAT YOU PAY NOW, AIMED AT ${strat === "avalanche" ? "THE HIGHEST RATE" : "THE SMALLEST BALANCE"} FIRST</div>`
+      : `<div class="sub-label" style="margin-top:12px;">YOUR CURRENT PACE ALREADY CLEARS EVERYTHING INSIDE FIVE YEARS</div>`);
 
     const debtsSorted = BudgetEngine.debtOrder(s.debts||[], strat);
     const stratExplainer = strat === "avalanche"
@@ -7197,7 +7569,11 @@ const UI = (() => {
       const orig = Number(d.originalBalance) || Math.max(bal, 1);
       const paidPct = Math.max(0, Math.min(100, (1 - bal/orig) * 100));
       const payoff = sim.payoffByDebt[d.id] || "NOT YET";
-      const heading = i === 0 ? "#1  ATTACKING NOW" : `#${i+1}  (AFTER #${i})`;
+      // Position among the debts still standing; a cleared one is not in the
+      // queue at all and must not be labelled as the one being attacked.
+      const activeIdx = debtsSorted.filter(x => (Number(x.balance) || 0) > 0).indexOf(d);
+      const heading = bal <= 0 ? "CLEARED"
+        : activeIdx === 0 ? "#1  ATTACKING NOW" : `#${activeIdx + 1}  (AFTER #${activeIdx})`;
       const isEditing = editStates["debt_" + d.id];
       const editHtml = isEditing ? renderEditForm("debt", d) : "";
       const linkedCard = d.cardId ? (s.creditCards||[]).find(c => c.id === d.cardId) : null;
@@ -7225,11 +7601,15 @@ const UI = (() => {
           <div class="debt-label">${Util.esc(d.label)}</div>
           <div class="debt-balance">${Util.esc(Util.fmtMoney(bal,0))} REMAINING</div>
           <div class="progress" data-learn="PROGRESS BAR. FILL SHOWS HOW MUCH OF THE ORIGINAL BALANCE IS PAID OFF."><span style="width:${paidPct}%"></span></div>
-          <div class="debt-meta">${paidPct.toFixed(0)}% PAID · PAYOFF: ${Util.esc(payoff)}</div>
+          ${bal <= 0
+            ? `<div class="debt-meta text-success" data-learn="THIS ONE IS DONE. REMOVING IT TAKES IT OFF THE LIST AND OUT OF EVERY PROJECTION; NOTHING ELSE IN YOUR BUDGET MOVES, BECAUSE A CLEARED BALANCE WAS ALREADY COUNTING FOR NOTHING. THE PAYMENTS YOU LOGGED AGAINST IT STAY IN YOUR HISTORY.">PAID OFF · ${Util.esc(Util.fmtMoney(orig, 0))} CLEARED</div>`
+            : `<div class="debt-meta">${paidPct.toFixed(0)}% PAID · PAYOFF: ${Util.esc(payoff)}</div>`}
           <div class="debt-meta">MIN: ${Util.esc(Util.fmtMoney(Number(d.minimumPayment)||0,0))}/MO · RATE: ${(Number(d.interestRate)||0).toFixed(1)}%</div>
           ${linkedCard ? `<div class="debt-meta" data-learn="THIS DEBT IS LINKED TO A CREDIT CARD YOU SET UP IN SETTINGS. LINKING IS INFORMATIONAL; BALANCES STAY INDEPENDENT.">LINKED CARD: ${Util.esc(linkedCard.label)}</div>` : ""}
           ${minRowHtml}
-          <button class="link" data-action="debt-pay-open" data-id="${Util.esc(d.id)}" style="margin-top:8px;" data-learn="LOG A PAYMENT AGAINST THIS DEBT. OPENS A FORM (AMOUNT, NOTE). ON SAVE THE BALANCE DECREASES AND A DEBIT TRANSACTION IS RECORDED.">${payForm && payForm.open ? "× CANCEL PAYMENT" : "→ LOG PAYMENT"}</button>
+          ${bal <= 0
+            ? `<button class="link" data-action="delete-item" data-kind="debt" data-id="${Util.esc(d.id)}" style="margin-top:8px;">× REMOVE ${DebtEngine.isRevolving(d) ? "CARD" : "LOAN"}</button>`
+            : `<button class="link" data-action="debt-pay-open" data-id="${Util.esc(d.id)}" style="margin-top:8px;" data-learn="LOG A PAYMENT AGAINST THIS DEBT. OPENS A FORM (AMOUNT, NOTE). ON SAVE THE BALANCE DECREASES AND A DEBIT TRANSACTION IS RECORDED.">${payForm && payForm.open ? "× CANCEL PAYMENT" : "→ LOG PAYMENT"}</button>`}
           ${payHtml}
           ${editHtml}
         </div>`;
@@ -7238,13 +7618,45 @@ const UI = (() => {
     const addForm = addForms.debt ? renderAddDebtForm() : "";
 
     return `
-        <section class="section terracotta" data-learn="DEBT-FREE DATE. THE MONTH YOU'LL FINISH PAYING OFF EVERY DEBT AT YOUR CURRENT PACE. FACTORS IN MINIMUMS, INTEREST, AND ANY EXTRA PAYMENT.">
+        <section class="section terracotta" data-learn="DEBT-FREE DATE. THE MONTH YOU FINISH PAYING OFF EVERY DEBT IF YOUR PAYMENT HABITS STAY EXACTLY AS THEY ARE. IT USES WHAT YOU HAVE ACTUALLY BEEN PAYING, TAKEN FROM YOUR LOGGED PAYMENTS — NOT WHAT YOUR BUDGET COULD AFFORD — AND CHARGES INTEREST BEFORE EACH PAYMENT LANDS, THE WAY LENDERS DO.">
           <div class="section-label">→ HOW MUCH LONGER?</div>
           <div class="sub-label" style="margin-top:16px;">DEBT-FREE DATE</div>
           <div class="hero" style="margin-top:8px;">${Util.esc(Util.fmtMonthLong(monthYMFromShort(debtFree)) || debtFree)}</div>
-          <div class="sub-label" style="margin-top:8px;">AT CURRENT PACE</div>
+          <div class="sub-label" style="margin-top:8px;">${
+            sim.neverPaysOff
+              ? "NOT ON THIS PAYMENT — THE INTEREST OUTRUNS IT"
+              : hasProposal ? "WITH THE WHAT IF BELOW" : paceLabel(pace)
+          }</div>
+          ${!sim.neverPaysOff && sim.months != null ? `
+          <div class="sub-label" style="margin-top:8px;" data-learn="HOW LONG THAT IS FROM NOW, AND WHAT THE INTEREST COSTS OVER THAT WHOLE STRETCH. INTEREST IS THE PART THAT NEVER SHOWS UP ON A BALANCE, SO IT IS WORTH SEEING NEXT TO THE DATE."><span class="stat-val">${Math.floor(sim.months / 12)}Y ${sim.months % 12}M</span> <span class="stat-lbl">FROM NOW ·</span> <span class="stat-val">${Util.esc(Util.fmtMoney(sim.totalInterest, 0))}</span> <span class="stat-lbl">INTEREST ON THE WAY</span></div>` : ""}
+          ${hasProposal && !sim.neverPaysOff && now.months != null ? `
+          <div class="sub-label ${now.months - sim.months > 0 || now.totalInterest - sim.totalInterest >= 1 ? "text-success" : ""}" style="margin-top:8px;">${
+            now.months - sim.months > 0
+              ? `${now.months - sim.months} MONTH${now.months - sim.months === 1 ? "" : "S"} SOONER · SAVES ${Util.esc(Util.fmtMoney(now.totalInterest - sim.totalInterest, 0))} IN INTEREST`
+              // A one-off can shave real interest without moving the month it
+              // lands in. Saying "no change" there would hide a genuine win.
+              : now.totalInterest - sim.totalInterest >= 1
+                ? `SAME MONTH, BUT SAVES ${Util.esc(Util.fmtMoney(now.totalInterest - sim.totalInterest, 0))} IN INTEREST`
+                : "NOT ENOUGH TO MOVE ANYTHING YET"
+          }</div>` : ""}
+          ${hasProposal ? `<div class="sub-label" style="margin-top:8px; opacity:0.8;">WITHOUT IT: ${Util.esc(Util.fmtMonthLong(monthYMFromShort(now.debtFreeDate || "")) || "NOT ON THIS PAYMENT")}</div>` : ""}
           ${paidOff > 0 ? `<div class="sub-label" style="margin-top:8px;" data-learn="HOW MUCH TOTAL DEBT YOU'VE CLEARED SINCE YOU FIRST ENTERED THESE BALANCES. COMPARES EACH DEBT'S ORIGINAL BALANCE TO WHAT'S LEFT.">PAID OFF ${Util.esc(Util.fmtMoney(paidOff,0))} SINCE YOU STARTED</div>` : ""}
         </section>
+
+        ${debtsList.length ? `
+        <section class="section charcoal" data-learn="WHERE YOUR MINIMUM PAYMENTS ACTUALLY GO. A MINIMUM IS MOSTLY INTEREST ON A HIGH-RATE CARD, SO THE BALANCE BARELY MOVES EVEN THOUGH YOU PAID. THIS IS THE REASON THE PAYOFF DATE IS AS FAR OUT AS IT IS.">
+          <div class="section-label">→ WHERE THE MINIMUM GOES</div>
+          <div class="sub-label" style="margin-top:8px; opacity:0.85;">OF ${Util.esc(Util.fmtMoney(split.reduce((a,x)=>a+x.min,0), 0))} IN MINIMUMS THIS MONTH, ${Util.esc(Util.fmtMoney(split.reduce((a,x)=>a+x.interest,0), 0))} IS INTEREST</div>
+          <div class="cat-txns" style="margin-top:16px;">
+            ${split.map(x => `
+              <div class="cat-txn">
+                <span class="cat-txn-note">${Util.esc(x.label)} <span style="opacity:0.6;">· ${Util.esc(Util.fmtMoney(x.interest, 0))} INTEREST</span></span>
+                <span class="cat-txn-amt ${x.underwater ? "text-danger" : x.share < 0.25 ? "text-warn" : ""}">${x.underwater ? "GROWING" : Util.esc(Util.fmtMoney(x.principal, 0)) + " OFF"}</span>
+              </div>`).join("")}
+          </div>
+          ${underwater.length ? `<div class="sub-label text-danger" style="margin-top:12px;">${underwater.length} DEBT${underwater.length===1?"":"S"} GROW EVEN WHEN YOU PAY THE MINIMUM · THE MINIMUM IS LESS THAN THAT MONTH'S INTEREST</div>`
+            : crawling.length ? `<div class="sub-label text-warn" style="margin-top:12px;">ON ${crawling.map(x=>Util.esc(x.label)).slice(0,3).join(", ")} LESS THAN A QUARTER OF THE MINIMUM REACHES THE BALANCE</div>` : ""}
+        </section>` : ""}
 
         <section class="section gray">
           <div class="section-label" data-learn="PAYOFF ORDER TOGGLE. AVALANCHE ATTACKS THE HIGHEST INTEREST RATE FIRST (LESS INTEREST PAID). SNOWBALL ATTACKS THE SMALLEST BALANCE FIRST (QUICK EMOTIONAL WINS).">→ WHAT IF?</div>
@@ -7254,16 +7666,25 @@ const UI = (() => {
           </div>
           <div class="sub-label" style="margin-top:8px; opacity:0.85;">${Util.esc(stratExplainer)}</div>
 
-          <div class="section-label" style="margin-top:32px;" data-learn="EXTRA PAYMENT PER MONTH. ANY MONEY LEFT AFTER TITHE, BILLS, MINIMUMS, AND SPENDING BUDGETS GOES TO THE TARGETED DEBT. TOGGLE +$100/+$200/+$500 TO PREVIEW HOW MUCH FASTER YOU'D BE DEBT-FREE.">→ EXTRA PAYMENT / MONTH</div>
-          <div class="sub-label" style="margin-top:12px;" data-learn="AUTO = LEFTOVER AFTER EVERYTHING ELSE IN THE BUDGET. THIS GETS APPLIED TO THE TARGETED DEBT EVERY MONTH.">AUTO: ${Util.esc(Util.fmtMoney(baseExtra,0))} (FROM LEFTOVER)</div>
-          <div class="sub-label" style="margin-top:4px; opacity:0.75;">REMAINING AFTER ALL BILLS AND MINIMUMS</div>
-          <div class="toggle-row">
-            <button class="toggle ${extraPreview===100?'active':''}" data-action="extra-preview" data-amt="100" data-learn="PREVIEW WHAT THE DEBT-FREE DATE WOULD BE IF YOU ADDED $100 MORE PER MONTH. DOESN'T CHANGE ANY STORED VALUES.">+ $100 MORE</button>
-            <button class="toggle ${extraPreview===200?'active':''}" data-action="extra-preview" data-amt="200" data-learn="PREVIEW WITH +$200 EXTRA PER MONTH.">+ $200 MORE</button>
-            <button class="toggle ${extraPreview===500?'active':''}" data-action="extra-preview" data-amt="500" data-learn="PREVIEW WITH +$500 EXTRA PER MONTH.">+ $500 MORE</button>
-            ${extraPreview!==0 ? `<button class="toggle" data-action="extra-preview" data-amt="0" data-learn="CLEAR THE EXTRA-PAYMENT PREVIEW.">× CLEAR</button>` : ""}
+          <div class="section-label" style="margin-top:32px;" data-learn="AN EXTRA PAYMENT TO TRY. ENTER ANY AMOUNT AND PICK HOW OFTEN — INCLUDING ONE-OFF, FOR A REFUND OR A BONUS. THE DATE AT THE TOP UPDATES AS YOU TYPE. NOTHING IS SAVED; THIS ONLY PREVIEWS.">→ TRY AN EXTRA PAYMENT</div>
+          <div style="margin-top:12px;">
+            <div class="sub-label">AMOUNT</div>
+            <input class="underline big num-input" id="whatif-amount" inputmode="decimal" placeholder="$0" value="${Util.esc(whatIf.amount)}" data-learn="HOW MUCH EXTRA, ON TOP OF EVERY MINIMUM. THE DEBT-FREE DATE ABOVE RECALCULATES AS YOU TYPE.">
           </div>
-          ${extraPreview>0 ? `<div class="sub-label" style="margin-top:12px;">WITH EXTRA: ${Util.esc(Util.fmtMoney(baseExtra+extraPreview,0))}/MO</div>` : ""}
+          <div class="sub-label" style="margin-top:16px;">HOW OFTEN</div>
+          <div class="chips" data-scroll-key="whatif-freq" data-learn="HOW OFTEN YOU'D MAKE THAT PAYMENT. WEEKLY AND FORTNIGHTLY ARE CONVERTED TO THEIR TRUE MONTHLY EQUIVALENT — 52 AND 26 PAYMENTS A YEAR, NOT 48 AND 24 — SO THE DATE DOESN'T FLATTER YOU. ONE-OFF APPLIES THE WHOLE AMOUNT ONCE, THIS MONTH.">
+            ${WHATIF_FREQS.map(f => `<button class="chip ${whatIf.freq===f.id?'active':''}" data-action="whatif-freq" data-freq="${f.id}">${f.label}</button>`).join("")}
+          </div>
+          ${custom.perMonth > 0 && whatIf.freq !== "monthly" ? `<div class="sub-label" style="margin-top:12px; opacity:0.85;">THAT'S ${Util.esc(Util.fmtMoney(custom.perMonth, 0))}/MO</div>` : ""}
+
+          <div class="sub-label" style="margin-top:20px;" data-learn="YOUR BUDGET SURPLUS: WHAT'S LEFT AFTER TITHE, BILLS, MINIMUMS AND SPENDING BUDGETS. THE PAYOFF DATE USED TO ASSUME YOU PAID ALL OF THIS AT THE DEBT EVERY MONTH, WHICH IS WHY IT READ YEARS TOO EARLY. IT IS AN OPTION HERE INSTEAD OF AN ASSUMPTION.">YOUR BUDGET COULD SPARE ${Util.esc(Util.fmtMoney(surplus, 0))}/MO</div>
+          <div class="toggle-row">
+            <button class="toggle ${whatIf.surplus?'active':''}" data-action="whatif-surplus" data-learn="TRY THE DATE WITH YOUR WHOLE BUDGET SURPLUS GOING TO DEBT ON TOP OF WHAT YOU ALREADY PAY. AN AMBITION, NOT A FORECAST.">${whatIf.surplus ? "✓ " : ""}THROW THE WHOLE SURPLUS AT IT</button>
+            ${(whatIf.amount || whatIf.surplus) ? `<button class="toggle" data-action="whatif-clear" data-learn="CLEAR EVERYTHING IN THIS PANEL AND GO BACK TO YOUR ACTUAL PACE.">× CLEAR</button>` : ""}
+          </div>
+
+          <div class="section-label" style="margin-top:32px;" data-learn="WHAT IT WOULD TAKE TO HIT A GIVEN DATE, WORKED BACKWARDS FROM THE PROJECTION. THE FIGURE IS ON TOP OF EVERY MINIMUM, AND IT ACCOUNTS FOR THE INTEREST YOU'D STILL BE PAYING ALONG THE WAY.">→ WHAT IT TAKES</div>
+          ${targetsHtml}
         </section>
 
         <section class="section off-white" style="padding:0;" data-learn="DEBT LIST, SORTED BY PAYOFF ORDER. EACH CARD SHOWS THE BALANCE, PROGRESS BAR, PROJECTED PAYOFF MONTH, MINIMUM, AND INTEREST RATE. TAP → LOG PAYMENT TO RECORD A PAYMENT; IT DEBITS THE BALANCE AND WRITES A TRANSACTION IN ONE STEP.">
@@ -7273,6 +7694,16 @@ const UI = (() => {
             ${addForm || `<button class="link" data-action="show-add-debt" data-learn="ADD A NEW DEBT: LABEL, BALANCE, MINIMUM PAYMENT, AND INTEREST RATE.">* ADD DEBT →</button>`}
           </div>
         </section>`;
+  }
+
+  // Says where the projection's pace came from, so the date is never read as
+  // a promise the app made up on your behalf.
+  function paceLabel(pace) {
+    if (pace.basis !== "observed") return "PAYING MINIMUMS ONLY · NO PAYMENT HISTORY YET";
+    const over = pace.extra > 0
+      ? ` (${Util.fmtMoney(pace.extra, 0)} OVER THE MINIMUMS)`
+      : " — THE MINIMUMS AND NOTHING MORE";
+    return `AT WHAT YOU'VE ACTUALLY PAID, LAST ${pace.months} MONTH${pace.months === 1 ? "" : "S"}${over}`;
   }
 
   // Convert "AUG 2025" -> "2025-08" (for fmtMonthLong)
@@ -7287,12 +7718,46 @@ const UI = (() => {
   }
 
   function bindDebtsEvents(s) {
-    root.querySelectorAll("[data-action=extra-preview]").forEach(el => {
+    // The custom what-if amount. Re-rendering on every keystroke would tear
+    // the field out from under the caret, so the projection updates on a short
+    // idle instead and the input is restored with its cursor where it was.
+    const amtInput = root.querySelector("#whatif-amount");
+    if (amtInput) {
+      let timer = null;
+      const commit = () => {
+        whatIf.amount = amtInput.value;
+        whatIfFocus = { pos: amtInput.selectionStart };
+        render();
+      };
+      amtInput.addEventListener("input", () => {
+        whatIf.amount = amtInput.value;
+        clearTimeout(timer);
+        timer = setTimeout(commit, 350);
+      });
+      amtInput.addEventListener("blur", () => { clearTimeout(timer); commit(); });
+      if (whatIfFocus) {
+        const pos = whatIfFocus.pos;
+        whatIfFocus = null;
+        amtInput.focus();
+        try { amtInput.setSelectionRange(pos, pos); } catch (e) { /* older engines */ }
+      }
+    }
+    root.querySelectorAll("[data-action=whatif-freq]").forEach(el => {
+      el.addEventListener("click", () => { whatIf.freq = el.dataset.freq; render(); });
+    });
+    root.querySelectorAll("[data-action=whatif-surplus]").forEach(el => {
+      el.addEventListener("click", () => { whatIf.surplus = !whatIf.surplus; render(); });
+    });
+    root.querySelectorAll("[data-action=whatif-clear]").forEach(el => {
       el.addEventListener("click", () => {
-        const v = parseInt(el.dataset.amt, 10);
-        extraPreview = (extraPreview === v ? 0 : v);
+        whatIf = { amount: "", freq: "monthly", surplus: false };
         render();
       });
+    });
+    // "× REMOVE CARD" on a cleared debt. Same deleteItem the settings list
+    // uses, so the card-link cleanup and the confirm come along with it.
+    root.querySelectorAll("[data-action=delete-item]").forEach(el => {
+      el.addEventListener("click", () => deleteItem(el.dataset.kind, el.dataset.id, s));
     });
     root.querySelectorAll("[data-action=pick-strategy]").forEach(el => {
       el.addEventListener("click", async () => {
@@ -7920,8 +8385,11 @@ const UI = (() => {
     const strat = B.debtStrategy(s);
     // Clamp to zero so a month that is running short does not project a
     // negative extra payment. This matches what the Debts tab shows.
-    const extra = Math.max(0, B.extraForDebt(s));
-    const sim = DebtEngine.simulate(debts, extra, month, strat);
+    // Same basis as the Debts tab: what has actually been paid, not what the
+    // budget could spare. A printed forecast is exactly the sort of thing that
+    // gets believed later, so it must not be the optimistic one.
+    const pace = B.debtPace(s);
+    const sim = DebtEngine.project(debts, { extraPerMonth: pace.extra, startMonth: month, strategy: strat });
     const debtFree = sim.debtFreeDate || "NOT YET";
     const debtFreeLong = Util.fmtMonthLong(monthYMFromShort(debtFree)) || debtFree;
     const target = B.targetDebt(s);
@@ -8428,9 +8896,12 @@ const UI = (() => {
     // --- Debts (the payload; labels replaced by position plus inferred type)
     const debts = s.debts || [];
     const strat = B.debtStrategy(s);
-    const extra = Math.max(0, B.extraForDebt(s));
-    const sim = DebtEngine.simulate(debts, extra, month, strat);
+    const pace = B.debtPace(s);
+    const sim = DebtEngine.project(debts, { extraPerMonth: pace.extra, startMonth: month, strategy: strat });
     L.push("DEBTS");
+    L.push("Payoff basis: " + (pace.basis === "observed"
+      ? "what has actually been paid over the last " + pace.months + " month(s)"
+      : "minimums only; no payment history yet"));
     L.push("Payoff strategy in use: " + strat);
     L.push("Total debt: " + anonMoney(B.totalDebt(s)));
     L.push("Total minimum payments per month: " + anonMoney(B.totalDebtMins(s)));
@@ -8834,7 +9305,7 @@ const UI = (() => {
       Object.keys(formErrors).forEach(k => delete formErrors[k]);
       logForm.amount = ""; logForm.categoryId = null; logForm.categoryType = null;
       logForm.paymentType = "cash"; logForm.cardId = null; logForm.note = "";
-      extraPreview = 0;
+      whatIf = { amount: "", freq: "monthly", surplus: false };
       resetConfirmOpen = false;
       await DataService.set(fresh);
       render();

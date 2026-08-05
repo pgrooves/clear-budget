@@ -24,11 +24,12 @@ function block(src, decl) {
 
 const src = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
 
-// Util first — BudgetEngine closes over it.
+// Util first — the other two close over it.
 const code = [
   block(src, "const Util = (() => {"),
   block(src, "const BudgetEngine = (() => {"),
-  "return { Util, BudgetEngine };"
+  block(src, "const DebtEngine = (() => {"),
+  "return { Util, BudgetEngine, DebtEngine };"
 ].join("\n");
 
 // `Date` resolves at call time, not here, so tests can move the clock after

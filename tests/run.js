@@ -9,7 +9,8 @@ const suites = [
   "./walk.test",
   "./income-landings.test",
   "./tithe.test",
-  "./monotonic.test"
+  "./monotonic.test",
+  "./debt.test"
 ];
 
 let failures = 0;
