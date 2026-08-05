@@ -1558,6 +1558,34 @@ const BudgetEngine = (() => {
     return out;
   }
 
+  /* The next pay date on the CALENDAR, whether or not that paycheck has been
+     marked received yet, and strictly after today.
+
+     Reading it off the schedule rather than off the unlogged income events is
+     what stops Safe To Spend moving when you do your bookkeeping. Taken from
+     the events, ticking the next paycheck removed it from the list, so "your
+     next payday" jumped to the one after it and the window swallowed another
+     fortnight of bills — logging money you had actually received made the
+     figure go DOWN, and logging the last one made the window vanish
+     altogether. The calendar does not care what has been ticked.
+
+     Strictly after today, so that on payday itself the window is the fortnight
+     ahead rather than a single flattering day. */
+  function nextPayDateISO(s, startISO, endISO) {
+    let best = null;
+    (s.income || []).forEach(i => {
+      if (num(i.amount) <= 0) return;
+      for (let ym = startISO.slice(0, 7), n = 0; ym <= endISO.slice(0, 7) && n < 4; ym = Util.nextMonthYM(ym), n++) {
+        incomeLandings(i, daysInMonthOf(ym)).forEach(l => {
+          const d = isoOf(ym, l.day);
+          if (d <= startISO || d > endISO) return;
+          if (!best || d < best) best = d;
+        });
+      }
+    });
+    return best;
+  }
+
   // Every dated money movement from today to the end of the horizon, as
   // { date, day, seq, amount, label, kind }. Anything already overdue and
   // unpaid lands on today, because it is owed now whatever its due date said.
@@ -1586,6 +1614,10 @@ const BudgetEngine = (() => {
       if (d > endISO) return;
       add(d, OUT, amount, label, kind);
     };
+
+    // This month's tithe when there is no pay day left in the month to take it
+    // from; placed once every landing is known, on the next one in view.
+    let pendingTithe = 0;
 
     // Every calendar month the horizon touches. 35 days spans two, or three
     // only if it starts near the end of a short month; the guard is belt and
@@ -1649,10 +1681,14 @@ const BudgetEngine = (() => {
               if (cut > 0) add(l.date, TITHE, -cut, "TITHE", "tithe");
             });
           } else if (owed > 0) {
-            // Nothing left to land this month to take it from, but it is owed
-            // on income already received, so it comes out now instead of
-            // dropping out of the walk and flattering the number.
-            add(startISO, TITHE, -owed, "TITHE", "tithe");
+            // Nothing left to land THIS month to take it from. It is owed on
+            // income already received, so it cannot drop out of the walk and
+            // flatter the number — but dumping it on today made marking your
+            // last paycheck received knock the whole tithe off Safe To Spend
+            // in one go. It goes on the next pay day in view instead, which is
+            // when it would actually be given, and only falls back to today
+            // when no pay day is coming at all.
+            pendingTithe = owed;
           }
         } else {
           const rate = tithePercent(s) / 100;
@@ -1663,6 +1699,14 @@ const BudgetEngine = (() => {
         }
       }
     });
+
+    // Tithe owed on income already received, with no pay day left this month
+    // to take it from: it rides on the next pay day in view, whichever month
+    // that falls in, and only lands on today if none is coming.
+    if (pendingTithe > 0) {
+      const nextIn = events.filter(e => e.kind === "income").sort((a, b) => (a.date < b.date ? -1 : 1))[0];
+      add(nextIn ? nextIn.date : startISO, TITHE, -pendingTithe, "TITHE", "tithe");
+    }
 
     // Credit is clamped into the horizon rather than dropped when the card's
     // due day falls beyond it. Landing it early is pessimistic, and quietly
@@ -1697,11 +1741,9 @@ const BudgetEngine = (() => {
     const start = projectedBalance(s) - totalReserved(s);
     const events = horizonEvents(s, opts);
 
-    // The Safe To Spend window runs to the next payday inclusive. Outflows are
-    // ordered before income within a day, so the dip that lands the morning of
-    // payday is inside the window rather than hidden just behind it.
-    const nextPay = events.find(e => e.kind === "income");
-    const windowEnd = nextPay ? nextPay.date : null;
+    // The Safe To Spend window runs to the next payday inclusive, taken from
+    // the pay schedule so that marking a paycheck received can never move it.
+    const windowEnd = nextPayDateISO(s, startISO, isoAddDays(startISO, HORIZON_DAYS));
     const monthLast = `${s.currentMonth}-${String(daysInMonthOf(s.currentMonth)).padStart(2, "0")}`;
 
     let running = start, low = start, lowDate = startISO;
