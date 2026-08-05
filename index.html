@@ -483,6 +483,16 @@
   .progress > span { display: block; height: 100%; background: var(--cobalt); }
   .progress.warn > span { background: var(--warn); }
   .progress.danger > span { background: var(--danger); }
+  /* Red type on a mid-tone panel only reaches about 2.7:1, so where the
+     background is not near-white the alarm becomes a filled chip instead:
+     white on danger clears 5.5:1 and keeps red meaning what it means. */
+  .flag-danger {
+    display: inline-block; background: var(--danger); color: #FFFFFF;
+    -webkit-text-fill-color: #FFFFFF;
+    font-size: 11px; font-weight: 700; letter-spacing: 0.14em;
+    padding: 3px 8px; border-radius: 2px; white-space: nowrap;
+  }
+
   .text-danger { color: var(--danger); }
   .text-warn { color: var(--warn); }
   .text-success { color: var(--success); }
@@ -3562,11 +3572,13 @@ const UI = (() => {
   let whatIf = { amount: "", freq: "monthly", surplus: false };
   // Set when a re-render was triggered by typing, so the caret can be put back.
   let whatIfFocus = null;
+  // Most common first, so the default selection is the one you can see without
+  // scrolling the carousel.
   const WHATIF_FREQS = [
-    { id: "once", label: "ONE-OFF", perMonth: 0 },
-    { id: "weekly", label: "WEEKLY", perMonth: 52 / 12 },
+    { id: "monthly", label: "MONTHLY", perMonth: 1 },
     { id: "biweekly", label: "EVERY 2 WKS", perMonth: 26 / 12 },
-    { id: "monthly", label: "MONTHLY", perMonth: 1 }
+    { id: "weekly", label: "WEEKLY", perMonth: 52 / 12 },
+    { id: "once", label: "ONE-OFF", perMonth: 0 }
   ];
   // The custom payment as the projection needs it: a monthly figure, plus a
   // separate lump for the one-off case.
@@ -3574,7 +3586,10 @@ const UI = (() => {
     const amt = parseFloat(String(whatIf.amount).replace(/[^0-9.]/g, ""));
     if (!isFinite(amt) || amt <= 0) return { perMonth: 0, once: 0 };
     if (whatIf.freq === "once") return { perMonth: 0, once: amt };
-    const f = WHATIF_FREQS.find(x => x.id === whatIf.freq) || WHATIF_FREQS[3];
+    // By id, never by position — the list is ordered for the carousel and the
+    // fallback must stay "monthly" whatever order it ends up in.
+    const f = WHATIF_FREQS.find(x => x.id === whatIf.freq)
+      || WHATIF_FREQS.find(x => x.id === "monthly");
     return { perMonth: amt * f.perMonth, once: 0 };
   }
 
@@ -7644,18 +7659,18 @@ const UI = (() => {
         </section>
 
         ${debtsList.length ? `
-        <section class="section charcoal" data-learn="WHERE YOUR MINIMUM PAYMENTS ACTUALLY GO. A MINIMUM IS MOSTLY INTEREST ON A HIGH-RATE CARD, SO THE BALANCE BARELY MOVES EVEN THOUGH YOU PAID. THIS IS THE REASON THE PAYOFF DATE IS AS FAR OUT AS IT IS.">
+        <section class="section teal" data-learn="WHERE YOUR MINIMUM PAYMENTS ACTUALLY GO. A MINIMUM IS MOSTLY INTEREST ON A HIGH-RATE CARD, SO THE BALANCE BARELY MOVES EVEN THOUGH YOU PAID. THIS IS THE REASON THE PAYOFF DATE IS AS FAR OUT AS IT IS.">
           <div class="section-label">→ WHERE THE MINIMUM GOES</div>
           <div class="sub-label" style="margin-top:8px; opacity:0.85;">OF ${Util.esc(Util.fmtMoney(split.reduce((a,x)=>a+x.min,0), 0))} IN MINIMUMS THIS MONTH, ${Util.esc(Util.fmtMoney(split.reduce((a,x)=>a+x.interest,0), 0))} IS INTEREST</div>
           <div class="cat-txns" style="margin-top:16px;">
             ${split.map(x => `
               <div class="cat-txn">
                 <span class="cat-txn-note">${Util.esc(x.label)} <span style="opacity:0.6;">· ${Util.esc(Util.fmtMoney(x.interest, 0))} INTEREST</span></span>
-                <span class="cat-txn-amt ${x.underwater ? "text-danger" : x.share < 0.25 ? "text-warn" : ""}">${x.underwater ? "GROWING" : Util.esc(Util.fmtMoney(x.principal, 0)) + " OFF"}</span>
+                <span class="cat-txn-amt">${x.underwater ? `<span class="flag-danger">GROWING</span>` : Util.esc(Util.fmtMoney(x.principal, 0)) + " OFF"}</span>
               </div>`).join("")}
           </div>
-          ${underwater.length ? `<div class="sub-label text-danger" style="margin-top:12px;">${underwater.length} DEBT${underwater.length===1?"":"S"} GROW EVEN WHEN YOU PAY THE MINIMUM · THE MINIMUM IS LESS THAN THAT MONTH'S INTEREST</div>`
-            : crawling.length ? `<div class="sub-label text-warn" style="margin-top:12px;">ON ${crawling.map(x=>Util.esc(x.label)).slice(0,3).join(", ")} LESS THAN A QUARTER OF THE MINIMUM REACHES THE BALANCE</div>` : ""}
+          ${underwater.length ? `<div class="sub-label" style="margin-top:12px;">${underwater.length === 1 ? "1 DEBT GROWS" : underwater.length + " DEBTS GROW"} EVEN WHEN YOU PAY THE MINIMUM · THE MINIMUM IS LESS THAN THAT MONTH'S INTEREST</div>`
+            : crawling.length ? `<div class="sub-label" style="margin-top:12px;">ON ${crawling.map(x=>Util.esc(x.label)).slice(0,3).join(", ")} LESS THAN A QUARTER OF THE MINIMUM REACHES THE BALANCE</div>` : ""}
         </section>` : ""}
 
         <section class="section gray">
@@ -7721,20 +7736,35 @@ const UI = (() => {
     // The custom what-if amount. Re-rendering on every keystroke would tear
     // the field out from under the caret, so the projection updates on a short
     // idle instead and the input is restored with its cursor where it was.
+    /* The custom what-if amount.
+       Every keystroke is stored immediately, so whatever else you touch next
+       already sees the number. Only the RECALCULATION is debounced, and it
+       re-renders — which replaces this input — so the caret has to be put back.
+
+       Two rules, both learned the hard way, that make that safe:
+
+       - Only recalculate while the field still holds the caret. Re-rendering
+         after you have moved on takes focus back, and since clicking anywhere
+         else blurs the field, that turns into a loop: click, blur, re-render,
+         focus stolen, click again. The page reads as frozen and the only way
+         out is to reload it.
+       - Never re-render on blur. Blur fires BEFORE the click that caused it
+         lands, so re-rendering there swaps the button out from under the
+         finger and the click never arrives. There is nothing to do on blur
+         anyway: the value was stored on the keystroke. */
     const amtInput = root.querySelector("#whatif-amount");
     if (amtInput) {
       let timer = null;
-      const commit = () => {
-        whatIf.amount = amtInput.value;
-        whatIfFocus = { pos: amtInput.selectionStart };
-        render();
-      };
       amtInput.addEventListener("input", () => {
         whatIf.amount = amtInput.value;
         clearTimeout(timer);
-        timer = setTimeout(commit, 350);
+        timer = setTimeout(() => {
+          if (!amtInput.isConnected || document.activeElement !== amtInput) return;
+          whatIfFocus = { pos: amtInput.selectionStart };
+          render();
+        }, 350);
       });
-      amtInput.addEventListener("blur", () => { clearTimeout(timer); commit(); });
+      amtInput.addEventListener("blur", () => { clearTimeout(timer); });
       if (whatIfFocus) {
         const pos = whatIfFocus.pos;
         whatIfFocus = null;
@@ -7742,6 +7772,9 @@ const UI = (() => {
         try { amtInput.setSelectionRange(pos, pos); } catch (e) { /* older engines */ }
       }
     }
+    // Any render that did not come from typing must not inherit a stale
+    // restore request, or the caret lands in this field out of nowhere.
+    whatIfFocus = null;
     root.querySelectorAll("[data-action=whatif-freq]").forEach(el => {
       el.addEventListener("click", () => { whatIf.freq = el.dataset.freq; render(); });
     });
