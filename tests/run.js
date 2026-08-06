@@ -13,6 +13,7 @@ const suites = [
   "./tithe-lump.test",
   "./monotonic.test",
   "./debt.test",
+  "./debt-minimums.test",
   "./bills.test",
   "./pending.test",
   "./import-parse.test"

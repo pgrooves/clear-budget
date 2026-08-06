@@ -1504,8 +1504,27 @@ const BudgetEngine = (() => {
   function totalBills(s) {
     return billsSubtotal(s);
   }
+  // A debt with nothing left on it asks for nothing, whatever minimum is still
+  // recorded against it. Leaving a cleared card's minimum in here reserved that
+  // money every month forever, took it off the budget surplus, and put a dated
+  // outflow in the walk for a card that had already been paid off.
   function totalDebtMins(s) {
-    return (s.debts || []).reduce((a, d) => a + num(d.minimumPayment), 0);
+    return (s.debts || []).reduce((a, d) => a + (num(d.balance) > 0 ? num(d.minimumPayment) : 0), 0);
+  }
+  // What has actually been paid against a debt in a month, from the ticks that
+  // wrote a real transaction. Ticking asks how much was paid rather than
+  // assuming the minimum, so this is the amount that genuinely went out.
+  function debtPaidIn(s, debtId, ym) {
+    return (s.transactions || []).reduce((a, t) => (
+      t && t.tickPay && t.categoryType === "debt" && t.categoryId === debtId && t.month === ym
+        ? a + num(t.amount) : a
+    ), 0);
+  }
+  // What a debt still asks for this month: its minimum less whatever has
+  // already gone out against it, never below zero.
+  function debtMinStillDue(s, d, ym) {
+    if (num(d.balance) <= 0) return 0;
+    return Math.max(0, num(d.minimumPayment) - debtPaidIn(s, d.id, ym));
   }
   function totalUnpaidCredit(s) {
     const m = s.currentMonth;
@@ -1637,15 +1656,14 @@ const BudgetEngine = (() => {
   }
   // Ticking a debt minimum writes a real debit transaction, so a paid minimum
   // has already come out of the balance and must not be reserved on top.
+  // Ticking a debt minimum writes a real debit transaction, so whatever was
+  // paid has already come out of the balance and must not be reserved on top.
+  // It is the AMOUNT that stops being owed, not the whole minimum: the tick
+  // asks how much you actually paid, and paying a part of it used to release
+  // all of it, so a one cent payment cleared a $200 obligation and handed the
+  // difference back as spendable.
   function unpaidDebtMins(s) {
-    const m = s.currentMonth;
-    const paidIds = {};
-    (s.transactions || []).forEach(t => {
-      if (t && t.tickPay && t.categoryType === "debt" && t.month === m) paidIds[t.categoryId] = true;
-    });
-    return (s.debts || [])
-      .filter(d => !paidIds[d.id])
-      .reduce((a, d) => a + num(d.minimumPayment), 0);
+    return (s.debts || []).reduce((a, d) => a + debtMinStillDue(s, d, s.currentMonth), 0);
   }
   function unpaidObligations(s) {
     return unpaidBillsTotal(s) + unpaidTithe(s) + unpaidDebtMins(s);
@@ -1846,15 +1864,12 @@ const BudgetEngine = (() => {
         });
       });
 
-      // A minimum whose tick already wrote a transaction is spent, not pending.
-      const minPaid = {};
-      (s.transactions || []).forEach(t => {
-        if (t && t.tickPay && t.categoryType === "debt" && t.month === ym) minPaid[t.categoryId] = true;
-      });
+      // Whatever a tick already paid is spent, not pending; what is left of the
+      // minimum still falls due on its day. A cleared debt asks for nothing.
       (s.debts || []).forEach(d => {
-        if (minPaid[d.id]) return;
-        if (num(d.minimumPayment) <= 0) return;
-        out(isoOf(ym, d.dueDateOfMonth), -num(d.minimumPayment), d.label, "debt");
+        const still = debtMinStillDue(s, d, ym);
+        if (still <= 0) return;
+        out(isoOf(ym, d.dueDateOfMonth), -still, d.label, "debt");
       });
 
       // Income not yet marked received. A landing whose pay day has already
@@ -2869,7 +2884,9 @@ const DebtEngine = (() => {
      explains why a balance sits still: on a card at 27% carrying $6,100, a
      $155 minimum is $147 of interest and $8 of progress. */
   function principalSplit(debtsInput) {
-    return (debtsInput || []).map(d => {
+    // A cleared debt has no minimum going anywhere. Left in, it reported the
+    // whole minimum as principal coming off a balance that was already zero.
+    return (debtsInput || []).filter(d => (Number(d.balance) || 0) > 0).map(d => {
       const balance = Number(d.balance) || 0;
       const min = Number(d.minimumPayment) || 0;
       const interest = balance * (Number(d.interestRate) || 0) / 12 / 100;
@@ -9311,7 +9328,12 @@ const UI = (() => {
         + ", minimum payment " + anonMoney(d.minimumPayment)
         + ", interest rate " + rate + "%"
         + ", payoff position " + (idx + 1)
-        + (payoff ? ", projected payoff " + anonTitleCase(payoff) : ", not projected to be paid off"));
+        // A cleared debt is not in the projection at all, so it has no payoff
+        // month to report. Saying "not projected to be paid off" about a debt
+        // that is already at zero reads as the exact opposite of the truth.
+        + (bal <= 0
+            ? ", already paid off"
+            : payoff ? ", projected payoff " + anonTitleCase(payoff) : ", not projected to be paid off"));
     });
     L.push("");
 
