@@ -8379,9 +8379,13 @@ const UI = (() => {
             <button class="cta" data-action="ai-export" style="margin-top:20px;" data-learn="DOWNLOADS A PLAIN TEXT FILE OF YOUR NUMBERS WITH EVERY IDENTIFYING DETAIL REMOVED, SO YOU CAN HAND IT TO AN AI FOR DEBT ADVICE. YOUR TRANSACTIONS ARE LISTED ONE PER LINE BUT LABELLED BY CATEGORY, NOT BY MERCHANT, AND NOTES ARE NEVER INCLUDED. OPEN IT IN ANY TEXT EDITOR FIRST IF YOU WANT TO SEE EXACTLY WHAT IT CONTAINS.">→ AI ANALYSIS FILE (.TXT)</button>
             <div class="meta" style="margin-top:8px;">ANONYMIZED. NO NAMES, NO ACCOUNTS, NO MERCHANTS, NO NOTES. TRANSACTIONS ARE LISTED BY CATEGORY AND AMOUNT ONLY.</div>
 
-            <div class="meta" style="margin-top:20px;">PASTE THIS ALONGSIDE THE FILE</div>
-            <div style="margin-top:8px;border:1px solid rgba(26,58,140,0.35);padding:12px;text-transform:none;letter-spacing:0.01em;font-size:12px;line-height:1.55;white-space:pre-wrap;" data-learn="THE PROMPT TO SEND WITH THE FILE. IT TELLS THE AI TO ANSWER AS A PROFESSIONAL BANKER OR ADVISOR WOULD: WHAT YOUR FIGURES SAY, WHAT YOU'RE MISSING, AND THE FASTEST REALISTIC ROUTE TO FINANCIAL FREEDOM, USING YOUR REAL NUMBERS.">${Util.esc(COACH_PROMPT)}</div>
-            <button class="link" data-action="copy-prompt" style="margin-top:10px;" data-learn="COPIES THE PROMPT ABOVE TO YOUR CLIPBOARD.">+ COPY PROMPT</button>
+            ${/* The prompt used to sit here in full, a wall of small text
+                  nobody reads and nobody types out by hand. It is copied, not
+                  read, so the block is gone and the action takes its place —
+                  styled like the two buttons above it, because it is the third
+                  step of the same job. */""}
+            <button class="cta" data-action="copy-prompt" style="margin-top:20px;" data-learn="COPIES THE PROMPT THAT GOES WITH THE FILE. IT TELLS THE AI TO ANSWER AS A PROFESSIONAL BANKER OR ADVISOR WOULD: WHAT YOUR FIGURES SAY, WHAT YOU'RE MISSING, AND THE FASTEST REALISTIC ROUTE OUT, USING YOUR REAL NUMBERS. DOWNLOAD THE FILE ABOVE, PASTE THIS ALONGSIDE IT.">→ COPY PROMPT</button>
+            <div class="meta" style="margin-top:8px;">PASTE THIS ALONGSIDE THE FILE. IT ASKS FOR A BANKER'S READ OF YOUR NUMBERS AND THE FASTEST REALISTIC ROUTE OUT.</div>
           </div>
 
           <div class="settings-group" id="sg-shimmer" data-learn="SHIMMER. THE COBALT TEXT CATCHES A MOVING HIGHLIGHT. PERIODIC SWEEPS ON A TIMER; TILT FOLLOWS THE PHONE. TURN BOTH OFF FOR NO SHIMMER AT ALL. ONLY ONE CAN BE ON AT A TIME.">
@@ -9172,7 +9176,13 @@ const UI = (() => {
     L.push("Payoff strategy in use: " + strat);
     L.push("Total debt: " + anonMoney(B.totalDebt(s)));
     L.push("Total minimum payments per month: " + anonMoney(B.totalDebtMins(s)));
-    L.push("Extra available for debt per month: " + anonMoney(extra));
+    // What is actually being paid over the minimums, and separately what the
+    // budget could spare. Conflating the two is what made the old projection
+    // read years early, so an AI reading this file must not be handed the
+    // capacity figure as though it were the habit.
+    L.push("Paid over the minimums per month, actual: " + anonMoney(pace.extra));
+    L.push("Budget surplus that could go to debt: " + anonMoney(Math.max(0, B.extraForDebt(s))));
+    L.push("Total interest still to pay at this rate: " + anonMoney(sim.totalInterest));
     L.push("Projected debt-free date: " + (sim.debtFreeDate ? anonTitleCase(sim.debtFreeDate) : "not reachable at the current payment level"));
     L.push("Count: " + debts.length);
     const debtAnonById = {};
@@ -9345,9 +9355,11 @@ const UI = (() => {
   }
 
   function copyCoachPrompt(btn) {
-    const original = "+ COPY PROMPT";
+    // Read off the button rather than hardcoded, so the label and the restore
+    // can never drift apart the way they would if both were written twice.
+    const original = btn.textContent;
     const confirm = () => {
-      btn.textContent = "COPIED ×";
+      btn.textContent = "✓ COPIED";
       setTimeout(() => { btn.textContent = original; }, 1800);
     };
     // Older mobile browsers and any non-secure context have no async clipboard.
