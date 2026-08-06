@@ -16,6 +16,7 @@ No install, no dependencies. Exits non-zero if anything fails.
 | `tithe.test.js` | Tithe split per pay day, shares summing exactly to the TITHE row, and pre-split records still readable and clearable. |
 | `tithe-lump.test.js` | **Ticking the lump and the pay-day shares is still one tithe.** The lump wins outright, in the engine rather than only on screen. |
 | `monotonic.test.js` | **Marking income received can never lower either headline figure.** |
+| `anon-export.test.js` | The AI export carries three months of history and **still leaks no merchant, note, account or name** — asserted over every month in the window, against the block pulled straight out of `index.html`. |
 
 ## Why the last one matters
 

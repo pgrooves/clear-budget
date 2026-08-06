@@ -35,4 +35,30 @@ const code = [
 
 // `Date` resolves at call time, not here, so tests can move the clock after
 // this module has been required (see harness.setToday).
-module.exports = new Function(code)();
+const engines = new Function(code)();
+
+/* The anonymized export lives inside the UI closure, which cannot be evaluated
+ * here because it wants a DOM. The builder itself does not: it reads Util,
+ * BudgetEngine and DebtEngine and nothing else. So pull out that one region —
+ * from the first anonymizer table down to the end of the coach prompt — and
+ * evaluate it against the same three engines the browser hands it. What this
+ * suite asserts about privacy is therefore asserted about the shipped code.
+ */
+const ANON_START = "const ANON_BILL_GENERICS";
+const ANON_PROMPT = "const COACH_PROMPT";
+const ANON_TAIL = "\n  ].join(\"\\n\");";
+
+function anonRegion(source) {
+  const start = source.indexOf(ANON_START);
+  const prompt = start < 0 ? -1 : source.indexOf(ANON_PROMPT, start);
+  const end = prompt < 0 ? -1 : source.indexOf(ANON_TAIL, prompt);
+  if (end < 0) throw new Error("tests/engine.js: could not find the anonymized export block in index.html");
+  return source.slice(start, end + ANON_TAIL.length);
+}
+
+const AnonExport = new Function("Util", "BudgetEngine", "DebtEngine", [
+  anonRegion(src),
+  "return { buildAnonymizedExport, COACH_PROMPT, ANON_WINDOW_MONTHS, anonMonthWindow, anonMonthFacts };"
+].join("\n"))(engines.Util, engines.BudgetEngine, engines.DebtEngine);
+
+module.exports = Object.assign({}, engines, { AnonExport });

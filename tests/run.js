@@ -16,7 +16,8 @@ const suites = [
   "./debt-minimums.test",
   "./bills.test",
   "./pending.test",
-  "./import-parse.test"
+  "./import-parse.test",
+  "./anon-export.test"
 ];
 
 let failures = 0;

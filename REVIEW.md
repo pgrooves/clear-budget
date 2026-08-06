@@ -229,18 +229,25 @@ Permanent test infrastructure is a **proposal**, not an action, and must address
 
 ## 7. If an export file is attached
 
-The attachment is `buildAnonymizedExport(s)` output: plain text, one month, built from an explicit allow-list. Sections in order:
+The attachment is `buildAnonymizedExport(s)` output: plain text, **three months** — the month in view plus the two before it — built from an explicit allow-list. Sections in order:
 
-`HOUSEHOLD · INCOME · TITHE · BILLS AND FIXED EXPENSES · SPENDING CATEGORIES · DEBTS · DERIVED FIGURES · SPENDING BEHAVIOR THIS MONTH · TRANSACTIONS THIS MONTH · ACCOUNTS`
+`HOUSEHOLD · INCOME · TITHE · BILLS AND FIXED EXPENSES · SPENDING CATEGORIES · CATEGORY TRENDS ACROSS THE THREE MONTHS · DEBTS · DEBT PAYMENTS, MONTH BY MONTH · DERIVED FIGURES · SPENDING BEHAVIOUR ACROSS THE THREE MONTHS · TRANSACTIONS, LAST THREE MONTHS · ACCOUNTS`
 
-What it now carries that materially helps you:
+The budget itself — income, bills, categories, debts, balances — is the one in force now, so any figure not labelled with a month describes the month in view. Only the transaction-derived sections look back.
 
-- **Itemized transactions**, one per line, oldest first: day of month, amount, the category/bill/debt it is attributed to, and tags (`debit`/`credit`, `Card N`, `Person A/B`, `imported`). Merchant strings and notes are never written.
+What it carries that materially helps you:
+
+- **Itemized transactions for all three months**, one per line, oldest first, grouped by the month the budget counts them in (`t.month`, the same key `categorySpentIn` uses — a row dated outside its own month prints its full date so the discrepancy is visible). Each row gives day of month, amount, the category/bill/debt it is attributed to, and tags (`debit`/`credit`, `Card N`, `Person A/B`, `imported`). Merchant strings and notes are never written.
+- **Per-month spend split into four disjoint buckets** — bills, debt payments, variable categories, unassigned — which by construction sum to that month's total. Any month where they do not is a confirmed defect.
+- **Per-category month-by-month spend** with the average over completed months against the budget, and a ranking of what took the most.
+- **What was actually paid to debt each month**, which is the history `observedDebtPace` averages and therefore the history behind the printed payoff date.
 - **Anchor state** in DERIVED FIGURES: when the balance was last confirmed and how many days ago, the projected balance, unpaid obligations, Safe To Spend — or `unknown; no balance confirmed` when there is no anchor.
+
+The month in view is a part-month whenever it is the real calendar month, and is labelled `(partial)` / `(still running)` everywhere it appears. Averages are taken over completed months only. **Do not read a partial month as a fall in spending.**
 
 How to use it:
 
-1. **Recompute every derived figure from the components printed in the same file.** The transaction list now makes this genuinely independent: sum the rows and check them against Total spent, Paid from checking, Paid by credit card, each category’s spent line, and the per-person splits. Any mismatch is a confirmed defect with a ready-made reproduction.
+1. **Recompute every derived figure from the components printed in the same file.** The transaction list makes this genuinely independent: sum the rows and check them against each month's Total logged out, the four buckets under it, Paid from checking, Paid by credit card, every category-trend line, the debt-payment history, and the per-person splits. Any mismatch is a confirmed defect with a ready-made reproduction.
 1. **Reconstruct the walk.** Given the anchor date and amount, the income schedule with due days, the bill list with due days and paid flags, the debt minimums, and the transactions, rebuild `projectedBalance` and the 35-day walk by hand and check `Safe to spend right now`.
 1. **Sanity-check the projection.** Do the stated debts, minimums, extra, and strategy reproduce the printed debt-free date under an independent simulation with declining minimums on?
 1. **Mine it for edge cases** the fixtures lacked, and turn each defect into a fixture in the scratch test file, cited in the report.

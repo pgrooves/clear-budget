@@ -8506,16 +8506,16 @@ const UI = (() => {
             <button class="cta" data-action="print-report" data-learn="OPENS A FORMATTED SUMMARY OF THIS MONTH AS ITS OWN PAGE. TO KEEP OR SHARE IT AS A PDF, USE THE SHARE ICON IN THE BROWSER BAR, CHOOSE PRINT, THEN SAVE AS PDF. THE INSTRUCTION LINE AT THE TOP OF THE REPORT IS LEFT OUT OF THE SAVED FILE.">→ SHAREABLE REPORT</button>
             <div class="meta" style="margin-top:8px;">OPENS THE REPORT AS ITS OWN PAGE. TO SAVE IT AS A PDF, USE THE SHARE ICON THEN PRINT. A VISUAL SUMMARY OF THIS MONTH; NO TRANSACTIONS, NO HOUSEHOLD CODE.</div>
 
-            <button class="cta" data-action="ai-export" style="margin-top:20px;" data-learn="DOWNLOADS A PLAIN TEXT FILE OF YOUR NUMBERS WITH EVERY IDENTIFYING DETAIL REMOVED, SO YOU CAN HAND IT TO AN AI FOR DEBT ADVICE. YOUR TRANSACTIONS ARE LISTED ONE PER LINE BUT LABELLED BY CATEGORY, NOT BY MERCHANT, AND NOTES ARE NEVER INCLUDED. OPEN IT IN ANY TEXT EDITOR FIRST IF YOU WANT TO SEE EXACTLY WHAT IT CONTAINS.">→ AI ANALYSIS FILE (.TXT)</button>
-            <div class="meta" style="margin-top:8px;">ANONYMIZED. NO NAMES, NO ACCOUNTS, NO MERCHANTS, NO NOTES. TRANSACTIONS ARE LISTED BY CATEGORY AND AMOUNT ONLY.</div>
+            <button class="cta" data-action="ai-export" style="margin-top:20px;" data-learn="DOWNLOADS A PLAIN TEXT FILE OF YOUR NUMBERS WITH EVERY IDENTIFYING DETAIL REMOVED, SO YOU CAN HAND IT TO AN AI FOR DEBT ADVICE. IT CARRIES THE LAST THREE MONTHS OF TRANSACTIONS PLUS THE TREND IN EVERY CATEGORY, YOUR DEBT PAYMENTS MONTH BY MONTH, AND THE BUDGET AS IT STANDS NOW. TRANSACTIONS ARE LISTED ONE PER LINE BUT LABELLED BY CATEGORY, NOT BY MERCHANT, AND NOTES ARE NEVER INCLUDED. OPEN IT IN ANY TEXT EDITOR FIRST IF YOU WANT TO SEE EXACTLY WHAT IT CONTAINS.">→ AI ANALYSIS FILE (.TXT)</button>
+            <div class="meta" style="margin-top:8px;">THE LAST 3 MONTHS OF SPENDING, THE TREND IN EVERY CATEGORY, AND WHAT YOU'VE ACTUALLY PAID TO DEBT. ANONYMIZED: NO NAMES, NO ACCOUNTS, NO MERCHANTS, NO NOTES. TRANSACTIONS ARE LISTED BY CATEGORY AND AMOUNT ONLY.</div>
 
             ${/* The prompt used to sit here in full, a wall of small text
                   nobody reads and nobody types out by hand. It is copied, not
                   read, so the block is gone and the action takes its place —
                   styled like the two buttons above it, because it is the third
                   step of the same job. */""}
-            <button class="cta" data-action="copy-prompt" style="margin-top:20px;" data-learn="COPIES THE PROMPT THAT GOES WITH THE FILE. IT TELLS THE AI TO ANSWER AS A PROFESSIONAL BANKER OR ADVISOR WOULD: WHAT YOUR FIGURES SAY, WHAT YOU'RE MISSING, AND THE FASTEST REALISTIC ROUTE OUT, USING YOUR REAL NUMBERS. DOWNLOAD THE FILE ABOVE, PASTE THIS ALONGSIDE IT.">→ COPY PROMPT</button>
-            <div class="meta" style="margin-top:8px;">PASTE THIS ALONGSIDE THE FILE. IT ASKS FOR A BANKER'S READ OF YOUR NUMBERS AND THE FASTEST REALISTIC ROUTE OUT.</div>
+            <button class="cta" data-action="copy-prompt" style="margin-top:20px;" data-learn="COPIES THE PROMPT THAT GOES WITH THE FILE. IT TELLS THE AI TO ANSWER AS A PROFESSIONAL BANKER OR ADVISOR WOULD: WHAT YOUR FIGURES SAY, WHAT THE LAST THREE MONTHS OF SPENDING SHOW, WHAT IS KEEPING YOU FROM BEING DEBT FREE AS FAST AS POSSIBLE, AND EXACTLY WHAT TO DO NEXT — USING YOUR REAL NUMBERS. DOWNLOAD THE FILE ABOVE, PASTE THIS ALONGSIDE IT.">→ COPY PROMPT</button>
+            <div class="meta" style="margin-top:8px;">PASTE THIS ALONGSIDE THE FILE. IT ASKS WHAT YOUR SPENDING TRENDS SAY IS KEEPING YOU FROM BEING DEBT FREE, AND WHAT TO DO ABOUT IT.</div>
           </div>
 
           <div class="settings-group" id="sg-shimmer" data-learn="SHIMMER. THE COBALT TEXT CATCHES A MOVING HIGHLIGHT. PERIODIC SWEEPS ON A TIMER; TILT FOLLOWS THE PHONE. TURN BOTH OFF FOR NO SHIMMER AT ALL. ONLY ONE CAN BE ON AT A TIME.">
@@ -9212,20 +9212,117 @@ const UI = (() => {
     return sign + "$" + Math.abs(v).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
   }
 
+  // The window the file covers: the month in view plus the two before it,
+  // oldest first. Three months is the shortest run where a trend is a trend
+  // rather than one odd month, and it is the same span observedDebtPace
+  // averages over — so the history in this file and the history behind the
+  // projected payoff date are the same history.
+  const ANON_WINDOW_MONTHS = 3;
+
+  function anonMonthWindow(month) {
+    // prevMonthYM falls back to the current month on malformed input, which
+    // would put the same month in the list twice. Validating the start once is
+    // enough: every step back from a valid month is itself valid.
+    const start = /^\d{4}-\d{2}$/.test(String(month || "")) ? String(month) : Util.currentMonthYM();
+    const out = [start];
+    for (let i = 1; i < ANON_WINDOW_MONTHS; i++) out.unshift(Util.prevMonthYM(out[0]));
+    return out;
+  }
+
+  // Everything the trend sections need about one month, computed identically
+  // for every month in the window so the rows can be read against each other.
+  //
+  // The four spend buckets are disjoint by construction — every transaction
+  // falls in exactly one — so they always sum to that month's total. That is
+  // what lets whoever reads the file add the sections up and check them,
+  // rather than taking the totals on trust.
+  function anonMonthFacts(s, month) {
+    const B = BudgetEngine;
+    // Grouped by t.month, the same key categorySpentIn and every other
+    // month-scoped figure in the engine uses, so a row lands in the month the
+    // budget counts it in even if it was logged with an older date.
+    const txns = (s.transactions || []).filter(t => t && t.month === month);
+    const f = {
+      month, txns, count: txns.length,
+      total: 0, credit: 0, debit: 0, imported: 0,
+      unassignedSpend: 0, debtSpend: 0, billSpend: 0, variableSpend: 0,
+      byPerson: {}
+    };
+    txns.forEach(t => {
+      const amt = B.num(t.amount);
+      f.total += amt;
+      if (t.paymentType === "credit") f.credit += amt; else f.debit += amt;
+      if (t.source === "import") f.imported += amt;
+      if (!t.categoryId) f.unassignedSpend += amt;
+      else if (t.categoryType === "debt") f.debtSpend += amt;
+      else if (t.categoryType === "bill") f.billSpend += amt;
+      else f.variableSpend += amt;
+      const who = String(t.person || "").toUpperCase();
+      if (who) f.byPerson[who] = (f.byPerson[who] || 0) + amt;
+    });
+    f.income = (s.incomeLog || [])
+      .filter(e => e && e.month === month)
+      .reduce((a, e) => a + B.num(e.amount), 0);
+    // Bills are occurrences, not rows: a fortnightly bill falls due twice in a
+    // month and can be half paid, so counting bill rows would misread it.
+    let dueCount = 0, paidCount = 0, dueAmount = 0, paidAmount = 0;
+    (s.bills || []).forEach(b => {
+      B.billOccurrences(s, b, month).forEach(o => {
+        dueCount++; dueAmount += o.amount;
+        if (o.paid) { paidCount++; paidAmount += o.amount; }
+      });
+    });
+    f.billsDue = dueCount;
+    f.billsPaidCount = paidCount;
+    f.billsDueAmount = dueAmount;
+    f.billsPaidAmount = paidAmount;
+    return f;
+  }
+
   function buildAnonymizedExport(s) {
     const B = BudgetEngine;
     const L = [];
     const month = String(s.currentMonth || Util.currentMonthYM());
     const monthName = anonTitleCase(Util.fmtMonthLong(month) || month);
+    const months = anonMonthWindow(month);
+    const realMonth = Util.currentMonthYM();
+    const monthLabel = (m) => anonTitleCase(Util.fmtMonthLong(m) || m);
+    // A month still running is a part-month. Saying so on every line it appears
+    // on is the difference between an advisor reading a real drop in spending
+    // and reading the calendar.
+    const isPartial = (m) => m === realMonth;
+    // A month ahead of the calendar can only come from a corrupt currentMonth,
+    // but calling it "complete" would be a lie about an empty month.
+    const stateOf = (m) => (m === realMonth ? "partial" : m > realMonth ? "not started" : "complete");
+    const partialTag = (m) => (m === realMonth ? " (partial)" : m > realMonth ? " (not started)" : "");
+    const entryWord = (n) => (n === 1 ? " entry" : " entries");
+    const facts = {};
+    months.forEach(m => { facts[m] = anonMonthFacts(s, m); });
+    // Averages are taken over completed months only. Folding a month that is
+    // four days old into an average drags every trend downward and invents an
+    // improvement that has not happened.
+    const completed = months.filter(m => m < realMonth);
+    const avgOver = (pick) => (completed.length
+      ? completed.reduce((a, m) => a + pick(facts[m]), 0) / completed.length
+      : null);
+    const householdNames = (s.settings && s.settings.names) || [];
 
     // --- Preamble
     L.push("CLEAR - ANONYMIZED FINANCIAL SNAPSHOT");
     L.push("");
-    L.push("This is an anonymized one-month snapshot exported from a personal budgeting app.");
+    L.push("This is an anonymized snapshot exported from a personal budgeting app. It carries");
+    L.push("three months of transactions: " + months.map(monthLabel).join(", ") + ", oldest first.");
     L.push("Names, account identifiers, merchant names, and transaction notes have been removed.");
     L.push("Transactions are listed individually but described only by the category, bill, or");
-    L.push("debt each is assigned to. All amounts are in USD and cover a single month: "
-      + monthName + ".");
+    L.push("debt each is assigned to. All amounts are in USD.");
+    L.push("The budget itself — income, bills, categories, debts, balances — is the one in force");
+    L.push("now, so any figure not labelled with a month describes " + monthName + ".");
+    if (isPartial(month)) {
+      const d = B.monthDayInfo(s);
+      L.push(monthName + " is still running: day " + d.day + " of " + d.daysInMonth + ", "
+        + d.pct + "% elapsed. Its totals are part-months and");
+      L.push("must be judged on pace, not compared with the completed months beside them.");
+    }
     L.push("");
 
     // --- Household shape (allow-list: settings.mode only)
@@ -9244,6 +9341,10 @@ const UI = (() => {
     income.forEach((i, idx) => {
       const due = Number(i.dueDateOfMonth) || 0;
       L.push("Income source " + (idx + 1) + ": " + anonMoney(i.amount) + (due ? " (due day " + due + ")" : ""));
+    });
+    L.push("Income actually logged as received, month by month:");
+    months.forEach(m => {
+      L.push("  " + monthLabel(m) + partialTag(m) + ": " + anonMoney(facts[m].income));
     });
     L.push("");
 
@@ -9274,11 +9375,18 @@ const UI = (() => {
         + (due ? " (due day " + due + ")" : "")
         + " [" + kind + ", " + (isPaid ? "paid" : "unpaid") + "]");
     });
+    L.push("How much of each month's bills got marked paid:");
+    L.push("(the bills counted are the ones in the budget today, priced at that month's amount;");
+    L.push("a bill added since is therefore counted in the earlier months too)");
+    months.forEach(m => {
+      const f = facts[m];
+      L.push("  " + monthLabel(m) + partialTag(m) + ": " + f.billsPaidCount + " of " + f.billsDue
+        + " due, " + anonMoney(f.billsPaidAmount) + " of " + anonMoney(f.billsDueAmount));
+    });
     L.push("");
 
     // --- Spending categories (labels kept: generic by nature, names scrubbed)
     const cats = s.spendingCategories || [];
-    const householdNames = (s.settings && s.settings.names) || [];
     L.push("SPENDING CATEGORIES");
     L.push("Total budgeted for variable spending: " + anonMoney(B.spendingBudgetedTotal(s)));
     const catAnonById = {};
@@ -9293,6 +9401,62 @@ const UI = (() => {
         + ", remaining " + anonMoney(budget - spent));
     });
     L.push("");
+
+    // --- Category trends. The whole reason the file carries three months: a
+    // single month cannot tell you whether a category is a habit or an
+    // accident, and "what is costing me the most" is a question about the run,
+    // not the row.
+    L.push("CATEGORY TRENDS ACROSS THE THREE MONTHS");
+    L.push("What was actually spent in each spending category, month by month. Budgets are the");
+    L.push("ones set now. Only categories that exist in the budget today can be named here;");
+    L.push("money spent in a category deleted since still appears in the transaction list.");
+    L.push("");
+    if (!cats.length) {
+      L.push("No spending categories are set up.");
+    } else {
+      cats.forEach(c => {
+        const budget = B.num(c.budgeted);
+        const perMonth = months.map(m =>
+          monthLabel(m) + partialTag(m) + " " + anonMoney(B.categorySpentIn(s, c.id, m)));
+        const avg = completed.length
+          ? completed.reduce((a, m) => a + B.categorySpentIn(s, c.id, m), 0) / completed.length
+          : null;
+        const gap = avg == null ? 0 : avg - budget;
+        L.push(catAnonById[c.id] + ": budget " + anonMoney(budget) + "/mo | " + perMonth.join(" | ")
+          + (avg == null
+              ? ""
+              : " | average of completed months " + anonMoney(avg) + ", "
+                + (Math.abs(gap) < 0.005
+                    ? "exactly on budget"
+                    : anonMoney(Math.abs(gap)) + (gap > 0 ? " over budget" : " under budget"))));
+      });
+    }
+    L.push("");
+    if (completed.length) {
+      // Ranked, because "what is holding me back" is a question about the
+      // biggest lines, and nobody should have to sort a list by hand to see
+      // where the money actually went.
+      const ranked = cats.map(c => ({
+        label: catAnonById[c.id],
+        total: completed.reduce((a, m) => a + B.categorySpentIn(s, c.id, m), 0),
+        budgeted: B.num(c.budgeted) * completed.length
+      })).filter(r => r.total > 0).sort((a, b) => b.total - a.total);
+      L.push("Variable categories ranked by what they took over the "
+        + completed.length + " completed month(s):");
+      if (!ranked.length) {
+        L.push("  Nothing was spent in any category in those months.");
+      } else {
+        ranked.forEach((r, idx) => {
+          const over = r.total - r.budgeted;
+          L.push("  " + (idx + 1) + ". " + r.label + ": " + anonMoney(r.total)
+            + " spent against " + anonMoney(r.budgeted) + " budgeted, "
+            + (Math.abs(over) < 0.005
+                ? "level with budget"
+                : anonMoney(Math.abs(over)) + (over > 0 ? " over" : " under")));
+        });
+      }
+      L.push("");
+    }
 
     // --- Debts (the payload; labels replaced by position plus inferred type)
     const debts = s.debts || [];
@@ -9337,6 +9501,26 @@ const UI = (() => {
     });
     L.push("");
 
+    // --- What was actually paid to debt, month by month. The projected date
+    // above is built on this history, so printing the history lets a reader
+    // check the date rather than believe it.
+    L.push("DEBT PAYMENTS, MONTH BY MONTH");
+    L.push("Every transaction assigned to a debt, totalled per month. The minimums quoted are");
+    L.push("today's minimums; what they were in an earlier month is not recorded.");
+    const minsNow = B.totalDebtMins(s);
+    months.forEach(m => {
+      const f = facts[m];
+      const over = f.debtSpend - minsNow;
+      L.push("  " + monthLabel(m) + partialTag(m) + ": " + anonMoney(f.debtSpend)
+        + " paid, against " + anonMoney(minsNow) + " of minimums, "
+        + (over >= 0 ? anonMoney(over) + " over" : anonMoney(-over) + " short"));
+    });
+    const avgDebt = avgOver(f => f.debtSpend);
+    L.push(avgDebt == null
+      ? "  No completed month in the window, so there is no average to take yet."
+      : "  Average over the " + completed.length + " completed month(s): " + anonMoney(avgDebt));
+    L.push("");
+
     // --- Derived figures
     L.push("DERIVED FIGURES");
     const anchorRec = B.latestAnchor(s);
@@ -9351,37 +9535,9 @@ const UI = (() => {
     L.push("Progress through the month: day " + dayInfo.day + " of " + dayInfo.daysInMonth + " (" + dayInfo.pct + "%)");
     L.push("");
 
-    // --- Aggregate spending behavior
-    const txns = (s.transactions || []).filter(t => t.month === month);
-    let creditSpend = 0, debitSpend = 0, uncategorized = 0;
-    txns.forEach(t => {
-      const amt = B.num(t.amount);
-      if (t.paymentType === "credit") creditSpend += amt; else debitSpend += amt;
-      if (!t.categoryId) uncategorized += amt;
-    });
-    L.push("SPENDING BEHAVIOR THIS MONTH");
-    L.push("Total spent: " + anonMoney(creditSpend + debitSpend));
-    L.push("Number of purchases logged: " + txns.length);
-    L.push("Paid from checking: " + anonMoney(debitSpend));
-    L.push("Paid by credit card: " + anonMoney(creditSpend));
-    if (uncategorized > 0) L.push("Spending not yet assigned to a category: " + anonMoney(uncategorized));
-    if (isCouple) {
-      const names = (s.settings && s.settings.names) || [];
-      L.push("Spent by Person A: " + anonMoney(B.personSpent(s, names[0])));
-      L.push("Spent by Person B: " + anonMoney(B.personSpent(s, names[1])));
-      L.push("Spent jointly: " + anonMoney(B.personSpent(s, "JOINT")));
-    }
-    L.push("");
-
-    // --- Itemized transactions.
-    //
-    // Merchant strings and user notes are still never written — those are the
-    // identifying parts, and a note routinely holds a merchant or a person. What
-    // each row carries instead is the category, bill, or debt the budget already
-    // attributes it to, taken from the maps the sections above populated so the
-    // labels and numbering match exactly. That's the contextual clue: a row reads
-    // "Groceries" or "Debt 2 (credit card)", so the spending can be reasoned
-    // about without knowing where it was spent.
+    // Anonymizers for the per-row tags and the per-person splits. Defined here
+    // because both the behaviour section and the transaction list below use
+    // them, and two copies would be two chances to drift.
     const cards = s.creditCards || [];
     const cardAnonFor = (cardId) => {
       if (!cardId) return null;
@@ -9398,47 +9554,119 @@ const UI = (() => {
       if (n1 && v === n1) return "Person B";
       return null;
     };
+
+    // --- Aggregate spending behaviour across the whole window
+    L.push("SPENDING BEHAVIOUR ACROSS THE THREE MONTHS");
+    L.push("Every logged outflow, split by where the budget attributes it. The four lines under");
+    L.push("each month are mutually exclusive and add up to that month's total, so they can be");
+    L.push("checked against the transaction list at the end of this file.");
+    months.forEach(m => {
+      const f = facts[m];
+      L.push("");
+      L.push(monthLabel(m) + " (" + (isPartial(m) ? "still running" : stateOf(m)) + "):");
+      L.push("  Total logged out: " + anonMoney(f.total) + " across " + f.count + entryWord(f.count));
+      L.push("  Of that, bills and fixed expenses: " + anonMoney(f.billSpend));
+      L.push("  Of that, debt payments: " + anonMoney(f.debtSpend));
+      L.push("  Of that, variable category spending: " + anonMoney(f.variableSpend));
+      L.push("  Of that, not yet assigned to anything: " + anonMoney(f.unassignedSpend));
+      L.push("  Paid from checking: " + anonMoney(f.debit) + " | paid by credit card: " + anonMoney(f.credit));
+      if (f.imported > 0) L.push("  Arrived by bank import rather than typed in: " + anonMoney(f.imported));
+      L.push("  Income logged as received: " + anonMoney(f.income));
+      L.push("  Received less logged out: " + anonMoney(f.income - f.total));
+      if (isCouple) {
+        const byWho = {};
+        Object.keys(f.byPerson).forEach(k => {
+          const who = personAnonFor(k);
+          if (who) byWho[who] = (byWho[who] || 0) + f.byPerson[k];
+        });
+        L.push("  Person A " + anonMoney(byWho["Person A"] || 0)
+          + " | Person B " + anonMoney(byWho["Person B"] || 0)
+          + " | Joint " + anonMoney(byWho["Joint"] || 0));
+      }
+    });
+    L.push("");
+    if (completed.length) {
+      L.push("Averages over the " + completed.length + " completed month(s):");
+      L.push("  Total logged out: " + anonMoney(avgOver(f => f.total)));
+      L.push("  Bills and fixed expenses: " + anonMoney(avgOver(f => f.billSpend)));
+      L.push("  Debt payments: " + anonMoney(avgOver(f => f.debtSpend)));
+      L.push("  Variable category spending: " + anonMoney(avgOver(f => f.variableSpend)));
+      L.push("  Not assigned to anything: " + anonMoney(avgOver(f => f.unassignedSpend)));
+      L.push("  Income logged as received: " + anonMoney(avgOver(f => f.income)));
+      L.push("  Received less logged out: " + anonMoney(avgOver(f => f.income - f.total)));
+      L.push("");
+    }
+
+    // --- Itemized transactions.
+    //
+    // Merchant strings and user notes are still never written — those are the
+    // identifying parts, and a note routinely holds a merchant or a person. What
+    // each row carries instead is the category, bill, or debt the budget already
+    // attributes it to, taken from the maps the sections above populated so the
+    // labels and numbering match exactly. That's the contextual clue: a row reads
+    // "Groceries" or "Debt 2 (credit card)", so the spending can be reasoned
+    // about without knowing where it was spent.
     const txnAnonFor = (t) => {
       if (!t.categoryId) return "Uncategorized";
-      return debtAnonById[t.categoryId]
-        || billAnonById[t.categoryId]
-        || catAnonById[t.categoryId]
-        || "Uncategorized";
+      const hit = debtAnonById[t.categoryId] || billAnonById[t.categoryId] || catAnonById[t.categoryId];
+      if (hit) return hit;
+      // Assigned to something that has since been deleted — which happens
+      // easily across three months. Calling that "Uncategorized" would say the
+      // money was never attributed, the opposite of what happened, and would
+      // inflate the unassigned figure the sections above report.
+      const kind = t.categoryType === "debt" ? "a debt"
+        : t.categoryType === "bill" ? "a bill"
+        : "a spending category";
+      return "Assigned to " + kind + " no longer in the budget";
     };
 
-    L.push("TRANSACTIONS THIS MONTH");
-    L.push("Every purchase and payment logged this month, one per line, oldest first. Merchant");
-    L.push("names and notes are withheld. Each row is instead labelled with the category, bill,");
-    L.push("or debt it is assigned to in the budget, the same attribution the totals above are");
-    L.push("built from, so a row can be reasoned about without knowing the merchant.");
+    L.push("TRANSACTIONS, LAST THREE MONTHS");
+    L.push("Every purchase and payment logged across the window, one per line, oldest first,");
+    L.push("grouped by the month the budget counts it in. Merchant names and notes are withheld.");
+    L.push("Each row is instead labelled with the category, bill, or debt it is assigned to in");
+    L.push("the budget, the same attribution every total above is built from, so a row can be");
+    L.push("reasoned about without knowing the merchant.");
     L.push("\"Uncategorized\" means it was imported and has not been assigned yet, so it counts");
     L.push("toward the month's total but toward no category.");
-    L.push("Dates are the day of the month within " + monthName + ".");
-    L.push("");
-    if (!txns.length) {
-      L.push("No transactions logged this month.");
-    } else {
-      txns.slice()
+    L.push("A row whose category, bill or debt has since been deleted says so rather than");
+    L.push("reading as uncategorized: the money was attributed at the time, and the totals");
+    L.push("above still count it as category spending.");
+    L.push("Dates are the day of that month. A row whose own date falls outside the month it is");
+    L.push("counted in is printed with its full date instead, so the discrepancy is visible.");
+    months.forEach(m => {
+      const f = facts[m];
+      L.push("");
+      L.push("--- " + monthLabel(m) + " (" + (isPartial(m) ? "still running" : stateOf(m)) + ")"
+        + ": " + f.count + entryWord(f.count) + ", " + anonMoney(f.total) + " total");
+      if (!f.count) {
+        L.push("No transactions logged in this month.");
+        return;
+      }
+      f.txns.slice()
         .sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")))
         .forEach(t => {
-          const day = Number(String(t.date || "").slice(8, 10)) || 0;
+          const iso = String(t.date || "");
+          const day = Number(iso.slice(8, 10)) || 0;
+          const when = iso.slice(0, 7) === m
+            ? (day ? "Day " + day : "Day unknown")
+            : (iso ? "Dated " + iso : "Date unknown");
           const parts = [t.paymentType === "credit" ? "credit" : "debit"];
           const card = t.paymentType === "credit" ? cardAnonFor(t.cardId) : null;
           if (card) parts.push(card);
           const who = isCouple ? personAnonFor(t.person) : null;
           if (who) parts.push(who);
           if (t.source === "import") parts.push("imported");
-          L.push((day ? "Day " + day : "Day unknown") + ": " + anonMoney(B.num(t.amount))
+          L.push(when + ": " + anonMoney(B.num(t.amount))
             + ", " + txnAnonFor(t)
             + " [" + parts.join(", ") + "]");
         });
-    }
+    });
     L.push("");
 
     // --- Accounts, counted and genericized only
     L.push("ACCOUNTS");
-    L.push("Credit cards in use: " + ((s.creditCards || []).length));
-    (s.creditCards || []).forEach((c, idx) => { L.push("Card " + (idx + 1)); });
+    L.push("Credit cards in use: " + cards.length);
+    cards.forEach((c, idx) => { L.push("Card " + (idx + 1)); });
     L.push("Checking accounts in use: " + ((s.banks || []).length));
     (s.banks || []).forEach((b, idx) => { L.push("Bank " + (idx + 1)); });
     L.push("");
@@ -9448,23 +9676,35 @@ const UI = (() => {
   }
 
   const COACH_PROMPT = [
-    "I'm attaching an anonymized snapshot of my household budget and debts for one month.",
-    "Act as a seasoned private banker and financial advisor. Bring the same rigour you would",
-    "to a paying client's annual review: professional judgement, hard numbers, no hedging",
-    "and no filler.",
+    "I'm attaching an anonymized snapshot of my household budget and debts, along with the",
+    "last three months of my transactions. Act as a seasoned private banker and financial",
+    "advisor. Bring the same rigour you would to a paying client's annual review:",
+    "professional judgement, hard numbers, no hedging and no filler.",
     "",
     "First, tell me what these figures actually say about my position, in plain language.",
+    "",
+    "Then read the three months as a trend, not as three separate months. What is rising,",
+    "what is falling, what is erratic, where does the money actually go, and which lines are",
+    "quietly taking the most? The current month is only part-way through and is labelled as",
+    "such — judge it on pace, not on its total.",
+    "",
+    "Then the question I most want answered: based on the spending trends you can see, what",
+    "is keeping me from being debt free as fast as possible? Name the specific leaks, habits",
+    "and structural mistakes, ranked by what each one is costing me. For each, give me the",
+    "dollar figure per month and roughly how many months it is adding to my payoff date.",
+    "Include the ones I won't want to hear.",
+    "",
+    "Then tell me what should follow. Give me the plan, in order: which debt to attack first",
+    "and why, exactly where every spare dollar should go, what to cut and by how much, what",
+    "to protect and not touch, and what to do this week, this month, and over the next three",
+    "months. Tell me what the debt-free date becomes if I actually do it, and quantify the",
+    "trade-offs — where one path pays less interest and another finishes sooner, show me both",
+    "and tell me which you'd advise.",
     "",
     "Then tell me what I'm missing. Assume there are inefficiencies here I can't see: money",
     "leaking somewhere, debts ordered wrong, an interest rate worth challenging, a payment",
     "structure costing me more than it should, a risk I haven't priced in. Also tell me what",
     "you'd want to know that this snapshot doesn't show.",
-    "",
-    "Then give me the fastest realistic route to financial freedom: which debt to attack",
-    "first and why, exactly where every spare dollar should go and what it buys me in months",
-    "saved, what to cut, what to protect, and what a realistic debt-free date looks like.",
-    "Quantify the trade-offs, where one path pays less interest and another finishes",
-    "sooner, show me both and tell me which you'd advise.",
     "",
     "Use my actual figures throughout. Tell me plainly where my thinking is wrong or where",
     "I'm being too optimistic. Ask me clarifying questions if something important is missing."
@@ -9473,7 +9713,11 @@ const UI = (() => {
   function downloadAnonExport(s) {
     const text = buildAnonymizedExport(s);
     const month = String(s.currentMonth || Util.currentMonthYM());
-    const name = "clear-financial-summary-" + month + ".txt";
+    // Named for the span it actually covers. A file called ...-2026-07 that
+    // holds May through July invites the reader to ask the AI about the wrong
+    // period, and invites the user to think two thirds of it is missing.
+    const span = anonMonthWindow(month);
+    const name = "clear-financial-summary-" + span[0] + "-to-" + span[span.length - 1] + ".txt";
     const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
