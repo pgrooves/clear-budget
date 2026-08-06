@@ -11,8 +11,10 @@ No install, no dependencies. Exits non-zero if anything fails.
 | Suite | What it protects |
 | --- | --- |
 | `walk.test.js` | The cash-flow walk: the rolling 35-day horizon, credit dated to the card's due day, and the two headline figures with the breakdown behind each. |
+| `reconcile.test.js` | **Every breakdown adds up to the figure printed above it**, including the day the walk never dips. Plus a seeded sweep and the malformed-month guard. |
 | `income-landings.test.js` | One tickable slot per pay day, and that existing untagged entries still fill the earliest slots so old data reads unchanged. |
 | `tithe.test.js` | Tithe split per pay day, shares summing exactly to the TITHE row, and pre-split records still readable and clearable. |
+| `tithe-lump.test.js` | **Ticking the lump and the pay-day shares is still one tithe.** The lump wins outright, in the engine rather than only on screen. |
 | `monotonic.test.js` | **Marking income received can never lower either headline figure.** |
 
 ## Why the last one matters
@@ -27,6 +29,19 @@ The window now comes from the pay schedule, which no amount of ticking can
 move. The suite checks 356 transitions across 64 household shapes — four pay
 frequencies, four pay days, tithe on and off, two balances — ticking paychecks
 one at a time in every starting order.
+
+## Why `reconcile.test.js` sweeps instead of trusting a fixture
+
+`walk.test.js` already had a section called "Both breakdowns reconcile to their
+own figure, exactly", and it passed the whole time the panel was printing
+$4,500 − $900 = $2,000. Its fixture simply never landed on the shape that broke:
+a day where money comes in before it goes out, so the balance never actually
+dips and the low is the balance you started with.
+
+A hand-picked fixture only ever proves the case someone thought of. The new
+suite keeps its fixtures for readability and adds 800 breakdowns across 400
+generated households on a fixed seed, so the next shape nobody thought of has
+somewhere to fail.
 
 ## How they load the app
 

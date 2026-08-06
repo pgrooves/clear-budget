@@ -7,8 +7,10 @@
  */
 const suites = [
   "./walk.test",
+  "./reconcile.test",
   "./income-landings.test",
   "./tithe.test",
+  "./tithe-lump.test",
   "./monotonic.test",
   "./debt.test",
   "./bills.test",

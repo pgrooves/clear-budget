@@ -1388,6 +1388,48 @@ const BudgetEngine = (() => {
     }
     return { key: landing.key, rec: null };
   }
+  /* How much tithe a month has actually had given against it.
+
+     Tithe can be ticked two ways: once as a lump for the whole month, or a
+     share per pay day. Both write records, and nothing clears the other, so a
+     household that has tapped both has records describing the SAME giving
+     twice. The lump means "the whole month, in one go" and wins outright.
+
+     That rule used to live only in the Bills tab renderer, which is why the
+     screen showed the tithe covered once while projectedBalance subtracted it
+     twice and quietly took the difference off Safe To Spend. It lives here now
+     so every caller gets the same answer.
+
+     `accept` lets the anchor path ask the narrower question "and did this
+     record land after the balance was confirmed?" without duplicating the
+     lump-wins logic. */
+  function tithePaidTotal(s, ym, accept) {
+    const month = ym || s.currentMonth;
+    const paid = (s.billsPaid || {})[month] || {};
+    const ok = accept || (rec => !!(rec && rec.paid));
+    const lump = paid["tithe"];
+    if (lump && lump.paid) return ok(lump) ? num(lump.amount) : 0;
+    let total = 0;
+    const counted = {};
+    // Through the landings, so a pre-split record and its per-pay-day
+    // replacement resolve to one share rather than two.
+    titheLandings(s, month).forEach(l => {
+      const found = titheLandingRecord(s, l, paid);
+      if (!found.rec) return;
+      counted[found.key] = true;
+      if (ok(found.rec)) total += num(found.rec.amount);
+    });
+    // A record whose income source has since been deleted has no landing to
+    // answer to, but the money still left the account, so it keeps counting
+    // instead of quietly reappearing as spendable.
+    Object.keys(paid).forEach(k => {
+      if (k === "tithe" || k.indexOf("tithe:") !== 0 || counted[k]) return;
+      if (ok(paid[k])) total += num(paid[k].amount);
+    });
+    return total;
+  }
+  function tithePaidIn(s, ym) { return tithePaidTotal(s, ym || s.currentMonth); }
+  function isTitheKey(k) { return k === "tithe" || String(k).indexOf("tithe:") === 0; }
   /* ---------- BILLS THAT LAND MORE THAN ONCE ----------
      "Recurring" is not the same as "monthly". A weekly cleaner and a
      fortnightly invoice both land several times in a month, and the amount is
@@ -1549,12 +1591,22 @@ const BudgetEngine = (() => {
     const all = s.billsPaid || {};
     Object.keys(all).forEach(month => {
       const forMonth = all[month] || {};
+      let anyTithe = false;
       Object.keys(forMonth).forEach(id => {
+        // Tithe is settled below instead, under the lump-wins rule, so a month
+        // ticked both ways is not subtracted twice.
+        if (isTitheKey(id)) { anyTithe = true; return; }
         const rec = forMonth[id];
         if (!rec || !rec.paid || rec.txnId) return;
         if (!isAfterAnchor({ date: rec.paidDate, createdAt: rec.createdAt }, anchor)) return;
         total += num(rec.amount);
       });
+      // Only worth rebuilding a month's landings when that month has tithe
+      // records at all; this runs on every render, for every month of history.
+      if (anyTithe) {
+        total += tithePaidTotal(s, month, rec => !!(rec && rec.paid && !rec.txnId &&
+          isAfterAnchor({ date: rec.paidDate, createdAt: rec.createdAt }, anchor)));
+      }
     });
     return total;
   }
@@ -1577,17 +1629,11 @@ const BudgetEngine = (() => {
       .reduce((x, o) => x + (o.paid ? 0 : o.amount), 0), 0);
   }
   // Tithe is a display-only line rather than a stored bill, and it can be
-  // ticked either as one total or per income source, so its paid amount is
-  // summed from both key shapes and clamped.
+  // ticked either as one lump or per pay day, so what has been given comes
+  // from tithePaidIn (where the lump-wins rule lives) and is clamped.
   function unpaidTithe(s) {
     if (!titheEnabled(s)) return 0;
-    const paid = (s.billsPaid || {})[s.currentMonth] || {};
-    let paidAmt = 0;
-    Object.keys(paid).forEach(k => {
-      if (k !== "tithe" && k.indexOf("tithe:") !== 0) return;
-      if (paid[k] && paid[k].paid) paidAmt += num(paid[k].amount);
-    });
-    return Math.max(0, tithe(s) - paidAmt);
+    return Math.max(0, tithe(s) - tithePaidIn(s, s.currentMonth));
   }
   // Ticking a debt minimum writes a real debit transaction, so a paid minimum
   // has already come out of the balance and must not be reserved on top.
@@ -1642,8 +1688,19 @@ const BudgetEngine = (() => {
 
   const HORIZON_DAYS = 35;
 
+  const VALID_YM = /^\d{4}-\d{2}$/;
+  // A stored month that is not "YYYY-MM" would otherwise produce NaN here and
+  // carry it into every date the walk builds, so the horizon ends up spelled
+  // "NaN-NaN-NaN". Corrupt data should not be able to make a date meaningless;
+  // fall back to the real calendar month instead.
+  function safeYM(ym) {
+    const s = String(ym || "");
+    if (!VALID_YM.test(s)) return Util.currentMonthYM();
+    const m = Number(s.slice(5, 7));
+    return (m >= 1 && m <= 12) ? s : Util.currentMonthYM();
+  }
   function daysInMonthOf(ym) {
-    const [y, m] = String(ym || "").split("-").map(Number);
+    const [y, m] = safeYM(ym).split("-").map(Number);
     return new Date(y, m, 0).getDate();
   }
   function dayOfMonthToday(s) {
@@ -1652,15 +1709,15 @@ const BudgetEngine = (() => {
   // The walk works in real calendar dates so it can cross into next month.
   // Browsing a past month starts at its 1st, matching dayOfMonthToday.
   function walkStartISO(s) {
-    return s.currentMonth === Util.currentMonthYM()
-      ? Util.todayISO()
-      : `${s.currentMonth}-01`;
+    const ym = safeYM(s.currentMonth);
+    return ym === Util.currentMonthYM() ? Util.todayISO() : `${ym}-01`;
   }
   // Day-of-month clamped into a real date for that month, so a 31st due day in
   // a 30-day month lands on the 30th instead of falling off the calendar.
   function isoOf(ym, day) {
-    const d = Math.max(1, Math.min(daysInMonthOf(ym), num(day) || 1));
-    return `${ym}-${String(d).padStart(2, "0")}`;
+    const month = safeYM(ym);
+    const d = Math.max(1, Math.min(daysInMonthOf(month), num(day) || 1));
+    return `${month}-${String(d).padStart(2, "0")}`;
   }
   function isoAddDays(iso, n) {
     const d = new Date(iso + "T00:00:00");
@@ -1902,6 +1959,13 @@ const BudgetEngine = (() => {
 
     let running = start, low = start, lowDate = startISO;
     let windowLow = start, windowLowDate = startISO, monthEnd = start;
+    // Where in the event stream each low happened, not just on what day. A date
+    // cannot say whether the low sits before or after that day's own movements,
+    // and for the opening balance it is always before them: on a day you are
+    // paid and rent goes out, the balance never actually dips, so the low is the
+    // balance you started with. Explaining that figure with the day's income and
+    // rent listed under it made the breakdown disagree with the number above it.
+    let windowLowIdx = 0, afterLowIdx = 0, windowEndIdx = 0, lowIdx = 0;
     // The two headline figures split the horizon between them at the next
     // payday. Reporting the whole-horizon low on the right made it duplicate
     // Safe To Spend on the left whenever the worst moment happened to fall
@@ -1909,14 +1973,14 @@ const BudgetEngine = (() => {
     // Splitting the stretch guarantees the second figure says something the
     // first one didn't.
     let atWindowEnd = start, afterLow = null, afterLowDate = null;
-    events.forEach(e => {
+    events.forEach((e, i) => {
       running += e.amount;
-      if (running < low) { low = running; lowDate = e.date; }
+      if (running < low) { low = running; lowDate = e.date; lowIdx = i + 1; }
       if (!windowEnd || e.date <= windowEnd) {
-        if (running < windowLow) { windowLow = running; windowLowDate = e.date; }
-        atWindowEnd = running;
+        if (running < windowLow) { windowLow = running; windowLowDate = e.date; windowLowIdx = i + 1; }
+        atWindowEnd = running; windowEndIdx = i + 1;
       } else if (afterLow === null || running < afterLow) {
-        afterLow = running; afterLowDate = e.date;
+        afterLow = running; afterLowDate = e.date; afterLowIdx = i + 1;
       }
       if (e.date <= monthLast) monthEnd = running;
     });
@@ -1925,18 +1989,21 @@ const BudgetEngine = (() => {
     // out is at its lowest the second you are paid.
     if (windowEnd) {
       if (afterLow === null || atWindowEnd < afterLow) {
-        afterLow = atWindowEnd; afterLowDate = windowEnd;
+        afterLow = atWindowEnd; afterLowDate = windowEnd; afterLowIdx = windowEndIdx;
       }
     } else {
       // No paycheck in the whole horizon, so there is no "after" to report.
       // The figure falls back to the plain low, and the caller says so rather
       // than implying a payday that isn't coming.
-      afterLow = low; afterLowDate = lowDate;
+      afterLow = low; afterLowDate = lowDate; afterLowIdx = lowIdx;
     }
     return {
       low, lowDate, lowDay: Number(lowDate.slice(8, 10)),
       windowLow, windowLowDate, windowEnd, monthEnd,
       afterLow, afterLowDate, hasAfter: !!windowEnd, atWindowEnd,
+      // Cursors into the same event stream the figures came from, so the
+      // explanation layer can cut it at exactly the moment each low happened.
+      windowLowIdx, afterLowIdx, windowEndIdx, lowIdx,
       // Where the balance finishes the horizon. A one-day dip and a household
       // genuinely running out of money look identical at the low point and
       // completely different here, so the breakdown gets to say which it is.
@@ -2129,18 +2196,25 @@ const BudgetEngine = (() => {
      to and including payday; the Tightest Point owns what follows. With no
      payday in view there is only one stretch and it covers the lot. */
   function safeSpan(outlook) {
-    return { after: null, to: outlook.windowLowDate };
+    return { after: null, to: outlook.windowLowDate, from: 0, upto: outlook.windowLowIdx };
   }
   function tightSpan(outlook) {
-    return { after: outlook.hasAfter ? outlook.windowEnd : null, to: outlook.afterLowDate };
+    return {
+      after: outlook.hasAfter ? outlook.windowEnd : null, to: outlook.afterLowDate,
+      from: outlook.hasAfter ? outlook.windowEndIdx : 0, upto: outlook.afterLowIdx
+    };
   }
-  function inSpan(e, span) {
+  // Same cursor rule as walkBreakdown: a note must only blame what actually
+  // happened before the low it is explaining. The date comparison stays as the
+  // fallback for any caller that has no cursor to give.
+  function inSpan(e, span, i) {
+    if (span.upto != null && i != null) return i >= (span.from || 0) && i < span.upto;
     return e.date <= span.to && (!span.after || e.date > span.after);
   }
   function noteHeaviestDay(s, span) {
     const byDate = new Map();
-    horizonEvents(s).forEach(e => {
-      if (!inSpan(e, span) || e.amount >= 0) return;
+    horizonEvents(s).forEach((e, i) => {
+      if (!inSpan(e, span, i) || e.amount >= 0) return;
       const cur = byDate.get(e.date) || { date: e.date, amount: 0, items: [] };
       cur.amount += -e.amount;
       cur.items.push({ label: String(e.label || "DUE"), amount: -e.amount });
@@ -2169,7 +2243,7 @@ const BudgetEngine = (() => {
   // Card money coming due inside the horizon. It used to be taken off the top
   // the moment it was spent, so it never had a date to point at.
   function noteCreditDue(s, span) {
-    const credit = horizonEvents(s).filter(e => e.kind === "credit" && inSpan(e, span));
+    const credit = horizonEvents(s).filter((e, i) => e.kind === "credit" && inSpan(e, span, i));
     if (!credit.length) return null;
     return {
       kind: "creditDue",
@@ -2188,7 +2262,7 @@ const BudgetEngine = (() => {
   // turns "RENT is the largest" into what RENT is actually worth here, which
   // is not the same thing once other bills sit under it.
   function noteBiggestClaim(s, span) {
-    const outs = horizonEvents(s).filter(e => inSpan(e, span) && e.amount < 0);
+    const outs = horizonEvents(s).filter((e, i) => inSpan(e, span, i) && e.amount < 0);
     if (outs.length < 2) return null;
     const biggest = outs.slice().sort((a, b) => a.amount - b.amount)[0];
     if (-biggest.amount <= 0) return null;
@@ -2207,13 +2281,16 @@ const BudgetEngine = (() => {
   /* The two sides of a figure, plus what to look at. `targetDate` is the day
      the figure happens on: only what has happened by then made it, and
      anything after is on the far side of the dip and did not cause it. */
-  function walkBreakdown(s, targetDate, from) {
+  function walkBreakdown(s, targetDate, from, upto) {
     // `from` scopes the columns to the stretch after a date, opening with the
     // balance as it stands then. Without it the Tightest Point panel would
     // re-list every bill that Safe To Spend already accounted for, and the
     // reader would have to work out which half of the list was theirs.
     if (from) {
-      const events = horizonEvents(s).filter(e => e.date > from.date && e.date <= targetDate);
+      const all = horizonEvents(s);
+      const events = upto == null
+        ? all.filter(e => e.date > from.date && e.date <= targetDate)
+        : all.slice(from.idx || 0, upto);
       const incoming = events.filter(e => e.amount > 0)
         .map(e => ({ label: String(e.label || "INCOME"), amount: e.amount, date: e.date, day: e.day }));
       const claims = events.filter(e => e.amount < 0)
@@ -2225,7 +2302,11 @@ const BudgetEngine = (() => {
         claims, claimed: claims.reduce((a, c) => a + c.amount, 0)
       };
     }
-    const byThen = horizonEvents(s).filter(e => e.date <= targetDate);
+    // Cut at the cursor when the caller has one. The date alone would sweep in
+    // everything else that happens on the low's own day, including money that
+    // arrives after the dip and therefore had nothing to do with causing it.
+    const all = horizonEvents(s);
+    const byThen = upto == null ? all.filter(e => e.date <= targetDate) : all.slice(0, upto);
     const balance = projectedBalance(s);
     const reserved = totalReserved(s);
 
@@ -2271,7 +2352,7 @@ const BudgetEngine = (() => {
       amount: o.windowLow, date: o.windowLowDate,
       payDate: o.windowEnd, other: o.afterLow, otherDate: o.afterLowDate,
       startISO: o.startISO, horizonEnd: o.horizonEnd, end: o.end,
-      ...walkBreakdown(s, o.windowLowDate),
+      ...walkBreakdown(s, o.windowLowDate, null, o.windowLowIdx),
       notes
     };
   }
@@ -2301,7 +2382,8 @@ const BudgetEngine = (() => {
       // far stretch and still reconcile: that balance already carries
       // everything before it.
       ...walkBreakdown(s, o.afterLowDate,
-        o.hasAfter ? { date: o.windowEnd, balance: o.atWindowEnd } : null),
+        o.hasAfter ? { date: o.windowEnd, balance: o.atWindowEnd, idx: o.windowEndIdx } : null,
+        o.afterLowIdx),
       notes
     };
   }
@@ -2603,7 +2685,7 @@ const BudgetEngine = (() => {
   return {
     num,
     totalIncome, receivedIncome, tithePercent, titheEnabled, tithe, titheOnReceived, titheBillView,
-    titheLandings, titheLandingRecord,
+    titheLandings, titheLandingRecord, tithePaidIn,
     INCOME_FREQUENCIES, incomeFrequency, incomeMonthlyAmount, incomeByDate, incomeLandings,
     landingsForMonth,
     billsSubtotal, totalBills, totalDebtMins,
@@ -4736,6 +4818,14 @@ const UI = (() => {
   // firing the same write several times over.
   let advanceInFlight = false;
   function maybeAdvanceMonth(s) {
+    // Released only once a snapshot actually shows the month has caught up,
+    // never on the write resolving. Those are different moments: the write is
+    // acknowledged by the server, the snapshot is what updates the data this
+    // function reads. Clearing it on the acknowledgement let the very next
+    // render recompute the same patch from the old month and write it again.
+    // Checking it here rather than in the callback also means the app can be
+    // left open across midnight on the last day of a month and still advance.
+    if (advanceInFlight && s && s.currentMonth === Util.currentMonthYM()) advanceInFlight = false;
     if (advanceInFlight) return;
     const patch = BudgetEngine.autoAdvancePatch(s);
     if (!patch) return;
@@ -4745,7 +4835,8 @@ const UI = (() => {
       // Rolling forward is silent but not hidden: say it happened and offer
       // the rollover review, since money was carried across on your behalf.
       monthRollNotice = { from, to: patch.currentMonth, dismissed: false };
-      advanceInFlight = false;
+      // advanceInFlight deliberately stays set; the guard above lifts it when
+      // the snapshot carrying the new month arrives.
       render();
     }).catch(e => {
       // Offline or a failed write: leave currentMonth alone and let the
@@ -6307,6 +6398,24 @@ const UI = (() => {
     } catch (err) { alert("COULDN'T DELETE; CHECK CONNECTION"); console.warn(err); }
   }
 
+  /* ------------- ONE TAP, ONE RECORD -------------
+     Every form that appends a record awaits DataService.update, and that await
+     is a SERVER acknowledgement, not a local operation. Firestore applies the
+     write locally and fires the snapshot almost immediately, so the form
+     re-renders with the amount still sitting in it and the button still live,
+     while the acknowledgement is still in the air. A second tap inside that
+     window ran the whole handler again and appended the same purchase twice.
+
+     The form is only cleared after the await, so nothing else was stopping it.
+     Keyed per form so logging a purchase never blocks logging income. */
+  const appendInFlight = {};
+  function beginAppend(key) {
+    if (appendInFlight[key]) return false;
+    appendInFlight[key] = true;
+    return true;
+  }
+  function endAppend(key) { appendInFlight[key] = false; }
+
   // Record money actually received. Appends with arrayUnion for the same reason
   // transactions do: two phones logging at once must not clobber each other.
   async function submitIncome(s) {
@@ -6338,6 +6447,7 @@ const UI = (() => {
       createdAt: Date.now(),
       source: "manual"
     };
+    if (!beginAppend("income")) return;
     try {
       await DataService.update({ incomeLog: DataService.appendTxns(entry) });
       incomeForm.amount = "";
@@ -6346,6 +6456,7 @@ const UI = (() => {
       formErrors.income = "";
       render();
     } catch (e) { alert("COULDN'T SAVE; CHECK CONNECTION"); console.warn(e); }
+    finally { endAppend("income"); }
   }
 
   // Checkbox on the expected-income list. One pay day at a time: `landingIndex`
@@ -6722,6 +6833,7 @@ const UI = (() => {
       patch.debts = debts;
     }
 
+    if (!beginAppend("log")) return;
     try {
       await DataService.update(patch);
       // Reset form
@@ -6734,6 +6846,8 @@ const UI = (() => {
     } catch (err) {
       console.warn(err);
       alert("COULDN'T SAVE; CHECK CONNECTION");
+    } finally {
+      endAppend("log");
     }
   }
 
@@ -6932,14 +7046,13 @@ const UI = (() => {
     const titheMulti = titheLandingsList.length > 1;
     const titheDone = titheLandingsList.filter(l =>
       !!(BudgetEngine.titheLandingRecord(s, l, paidMap).rec || {}).paid).length;
-    const titheSubPaidTotal = titheLandingsList.reduce((a, l) => {
-      const rec = BudgetEngine.titheLandingRecord(s, l, paidMap).rec;
-      return a + (rec && rec.paid ? (Number(rec.amount) || 0) : 0);
-    }, 0);
     // The lump checkmark means "the whole thing, given in one go" and wins
     // outright so a paid lump plus some ticked pay days never double counts;
-    // otherwise whatever pay days are ticked contribute their share.
-    const titheEffectivePaid = titheIsPaid ? titheAmt : titheSubPaidTotal;
+    // otherwise whatever pay days are ticked contribute their share. That rule
+    // is BudgetEngine.tithePaidIn now rather than a second copy here, because
+    // when only this screen knew it the balance math subtracted the same
+    // giving twice and took the difference off Safe To Spend.
+    const titheEffectivePaid = titheOn ? BudgetEngine.tithePaidIn(s, s.currentMonth) : 0;
     const titheFullyCleared = titheOn && (titheIsPaid ||
       (titheLandingsList.length > 0 && titheDone === titheLandingsList.length));
     const titheClearedCount = titheIsPaid ? titheLandingsList.length : titheDone;
@@ -12045,6 +12158,7 @@ const UI = (() => {
       createdAt: Date.now(),
       source: f.prefill ? "import" : "manual"
     };
+    if (!beginAppend("balance")) return;
     try {
       await DataService.update({ balanceChecks: DataService.appendTxns(entry) });
       balanceGapNotice = hadAnchor ? {
@@ -12058,6 +12172,7 @@ const UI = (() => {
       balanceForm = null;
       render();
     } catch (e) { alert("COULDN'T SAVE; CHECK CONNECTION"); console.warn(e); }
+    finally { endAppend("balance"); }
   }
 
   /* ------------- GLOBAL EVENTS ------------- */
