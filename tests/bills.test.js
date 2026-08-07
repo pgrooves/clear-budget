@@ -105,6 +105,87 @@ module.exports = function run() {
     t.is("and it is tickable by its own key", note.bills[0].id, "clean");
   }
 
+  t.section("Nothing set means nothing moved");
+  {
+    const occ = B.billOccurrences(base([WEEKLY]), WEEKLY);
+    t.is("no occurrence claims to have moved", occ.some(o => o.moved), false);
+    t.is("each one reports the cadence day it came from", occ[1].usualDay, 10);
+    t.is("and carries no note", occ[1].note, "");
+  }
+
+  t.section("One landing can be moved to the day it actually landed on");
+  {
+    const s = base([WEEKLY], { billOccEdits: { "2026-08": { "clean:1": { day: 12 } } } });
+    const occ = B.billOccurrences(s, WEEKLY);
+    const moved = occ.find(o => o.key === "clean:1");
+    t.is("it lands on the new day", moved.date, "2026-08-12");
+    t.is("and says so", moved.moved, true);
+    t.is("while still remembering where the cadence put it", moved.usualDay, 10);
+    t.is("the weeks either side are untouched",
+      occ.filter(o => o.key !== "clean:1").map(o => o.date).join(","),
+      "2026-08-03,2026-08-17,2026-08-24,2026-08-31");
+    t.eq("moving a date costs nothing extra", B.billsSubtotal(s), 400);
+    const ev = B.horizonEvents(s).filter(e => e.kind === "bill");
+    t.is("and the walk charges it on the new day", ev.some(e => e.date === "2026-08-12"), true);
+    t.is("not the old one", ev.some(e => e.date === "2026-08-10"), false);
+  }
+
+  t.section("A moved landing keeps its key, so its tick follows it");
+  {
+    const s = base([WEEKLY], {
+      billOccEdits: { "2026-08": { "clean:1": { day: 12 } } },
+      billsPaid: { "2026-08": { "clean:1": { paid: true, amount: 80, createdAt: 1 } } }
+    });
+    const moved = B.billOccurrences(s, WEEKLY).find(o => o.key === "clean:1");
+    t.is("the tick came with it", moved.paid, true);
+    t.is("on the new date", moved.date, "2026-08-12");
+    t.eq("and the other four are still owed", B.unpaidBillsTotal(s), 320);
+  }
+
+  t.section("Amount, day and note are independent, and all three ride together");
+  {
+    const s = base([WEEKLY], {
+      billAmounts: { "2026-08": { "clean:2": 140 } },
+      billOccEdits: { "2026-08": { "clean:2": { day: 19, note: "12 HRS @ $25" } } }
+    });
+    const o = B.billOccurrences(s, WEEKLY).find(x => x.key === "clean:2");
+    t.eq("the amount it actually came to", o.amount, 140);
+    t.is("marked as an override", o.overridden, true);
+    t.is("the day it actually landed", o.date, "2026-08-19");
+    t.is("and the note saying why", o.note, "12 HRS @ $25");
+    t.eq("only that week's figure moves the total", B.billsSubtotal(s), 80 * 4 + 140);
+  }
+
+  t.section("A landing moved past its neighbour still reads in date order");
+  {
+    // The 10th pushed out to the 20th, which is after the 17th.
+    const s = base([WEEKLY], { billOccEdits: { "2026-08": { "clean:1": { day: 20 } } } });
+    const occ = B.billOccurrences(s, WEEKLY);
+    t.is("printed in the order they land",
+      occ.map(o => o.date).join(","),
+      "2026-08-03,2026-08-17,2026-08-20,2026-08-24,2026-08-31");
+    t.is("with the keys still tied to the cadence, not the order",
+      occ.map(o => o.key).join(","),
+      "clean,clean:2,clean:1,clean:3,clean:4");
+  }
+
+  t.section("Per-occurrence edits belong to their month alone");
+  {
+    const s = base([WEEKLY], {
+      billOccEdits: { "2026-08": { "clean:1": { day: 12, note: "EXTRA DEEP CLEAN" } } }
+    });
+    const sept = B.billOccurrences(s, WEEKLY, "2026-09");
+    t.is("September lands on its own cadence", sept[1].moved, false);
+    t.is("with no note carried over", sept[1].note, "");
+  }
+
+  t.section("A day off the end of the month is pulled back onto it");
+  {
+    const s = base([WEEKLY], { billOccEdits: { "2026-08": { "clean:1": { day: 44 } } } });
+    const moved = B.billOccurrences(s, WEEKLY).find(o => o.key === "clean:1");
+    t.is("clamped to the last day August has", moved.date, "2026-08-31");
+  }
+
   t.section("Every cadence is offered, and none of them is quarterly");
   {
     t.is("four choices", B.BILL_FREQUENCIES.length, 4);

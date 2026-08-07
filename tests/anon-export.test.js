@@ -22,7 +22,12 @@ module.exports = function run() {
   // copying rows wholesale again.
   const LEAKS = [
     "WALMART SUPERCENTER", "CHEVRON 4471", "DR NGUYEN DDS", "AT&T",
-    "birthday gift for mom", "loan from dad", "TREY", "SAVANNAH", "H7K2P9QX4M"
+    "birthday gift for mom", "loan from dad", "TREY", "SAVANNAH", "H7K2P9QX4M",
+    // Per-occurrence notes are free text the user types against one landing of
+    // a bill — "9 HRS, MARIA OFF SICK" is exactly the kind of thing that ends
+    // up in there. The export reads occurrences for their amounts, so this is
+    // one field away from being copied out with them.
+    "9 HRS, MARIA OFF SICK"
   ];
 
   const txn = (o) => Object.assign({
@@ -58,6 +63,11 @@ module.exports = function run() {
       "2026-08": { rent: { paid: true, amount: 1500, paidDate: "2026-08-01", createdAt: 0 } }
     },
     billAmounts: {},
+    billOccEdits: {
+      "2026-06": { rent: { day: 3, note: "9 HRS, MARIA OFF SICK" } },
+      "2026-07": { rent: { note: "9 HRS, MARIA OFF SICK" } },
+      "2026-08": { rent: { day: 2, note: "9 HRS, MARIA OFF SICK" } }
+    },
     spendingCategories: [
       { id: "cat-food", label: "GROCERIES", budgeted: 600 },
       { id: "cat-out", label: "EATING OUT", budgeted: 200 },

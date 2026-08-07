@@ -951,7 +951,7 @@
 
 // Build version. Surfaced in Settings > HOUSEHOLD so a stale cache is diagnosable.
 // Bump every round.
-const APP_VERSION = "V56";
+const APP_VERSION = "V57";
 
 /* ============================================================
    FIREBASE INIT
@@ -1443,7 +1443,18 @@ const BudgetEngine = (() => {
 
      Amount overrides live in s.billAmounts[month][key] — the same month-keyed
      shape as rollover and category funding — so a heavy month is recorded
-     against that month and never leaks into the next one. */
+     against that month and never leaks into the next one.
+
+     The rest of what an occurrence can carry — the day it actually landed on
+     and a note saying why the figure is what it is — lives in
+     s.billOccEdits[month][key] = { day, note }, month-keyed for the same
+     reason. Amounts stay in billAmounts rather than moving in here so every
+     override already written keeps working untouched.
+
+     Editing is per occurrence, never on the parent: the parent of a bill that
+     lands weekly is not a date, so a single amount and a single due day cannot
+     say what any particular week cost. Whoever pays an hourly cleaner is
+     entering a different figure every week, against a specific visit. */
   const BILL_FREQUENCIES = INCOME_FREQUENCIES.filter(
     f => ["weekly", "biweekly", "semimonthly", "monthly"].indexOf(f.id) >= 0);
   function billFrequency(b) {
@@ -1472,17 +1483,29 @@ const BudgetEngine = (() => {
     }
     const paid = (s.billsPaid || {})[month] || {};
     const over = (s.billAmounts || {})[month] || {};
+    const edits = (s.billOccEdits || {})[month] || {};
     return days.map((day, index) => {
       const key = billOccurrenceKey(bill, index);
       const rec = paid[key];
+      const edit = edits[key] || null;
+      // A moved occurrence keeps its key, so its tick, its amount and every
+      // paid record already written follow it to the new date.
+      const moved = (edit && edit.day != null)
+        ? Math.max(1, Math.min(last, num(edit.day))) : null;
+      const on = moved || day;
       return {
-        index, day, date: isoOf(month, day), key, billId: bill.id, label: bill.label,
+        index, day: on, date: isoOf(month, on), key, billId: bill.id, label: bill.label,
         amount: over[key] != null ? num(over[key]) : num(bill.amount),
         overridden: over[key] != null,
+        usualDay: day,
+        moved: moved != null && moved !== day,
+        note: (edit && edit.note) ? String(edit.note) : "",
         rec: rec || null,
         paid: !!(rec && rec.paid)
       };
-    });
+    // Moving one occurrence past another would otherwise print the month out
+    // of order. Keys are already fixed above, so sorting only affects display.
+    }).sort((a, b) => a.day - b.day || a.index - b.index);
   }
   // Resolve an occurrence key back to its bill and occurrence. Accepts a bare
   // bill id too, which is occurrence zero.
@@ -3024,6 +3047,12 @@ function buildDefaultData(mode, names, withExamples, titheOn) {
     // usual amount — anything billed on usage. Same month-keyed shape and the
     // same occurrence keys: billAmounts[month][key] = amount.
     billAmounts: {},
+    // The other per-occurrence corrections, same month-keyed shape and the same
+    // occurrence keys: billOccEdits[month][key] = { day, note }. `day` moves a
+    // single landing off the cadence's date — the week the cleaner came Friday
+    // instead of Thursday — and `note` records why the amount is what it is,
+    // which for anything billed by the hour is the hours.
+    billOccEdits: {},
     // Dated observations of what the checking account actually held:
     // { id, date, amount, createdAt, source }. A list rather than a single
     // field so re-anchoring mid-month is the same operation as anchoring on
@@ -3853,6 +3882,10 @@ const UI = (() => {
   // amount editor: { key, value } while one is open.
   let billExpanded = {};
   let billAmtEdit = null;
+  // Which occurrence's full editor is open, by occurrence key. One at a time:
+  // these rows sit inside an expanded parent and stacking forms in there loses
+  // the reader entirely.
+  let occEditKey = null;
   // Which headline figure's breakdown is open — false, "safe" or "tight" —
   // and whether its one-shot hint has played. The two read differently, so the
   // panel has to remember which number was tapped.
@@ -7155,17 +7188,28 @@ const UI = (() => {
       };
       const tick = (occ, label) => `<button class="txn-check ${occ.paid ? "checked" : ""}" data-action="bill-toggle" data-id="${Util.esc(occ.key)}" aria-label="${Util.esc(label)}" data-learn="${isSavings ? "MARK THIS SAVINGS TRANSFER AS SAVED. THE MONEY COMES OUT OF YOUR TRACKED BALANCE AND STOPS BEING HELD BACK, SO SAFE TO SPEND DOESN'T MOVE — IT WAS ALREADY SET ASIDE FOR THIS." : "MARK THIS ONE AS PAID. THE MONEY COMES OUT OF YOUR TRACKED BALANCE AND STOPS BEING HELD BACK, SO SAFE TO SPEND DOESN'T MOVE — IT WAS ALREADY SET ASIDE FOR THIS."}"></button>`;
 
+      /* Each landing is its own record: its own amount, its own date, its own
+         note. That is the whole point of breaking the bill out — the parent is
+         a cadence, not a day, so editing it can't answer what this Thursday
+         cost. Everything typed here is stored against THIS occurrence in THIS
+         month and leaves the bill's standing figures alone. */
       const subRows = multi && open ? occs.map(o => {
         const od = !o.paid && sameMonth && o.day < todayDay;
+        const editingOcc = occEditKey === o.key;
         return `
           <div class="inc-sub">
             <div>
-              <div class="inc-sub-label ${od ? "text-danger" : ""}">${Util.esc(Util.fmtDateShort(o.date))}</div>
+              <div class="inc-sub-label ${od ? "text-danger" : ""}">${Util.esc(Util.fmtDateShort(o.date))}${o.moved ? ` <span style="opacity:0.7;font-size:11px;letter-spacing:0.12em;">·MOVED</span>` : ""}</div>
+              ${o.note ? `<div class="meta">${Util.esc(o.note)}</div>` : ""}
               ${noteFor(o)}
             </div>
             ${amountCell(o, isSavings, od, null)}
             ${tick(o, verb + " " + Util.fmtDateShort(o.date))}
-          </div>`;
+          </div>
+          <div style="margin-top:-4px;padding-left:18px;">
+            <button class="link" style="padding:0;min-height:auto;font-size:11px;letter-spacing:0.14em;" data-action="occ-edit" data-key="${Util.esc(o.key)}" data-learn="EDIT THIS ONE LANDING ON ITS OWN — WHAT IT CAME TO, THE DAY IT ACTUALLY LANDED ON, AND A NOTE FOR WHY. USE IT FOR ANYTHING BILLED BY THE HOUR, WHERE EVERY WEEK IS A DIFFERENT FIGURE. NOTHING HERE TOUCHES THE OTHER DATES OR THE BILL ITSELF.">${editingOcc ? "CLOSE ⌃" : "EDIT →"}</button>
+          </div>
+          ${editingOcc ? renderOccEditForm(b, o, isSavings) : ""}`;
       }).join("") : "";
 
       const due = Number(b.dueDateOfMonth) || 0;
@@ -7183,10 +7227,23 @@ const UI = (() => {
             ? `<button class="inc-chev ${open ? "open" : ""}${doneCount === occs.length ? " all-clear" : ""}" data-action="bill-expand" data-id="${Util.esc(b.id)}" aria-expanded="${open ? "true" : "false"}" aria-label="${doneCount} OF ${occs.length} ${verb} · ${open ? "COLLAPSE" : "EXPAND"}" data-learn="THIS ONE LANDS MORE THAN ONCE A MONTH, SO A SINGLE CHECKBOX COULDN'T SAY WHICH ONES HAVE GONE OUT. OPEN IT FOR A ROW PER DATE, EACH WITH ITS OWN AMOUNT AND ITS OWN TICK.">${doneCount}/${occs.length} <span class="arrow">⌄</span></button>`
             : tick(first, verb)}
         </div>
-        <div style="margin-top:-4px;">
-          <button class="link" style="padding:0;min-height:auto;font-size:11px;letter-spacing:0.14em;" data-action="edit-item" data-kind="${isSavings ? "savings" : "bill"}" data-id="${Util.esc(b.id)}" data-learn="EDIT THIS BILL'S NAME, USUAL AMOUNT, DUE DAY, OR HOW OFTEN IT LANDS. IT'S THE SAME RECORD SETTINGS EDITS, SO CHANGES SHOW IN BOTH PLACES.">EDIT →</button>
-        </div>
-        ${editStates[(isSavings ? "savings" : "bill") + "_" + b.id] ? renderEditForm(isSavings ? "savings" : "bill", b) : ""}
+        ${/* A bill that lands more than once has no editable parent. The row
+              above is a summary of several different days — a name, a cadence
+              and a total — so an amount or a due day typed against it would
+              have to mean all of them at once, which is never what was meant.
+              The per-date rows below carry the edits instead. Renaming the
+              bill or changing the cadence is a change to the whole series, and
+              that still lives in Settings. */""}
+        ${multi ? `
+          <div style="margin-top:-4px;">
+            <div class="meta" data-learn="THIS ONE LANDS MORE THAN ONCE THIS MONTH, SO THERE IS NO SINGLE AMOUNT OR DUE DAY TO EDIT UP HERE. OPEN IT AND EDIT THE DATE YOU MEAN. THE NAME AND HOW OFTEN IT LANDS ARE A CHANGE TO ALL OF THEM, SO THEY LIVE IN SETTINGS.">EDIT EACH DATE INSIDE · NAME &amp; CADENCE IN SETTINGS</div>
+          </div>
+        ` : `
+          <div style="margin-top:-4px;">
+            <button class="link" style="padding:0;min-height:auto;font-size:11px;letter-spacing:0.14em;" data-action="edit-item" data-kind="${isSavings ? "savings" : "bill"}" data-id="${Util.esc(b.id)}" data-learn="EDIT THIS BILL'S NAME, USUAL AMOUNT, DUE DAY, OR HOW OFTEN IT LANDS. IT'S THE SAME RECORD SETTINGS EDITS, SO CHANGES SHOW IN BOTH PLACES.">EDIT →</button>
+          </div>
+          ${editStates[(isSavings ? "savings" : "bill") + "_" + b.id] ? renderEditForm(isSavings ? "savings" : "bill", b) : ""}
+        `}
         ${subRows}
         ${renderBillLinkPrompt(b)}`;
     };
@@ -7385,6 +7442,40 @@ const UI = (() => {
       });
       billAmt.addEventListener("blur", commit);
     }
+    // The per-occurrence editor. One open at a time, and opening one closes the
+    // quick amount tap so the same figure isn't being typed in two places.
+    root.querySelectorAll("[data-action=occ-edit]").forEach(el => {
+      el.addEventListener("click", () => {
+        occEditKey = occEditKey === el.dataset.key ? null : el.dataset.key;
+        billAmtEdit = null;
+        render();
+      });
+    });
+    root.querySelectorAll("[data-action=occ-cancel]").forEach(el => {
+      el.addEventListener("click", () => { occEditKey = null; render(); });
+    });
+    root.querySelectorAll("[data-action=occ-save]").forEach(el => {
+      el.addEventListener("click", () => {
+        const form = root.querySelector(`[data-occ-form][data-key="${el.dataset.key}"]`);
+        if (!form) return;
+        const val = f => {
+          const inp = form.querySelector(`[data-occ-field="${f}"]`);
+          return inp ? String(inp.value) : "";
+        };
+        const amtRaw = val("amount").replace(/[^0-9.]/g, "");
+        const dayRaw = val("day").replace(/[^0-9]/g, "");
+        saveBillOccurrence(s, el.dataset.key, {
+          amount: amtRaw === "" ? null : parseFloat(amtRaw),
+          day: dayRaw === "" ? null : parseInt(dayRaw, 10),
+          note: val("note")
+        });
+      });
+    });
+    root.querySelectorAll("[data-action=occ-reset]").forEach(el => {
+      el.addEventListener("click", () => {
+        saveBillOccurrence(s, el.dataset.key, { amount: null, day: null, note: "" });
+      });
+    });
     root.querySelectorAll("[data-action=bill-toggle]").forEach(el => {
       el.addEventListener("click", () => toggleBillPaid(s, el.dataset.id));
     });
@@ -7586,6 +7677,48 @@ const UI = (() => {
     all[month] = forMonth;
     try {
       await DataService.update({ billAmounts: all });
+      render();
+    } catch (e) { alert("COULDN'T SAVE; CHECK CONNECTION"); console.warn(e); render(); }
+  }
+
+  /* The rest of one occurrence: the day it actually landed on and the note
+     saying why the figure is what it is. Amount is not handled here — it stays
+     in saveBillAmount / s.billAmounts, so every override already written keeps
+     working and there is still exactly one place a bill amount comes from.
+
+     Both halves go out in a single update so a saved row can't end up with a
+     new amount and its old date. A null field clears that override; a wholly
+     empty edit drops the key rather than leaving {} behind to be read back. */
+  async function saveBillOccurrence(s, key, fields) {
+    const month = s.currentMonth;
+    const found = BudgetEngine.billOccurrenceFor(s, key, month);
+    if (!found) return;
+    const all = { ...(s.billOccEdits || {}) };
+    const forMonth = { ...(all[month] || {}) };
+    const next = {};
+    // A day equal to the one the cadence already lands on is not a move, so it
+    // is stored as nothing — otherwise changing the bill's due day later would
+    // leave every occurrence pinned to where it used to be.
+    const last = BudgetEngine.daysInMonthOf(month);
+    const day = fields.day == null || !isFinite(fields.day)
+      ? null : Math.max(1, Math.min(last, Math.round(fields.day)));
+    if (day != null && day !== found.occ.usualDay) next.day = day;
+    const note = String(fields.note == null ? "" : fields.note).trim().toUpperCase();
+    if (note) next.note = note.slice(0, 60);
+    if (Object.keys(next).length) forMonth[key] = next;
+    else delete forMonth[key];
+    all[month] = forMonth;
+
+    const amts = { ...(s.billAmounts || {}) };
+    const amtMonth = { ...(amts[month] || {}) };
+    const amount = fields.amount;
+    if (amount == null || !isFinite(amount) || amount < 0) delete amtMonth[key];
+    else amtMonth[key] = Math.round(amount * 100) / 100;
+    amts[month] = amtMonth;
+
+    try {
+      await DataService.update({ billOccEdits: all, billAmounts: amts });
+      occEditKey = null;
       render();
     } catch (e) { alert("COULDN'T SAVE; CHECK CONNECTION"); console.warn(e); render(); }
   }
@@ -8680,6 +8813,43 @@ const UI = (() => {
           <button class="cta ghost" data-action="cancel-edit" data-kind="${kind}" data-id="${Util.esc(item.id)}">× CANCEL</button>
           <button class="cta" data-action="save-edit" data-kind="${kind}" data-id="${Util.esc(item.id)}">→ SAVE</button>
         </div>
+      </div>`;
+  }
+
+  /* The editor for ONE landing of a bill that lands more than once a month.
+     Deliberately not renderEditForm: that one edits the bill record — a name,
+     a cadence, a standing amount that applies to every date — and none of
+     those are things you can mean about a single Thursday.
+
+     All three fields are stored against this occurrence in this month only,
+     so next month starts clean from the bill's usual figures. Clearing a field
+     drops the override rather than writing a zero, which is how a figure typed
+     by mistake gets taken back. */
+  function renderOccEditForm(bill, occ, isSavings) {
+    const dirty = occ.overridden || occ.moved || !!occ.note;
+    return `
+      <div class="inline-form" data-occ-form data-key="${Util.esc(occ.key)}" style="margin-left:18px;">
+        <div class="sub-label">${Util.esc(Util.fmtDateShort(occ.date))} · ${Util.esc(bill.label)}</div>
+        <div class="field">
+          <label>${isSavings ? "SAVED" : "AMOUNT"} THIS DATE</label>
+          <input data-occ-field="amount" value="${Util.esc(occ.amount == null ? "" : occ.amount)}" inputmode="decimal" placeholder="${Util.esc(Util.fmtMoney(Number(bill.amount) || 0, 2))}">
+        </div>
+        <div class="field">
+          <label>DAY IT LANDED</label>
+          <input data-occ-field="day" value="${Util.esc(occ.day)}" inputmode="numeric" placeholder="${Util.esc(occ.usualDay)}">
+        </div>
+        <div class="field">
+          <label>NOTE</label>
+          <input data-occ-field="note" value="${Util.esc(occ.note || "")}" maxlength="60" placeholder="E.G. 12 HRS @ $25">
+        </div>
+        <div class="meta">THIS DATE ONLY. THE OTHER DATES AND THE BILL'S USUAL ${Util.esc(Util.fmtMoney(Number(bill.amount) || 0, 0))} ARE UNCHANGED.</div>
+        <div class="row-actions">
+          <button class="cta ghost" data-action="occ-cancel">× CANCEL</button>
+          <button class="cta" data-action="occ-save" data-key="${Util.esc(occ.key)}">→ SAVE</button>
+        </div>
+        ${dirty ? `
+          <button class="link" style="padding:0;min-height:auto;font-size:11px;letter-spacing:0.14em;margin-top:8px;" data-action="occ-reset" data-key="${Util.esc(occ.key)}" data-learn="THROW AWAY WHAT WAS TYPED FOR THIS DATE AND PUT IT BACK ON THE BILL'S USUAL AMOUNT AND ITS USUAL DAY. THE TICK AND ANY PAYMENT MATCHED TO IT ARE LEFT ALONE.">↺ BACK TO THE USUAL</button>
+        ` : ""}
       </div>`;
   }
 
@@ -9959,6 +10129,8 @@ const UI = (() => {
       // Clear any transient UI state that could leak across the reset
       Object.keys(txnEdits).forEach(k => delete txnEdits[k]);
       Object.keys(editStates).forEach(k => delete editStates[k]);
+      occEditKey = null;
+      billAmtEdit = null;
       Object.keys(addForms).forEach(k => addForms[k] = null);
       Object.keys(formErrors).forEach(k => delete formErrors[k]);
       logForm.amount = ""; logForm.categoryId = null; logForm.categoryType = null;
