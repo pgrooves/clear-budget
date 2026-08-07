@@ -951,7 +951,7 @@
 
 // Build version. Surfaced in Settings > HOUSEHOLD so a stale cache is diagnosable.
 // Bump every round.
-const APP_VERSION = "V58";
+const APP_VERSION = "V59";
 
 /* ============================================================
    FIREBASE INIT
@@ -5632,15 +5632,22 @@ const UI = (() => {
                 ${showActual ? `<div class="meta">RECEIVED ${Util.esc(Util.fmtMoney(actual, 2))}</div>` : ""}
               </div>
               <div>
-                ${/* A source that pays more than once has no single expected
-                      figure to tap: this row is a name, a cadence and a total
-                      across several different pay days, so an amount typed
-                      against it would have to mean all of them. It prints what
-                      the month actually comes to and the pay days below carry
-                      the editing. */""}
+                ${/* A source that pays more than once prints what the month
+                      actually comes to, and tapping that total opens the
+                      SOURCE — its name, its cadence, and the figure a normal
+                      pay day brings. What it deliberately is not is a way to
+                      price one pay day: the total spans several different
+                      days, so an amount typed against it could only mean all
+                      of them. That belongs to the rows inside, which is where
+                      it is. Same tap, two different records, and the form
+                      label is what says which one you have got.
+
+                      This used to be a line of small print under every row
+                      saying where to go. Same information, and it was in the
+                      way on every source whether you wanted it or not. */""}
                 <div class="inc-amt">${
                   multi
-                    ? Util.esc(Util.fmtMoney(landings.reduce((a, l) => a + l.amount, 0), 0))
+                    ? `<button class="link" style="padding:0;min-height:auto;text-decoration:none;border-bottom:1px solid rgba(26,58,140,0.4);font-size:15px;font-weight:400;letter-spacing:inherit;" data-action="edit-item" data-kind="income" data-id="${Util.esc(i.id)}" aria-expanded="${editStates["income_" + i.id] ? "true" : "false"}" data-learn="WHAT THIS SOURCE BRINGS IN THIS MONTH, ADDED UP ACROSS ITS PAY DAYS. TAP IT TO EDIT THE SOURCE — ITS NAME, HOW OFTEN IT PAYS, AND WHAT A NORMAL PAY DAY BRINGS. TO CHANGE ONE PARTICULAR PAY DAY, OPEN THE ROW AND EDIT THAT DATE INSTEAD.">${Util.esc(Util.fmtMoney(landings.reduce((a, l) => a + l.amount, 0), 0))}</button>`
                     : (incExpEdit && incExpEdit.id === i.id)
                       ? `<input class="wiz-amt" id="inc-exp-input" data-action="inc-exp-input" data-id="${Util.esc(i.id)}" inputmode="decimal" value="${Util.esc(incExpEdit.value)}" aria-label="EXPECTED AMOUNT">`
                       : `<button class="link" style="padding:0;min-height:auto;text-decoration:none;border-bottom:1px solid rgba(26,58,140,0.4);font-size:15px;font-weight:400;letter-spacing:inherit;" data-action="inc-exp-edit" data-id="${Util.esc(i.id)}" data-learn="TAP TO CHANGE WHAT YOU EXPECT FROM THIS SOURCE. IT SAVES WHEN YOU PRESS ENTER OR TAP AWAY. IT ONLY MOVES THE EXPECTED FIGURE; IF THIS SOURCE IS ALREADY MARKED CLEARED, THE AMOUNT YOU ACTUALLY RECEIVED IS LEFT ALONE.">${Util.esc(Util.fmtMoney(expected, 0))}</button>`
@@ -5651,16 +5658,12 @@ const UI = (() => {
                 ? `<button class="inc-chev ${open ? "open" : ""}${clearedCount === landings.length ? " all-clear" : ""}" data-action="inc-expand" data-id="${Util.esc(i.id)}" aria-expanded="${open ? "true" : "false"}" aria-label="${clearedCount} OF ${landings.length} PAY DAYS CLEARED · ${open ? "COLLAPSE" : "EXPAND"}" data-learn="THIS SOURCE PAYS MORE THAN ONCE A MONTH, SO ONE CHECKBOX COULDN'T SAY WHICH PAYCHECK HAD ARRIVED. THE COUNT IS HOW MANY OF THIS MONTH'S PAY DAYS HAVE LANDED; OPEN IT FOR A ROW PER PAY DAY, EACH WITH ITS OWN TICK.">${clearedCount}/${landings.length} <span class="arrow">⌄</span></button>`
                 : `<button class="txn-check ${entry ? "checked" : ""}" data-action="inc-toggle" data-id="${Util.esc(i.id)}" data-idx="0" aria-label="CLEARED" data-learn="MARK THIS INCOME AS RECEIVED FOR THIS MONTH. CHECKING IT RAISES SAFE TO SPEND BY THE AMOUNT MINUS YOUR TITHE PERCENTAGE. UNCHECKING UNDOES IT EXACTLY."></button>`}
             </div>
-            ${multi ? `
-              <div style="margin-top:-4px;">
-                <div class="meta" data-learn="THIS SOURCE PAYS MORE THAN ONCE THIS MONTH, SO THERE IS NO SINGLE AMOUNT OR PAY DAY TO EDIT UP HERE. OPEN IT AND EDIT THE PAY DAY YOU MEAN. THE NAME AND HOW OFTEN IT PAYS ARE A CHANGE TO ALL OF THEM, SO THEY LIVE IN SETTINGS.">EDIT EACH PAY DAY INSIDE · NAME &amp; CADENCE IN SETTINGS</div>
-              </div>
-            ` : `
+            ${multi ? "" : `
               <div style="margin-top:-4px;">
                 <button class="link" style="padding:0;min-height:auto;font-size:11px;letter-spacing:0.14em;" data-action="edit-item" data-kind="income" data-id="${Util.esc(i.id)}" data-learn="EDIT THIS INCOME SOURCE'S NAME, EXPECTED AMOUNT, OR DUE DAY. IT'S THE SAME RECORD SETTINGS EDITS, SO CHANGES SHOW IN BOTH PLACES.">EDIT →</button>
               </div>
-              ${editStates["income_" + i.id] ? renderEditForm("income", i) : ""}
             `}
+            ${editStates["income_" + i.id] ? renderEditForm("income", i) : ""}
             ${subRows}`;
         }).join("")
       : `<div class="meta">NO INCOME SOURCES YET · ADD ONE BELOW</div>`;
@@ -7385,32 +7388,35 @@ const UI = (() => {
         <div class="inc-row">
           <div>
             <div class="inc-label">${Util.esc(b.label)}</div>
-            ${multi ? `<div class="meta">${Util.esc(freq.label)} · ${occs.length} THIS MONTH · ${Util.esc(Util.fmtMoney(occs.reduce((a,o)=>a+o.amount,0), 0))} TOTAL</div>` : noteFor(first)}
+            ${/* No "· $X TOTAL" here any more: that figure is now the tappable
+                  amount in the next column, and printing it twice on one row
+                  was half of what made these rows feel crowded. */""}
+            ${multi ? `<div class="meta">${Util.esc(freq.label)} · ${occs.length} THIS MONTH</div>` : noteFor(first)}
           </div>
           ${multi
-            ? `<div class="inc-amt">${Util.esc(Util.fmtMoney(occs.reduce((a,o)=>a+o.amount,0), 0))}</div>`
+            ? `<div class="inc-amt"><button class="link" style="padding:0;min-height:auto;text-decoration:none;border-bottom:1px solid rgba(26,58,140,0.4);font-size:15px;font-weight:400;letter-spacing:inherit;" data-action="edit-item" data-kind="${isSavings ? "savings" : "bill"}" data-id="${Util.esc(b.id)}" aria-expanded="${editStates[(isSavings ? "savings" : "bill") + "_" + b.id] ? "true" : "false"}" data-learn="WHAT THIS ONE COMES TO THIS MONTH, ADDED UP ACROSS ITS DATES. TAP IT TO EDIT THE BILL — ITS NAME, HOW OFTEN IT LANDS, AND WHAT IT USUALLY COSTS. TO CHANGE ONE PARTICULAR DATE, OPEN THE ROW AND EDIT THAT DATE INSTEAD.">${Util.esc(Util.fmtMoney(occs.reduce((a,o)=>a+o.amount,0), 0))}</button></div>`
             : amountCell(first, isSavings, overdue, due)}
           ${multi
             ? `<button class="inc-chev ${open ? "open" : ""}${doneCount === occs.length ? " all-clear" : ""}" data-action="bill-expand" data-id="${Util.esc(b.id)}" aria-expanded="${open ? "true" : "false"}" aria-label="${doneCount} OF ${occs.length} ${verb} · ${open ? "COLLAPSE" : "EXPAND"}" data-learn="THIS ONE LANDS MORE THAN ONCE A MONTH, SO A SINGLE CHECKBOX COULDN'T SAY WHICH ONES HAVE GONE OUT. OPEN IT FOR A ROW PER DATE, EACH WITH ITS OWN AMOUNT AND ITS OWN TICK.">${doneCount}/${occs.length} <span class="arrow">⌄</span></button>`
             : tick(first, verb)}
         </div>
-        ${/* A bill that lands more than once has no editable parent. The row
-              above is a summary of several different days — a name, a cadence
-              and a total — so an amount or a due day typed against it would
-              have to mean all of them at once, which is never what was meant.
-              The per-date rows below carry the edits instead. Renaming the
-              bill or changing the cadence is a change to the whole series, and
-              that still lives in Settings. */""}
-        ${multi ? `
-          <div style="margin-top:-4px;">
-            <div class="meta" data-learn="THIS ONE LANDS MORE THAN ONCE THIS MONTH, SO THERE IS NO SINGLE AMOUNT OR DUE DAY TO EDIT UP HERE. OPEN IT AND EDIT THE DATE YOU MEAN. THE NAME AND HOW OFTEN IT LANDS ARE A CHANGE TO ALL OF THEM, SO THEY LIVE IN SETTINGS.">EDIT EACH DATE INSIDE · NAME &amp; CADENCE IN SETTINGS</div>
-          </div>
-        ` : `
+        ${/* A bill that lands more than once prints what the month comes to,
+              and tapping that total opens the BILL — its name, its cadence,
+              and what it usually costs. What that tap deliberately is not is a
+              way to price one date: the total spans several different days, so
+              an amount or a due day typed against it could only mean all of
+              them at once, which is never what was meant. That belongs to the
+              per-date rows inside, which is where it is.
+
+              A line of small print under every row used to say so. Same
+              information, and it was in the way whether you wanted it or not;
+              the tap target carries it now. */""}
+        ${multi ? "" : `
           <div style="margin-top:-4px;">
             <button class="link" style="padding:0;min-height:auto;font-size:11px;letter-spacing:0.14em;" data-action="edit-item" data-kind="${isSavings ? "savings" : "bill"}" data-id="${Util.esc(b.id)}" data-learn="EDIT THIS BILL'S NAME, USUAL AMOUNT, DUE DAY, OR HOW OFTEN IT LANDS. IT'S THE SAME RECORD SETTINGS EDITS, SO CHANGES SHOW IN BOTH PLACES.">EDIT →</button>
           </div>
-          ${editStates[(isSavings ? "savings" : "bill") + "_" + b.id] ? renderEditForm(isSavings ? "savings" : "bill", b) : ""}
         `}
+        ${editStates[(isSavings ? "savings" : "bill") + "_" + b.id] ? renderEditForm(isSavings ? "savings" : "bill", b) : ""}
         ${subRows}
         ${renderBillLinkPrompt(b)}`;
     };
@@ -8943,7 +8949,17 @@ const UI = (() => {
     const isCard = kind === "card" || kind === "bank";
     const hasDate = (kind === "bill" || kind === "savings" || kind === "income");
     const amountField = isDebt ? "balance" : (isSpending ? "budgeted" : "amount");
-    const amountLabel = isDebt ? "BALANCE" : (isSpending ? "BUDGETED" : "AMOUNT");
+    /* This form is reached from a row printing a MONTH'S TOTAL, and the figure
+       it edits is what lands ONCE. On anything paying or billing more than
+       once a month those are different numbers, so the label has to say which
+       one you are typing into — the note further down says the same thing, but
+       it sits below the cadence chips and this is where the eye already is. */
+    const perMonth = (kind === "income")
+      ? BudgetEngine.incomeFrequency(item).perMonth
+      : ((kind === "bill" || kind === "savings") ? BudgetEngine.billFrequency(item).perMonth : 1);
+    const eachTime = perMonth > 1;
+    const amountLabel = isDebt ? "BALANCE"
+      : (isSpending ? "BUDGETED" : (eachTime ? "AMOUNT EACH TIME" : "AMOUNT"));
     if (isCard) {
       return `
         <div class="inline-form" data-edit-form data-kind="${kind}" data-id="${Util.esc(item.id)}">
