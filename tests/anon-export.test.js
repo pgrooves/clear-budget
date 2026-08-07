@@ -27,7 +27,9 @@ module.exports = function run() {
     // a bill — "9 HRS, MARIA OFF SICK" is exactly the kind of thing that ends
     // up in there. The export reads occurrences for their amounts, so this is
     // one field away from being copied out with them.
-    "9 HRS, MARIA OFF SICK"
+    "9 HRS, MARIA OFF SICK",
+    // The same field on the income side — a note against one pay day.
+    "32 HRS, COVERED DAVE'S SHIFT"
   ];
 
   const txn = (o) => Object.assign({
@@ -63,6 +65,11 @@ module.exports = function run() {
       "2026-08": { rent: { paid: true, amount: 1500, paidDate: "2026-08-01", createdAt: 0 } }
     },
     billAmounts: {},
+    incomeLandingEdits: {
+      "2026-06": { inc1: { amount: 3120, note: "32 HRS, COVERED DAVE'S SHIFT" } },
+      "2026-07": { "inc1:1": { day: 18, note: "32 HRS, COVERED DAVE'S SHIFT" } },
+      "2026-08": { inc1: { note: "32 HRS, COVERED DAVE'S SHIFT" } }
+    },
     billOccEdits: {
       "2026-06": { rent: { day: 3, note: "9 HRS, MARIA OFF SICK" } },
       "2026-07": { rent: { note: "9 HRS, MARIA OFF SICK" } },

@@ -12,7 +12,7 @@ No install, no dependencies. Exits non-zero if anything fails.
 | --- | --- |
 | `walk.test.js` | The cash-flow walk: the rolling 35-day horizon, credit dated to the card's due day, and the two headline figures with the breakdown behind each. |
 | `reconcile.test.js` | **Every breakdown adds up to the figure printed above it**, including the day the walk never dips. Plus a seeded sweep and the malformed-month guard. |
-| `income-landings.test.js` | One tickable slot per pay day, and that existing untagged entries still fill the earliest slots so old data reads unchanged. |
+| `income-landings.test.js` | One tickable slot per pay day, and that existing untagged entries still fill the earliest slots so old data reads unchanged. Plus per-pay-day corrections: a moved pay day keeps its slot and its tick, and **the smoothed monthly figure deliberately does not move with it**. |
 | `tithe.test.js` | Tithe split per pay day, shares summing exactly to the TITHE row, and pre-split records still readable and clearable. |
 | `tithe-lump.test.js` | **Ticking the lump and the pay-day shares is still one tithe.** The lump wins outright, in the engine rather than only on screen. |
 | `monotonic.test.js` | **Marking income received can never lower either headline figure.** |
@@ -43,6 +43,13 @@ A hand-picked fixture only ever proves the case someone thought of. The new
 suite keeps its fixtures for readability and adds 800 breakdowns across 400
 generated households on a fixed seed, so the next shape nobody thought of has
 somewhere to fail.
+
+Those households now also carry per-landing corrections — a bill occurrence or
+a pay day given its own amount, its own day, or both — because that is exactly
+the kind of thing that moves a dated event inside the walk while a breakdown
+assembled separately from the walk goes on quoting the old one. The sweep
+asserts it actually generated some, so a renamed state key can't turn it into a
+suite that passes while testing none of them.
 
 ## How they load the app
 

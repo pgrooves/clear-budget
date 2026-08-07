@@ -951,7 +951,7 @@
 
 // Build version. Surfaced in Settings > HOUSEHOLD so a stale cache is diagnosable.
 // Bump every round.
-const APP_VERSION = "V57";
+const APP_VERSION = "V58";
 
 /* ============================================================
    FIREBASE INIT
@@ -1259,17 +1259,59 @@ const BudgetEngine = (() => {
 
      More entries than landings is allowed and deliberate: a bonus or a
      correction filed against a source still counts as received income, it just
-     has no slot to tick. */
+     has no slot to tick.
+
+     ---------- ONE PAY DAY IS NOT THE CADENCE ----------
+     A cadence produces evenly spaced days and one repeated figure, and for
+     anyone paid by the hour neither is true: the hours move every week, and
+     the day moves whenever a pay date lands on a holiday. So each landing can
+     carry its own corrections in s.incomeLandingEdits[month][key] =
+     { amount, day, note }, month-keyed so a heavy fortnight is that month's
+     and September starts clean.
+
+     What an override deliberately does NOT move is incomeMonthlyAmount, and
+     through it totalIncome, the tithe total and the budget surplus. Those are
+     smoothed on purpose — perMonth is 52/12, not 5 — so that a month with a
+     fifth pay day doesn't inflate the budget by 8% and then deflate it again
+     in November. An override says what arrives on a date; the smoothed figure
+     says what the source is worth in an average month, and both are true.
+     What the overrides do move is every dated thing: the cash-flow walk, which
+     day the tithe share comes due, and what each pay day reads on screen. */
+  function incomeLandingKey(inc, index) {
+    return index === 0 ? inc.id : inc.id + ":" + index;
+  }
   function landingsForMonth(s, inc, ym) {
     if (!inc) return [];
-    const slots = incomeLandings(inc, daysInMonthOf(ym)).map((l, index) => ({
-      index, day: l.day, date: isoOf(ym, l.day), amount: l.amount, entry: null
-    }));
+    const month = ym || (s && s.currentMonth);
+    const last = daysInMonthOf(month);
+    const edits = ((s && s.incomeLandingEdits) || {})[month] || {};
+    const slots = incomeLandings(inc, last).map((l, index) => {
+      const key = incomeLandingKey(inc, index);
+      const edit = edits[key] || null;
+      // A moved pay day keeps its index, so the entry occupying that slot —
+      // ticked here, typed into LOG INCOME, or imported — comes with it.
+      const moved = (edit && edit.day != null)
+        ? Math.max(1, Math.min(last, num(edit.day))) : null;
+      const on = moved || l.day;
+      const paid = (edit && edit.amount != null && isFinite(num(edit.amount)))
+        ? num(edit.amount) : l.amount;
+      return {
+        index, key, day: on, date: isoOf(month, on), amount: paid,
+        usualDay: l.day, usualAmount: l.amount,
+        moved: moved != null && moved !== l.day,
+        overridden: paid !== l.amount,
+        note: (edit && edit.note) ? String(edit.note) : "",
+        entry: null
+      };
+    });
     const entries = (s.incomeLog || [])
-      .filter(e => e && e.incomeId === inc.id && e.month === ym)
+      .filter(e => e && e.incomeId === inc.id && e.month === month)
       .slice()
       .sort((a, b) => num(a.createdAt) - num(b.createdAt));
     const untagged = [];
+    // Slots are still in cadence order here, so landingIndex indexes straight
+    // in and the untagged fill rule keeps meaning "the earliest unclaimed one".
+    // Both are settled before anything is reordered below.
     entries.forEach(e => {
       const idx = e.landingIndex;
       if (typeof idx === "number" && slots[idx] && !slots[idx].entry) slots[idx].entry = e;
@@ -1279,7 +1321,21 @@ const BudgetEngine = (() => {
       const slot = slots.find(l => !l.entry);
       if (slot) slot.entry = e;
     });
-    return slots;
+    // Moving a pay day past its neighbour would otherwise print the month out
+    // of order. Callers that need a particular landing look it up by index or
+    // by key, never by position — see landingForKey and toggleIncomeCleared.
+    return slots.sort((a, b) => a.day - b.day || a.index - b.index);
+  }
+  // Resolve a landing key back to its source and landing. Accepts a bare
+  // income id too, which is landing zero.
+  function landingForKey(s, key, ym) {
+    const raw = String(key || "");
+    const cut = raw.lastIndexOf(":");
+    const incId = cut > 0 ? raw.slice(0, cut) : raw;
+    const inc = (s.income || []).find(i => i && i.id === incId);
+    if (!inc) return null;
+    const landing = landingsForMonth(s, inc, ym || s.currentMonth).find(l => l.key === raw);
+    return landing ? { inc, landing } : null;
   }
   // Pay-date order, which is how they actually arrive. Undated sources sort
   // last rather than pretending to be the 1st.
@@ -1825,10 +1881,14 @@ const BudgetEngine = (() => {
     (s.income || []).forEach(i => {
       if (num(i.amount) <= 0) return;
       for (let ym = startISO.slice(0, 7), n = 0; ym <= endISO.slice(0, 7) && n < 4; ym = Util.nextMonthYM(ym), n++) {
-        incomeLandings(i, daysInMonthOf(ym)).forEach(l => {
-          const d = isoOf(ym, l.day);
-          if (d <= startISO || d > endISO) return;
-          if (!best || d < best) best = d;
+        // Through landingsForMonth rather than the raw cadence so a pay day
+        // corrected to the day it actually lands moves the window with it. A
+        // correction is a fact about the calendar, not a tick, so this still
+        // can't be moved by logging income — which is the whole point of the
+        // window coming from the schedule.
+        landingsForMonth(s, i, ym).forEach(l => {
+          if (l.date <= startISO || l.date > endISO) return;
+          if (!best || l.date < best) best = l.date;
         });
       }
     });
@@ -2725,7 +2785,7 @@ const BudgetEngine = (() => {
     totalIncome, receivedIncome, tithePercent, titheEnabled, tithe, titheOnReceived, titheBillView,
     titheLandings, titheLandingRecord, tithePaidIn,
     INCOME_FREQUENCIES, incomeFrequency, incomeMonthlyAmount, incomeByDate, incomeLandings,
-    landingsForMonth,
+    landingsForMonth, incomeLandingKey, landingForKey,
     billsSubtotal, totalBills, totalDebtMins,
     BILL_FREQUENCIES, billFrequency, billOccurrences, billOccurrenceKey, billOccurrenceFor,
     totalUnpaidCredit, safeToSpend, tightestPoint, spendingBudgetedTotal, totalBudgeted, extraForDebt,
@@ -3038,6 +3098,12 @@ function buildDefaultData(mode, names, withExamples, titheOn) {
     // Money actually received. A settings income source counts as CLEARED for a
     // month only when an entry exists here with that incomeId and month.
     incomeLog: [],
+    // What one pay day is expected to bring and when it lands, where either
+    // differs from the cadence: incomeLandingEdits[month][key] = { amount,
+    // day, note }, keyed like billOccEdits — the bare income id for the first
+    // landing, "<incomeId>:<n>" after that. For anyone paid by the hour the
+    // amount is a different figure every week and the note is the hours.
+    incomeLandingEdits: {},
     // Month-keyed paid-status map, same shape as monthlyRollover:
     // billsPaid[month][billId] = { paid, paidDate, amount, source, txnId }
     // A bill that lands more than once a month keys its later occurrences
@@ -3878,6 +3944,10 @@ const UI = (() => {
   // Which multi-pay-day income rows are open, by source id. Purely a view
   // state: it holds no data and is safe to lose on reload.
   let incExpanded = {};
+  // Which pay day's full editor is open, by landing key. One at a time, for
+  // the same reason the bill occurrences allow one: these sit inside an
+  // expanded parent and stacking forms in there loses the reader.
+  let incEditKey = null;
   // Same, for bills that land more than once a month, plus the inline
   // amount editor: { key, value } while one is open.
   let billExpanded = {};
@@ -5530,21 +5600,29 @@ const UI = (() => {
           const day = Number(i.dueDateOfMonth) || 0;
           const monthly = BudgetEngine.incomeMonthlyAmount(i);
           const showMonthly = freq.id !== "monthly";
-          // Each pay day, its own amount, its own tick. Received amounts that
-          // differ from the expected one are shown per landing rather than
-          // rolled up, because that is the whole reason to split them out.
+          /* Each pay day, its own amount, its own day, its own tick. Received
+             amounts that differ from the expected one are shown per landing
+             rather than rolled up, because that is the whole reason to split
+             them out — and for anyone paid by the hour the expected figure is
+             a different one every week, which is what the editor is for. */
           const subRows = multi && open ? landings.map(l => {
             const got = l.entry ? (Number(l.entry.amount) || 0) : 0;
             const differs = l.entry && Math.abs(got - l.amount) >= 0.01;
+            const editingLanding = incEditKey === l.key;
             return `
               <div class="inc-sub">
                 <div>
-                  <div class="inc-sub-label">${Util.esc(Util.fmtDateShort(l.date))}</div>
+                  <div class="inc-sub-label">${Util.esc(Util.fmtDateShort(l.date))}${l.moved ? ` <span style="opacity:0.7;font-size:11px;letter-spacing:0.12em;">·MOVED</span>` : ""}</div>
+                  ${l.note ? `<div class="meta">${Util.esc(l.note)}</div>` : ""}
                   ${differs ? `<div class="meta">RECEIVED ${Util.esc(Util.fmtMoney(got, 2))}</div>` : ""}
                 </div>
-                <div class="inc-amt">${Util.esc(Util.fmtMoney(l.amount, 0))}</div>
+                <div class="inc-amt">${Util.esc(Util.fmtMoney(l.amount, 0))}${l.overridden ? `<span style="opacity:0.75;"> ·THIS MO</span>` : ""}</div>
                 <button class="txn-check ${l.entry ? "checked" : ""}" data-action="inc-toggle" data-id="${Util.esc(i.id)}" data-idx="${l.index}" aria-label="RECEIVED ON ${Util.esc(Util.fmtDateShort(l.date))}" data-learn="MARK THIS ONE PAY DAY AS RECEIVED. EACH PAY DAY IS TRACKED SEPARATELY, SO TICKING THIS ONE LEAVES THE OTHERS ALONE. SAFE TO SPEND STOPS WAITING ON THIS PAYCHECK AND COUNTS IT AS MONEY YOU HAVE."></button>
-              </div>`;
+              </div>
+              <div style="margin-top:-4px;padding-left:18px;">
+                <button class="link" style="padding:0;min-height:auto;font-size:11px;letter-spacing:0.14em;" data-action="inc-landing-edit" data-key="${Util.esc(l.key)}" data-learn="EDIT THIS ONE PAY DAY ON ITS OWN — WHAT YOU EXPECT IT TO BRING, THE DAY IT ACTUALLY LANDS, AND A NOTE FOR WHY. USE IT FOR HOURLY WORK, WHERE EVERY WEEK IS A DIFFERENT FIGURE. NOTHING HERE TOUCHES THE OTHER PAY DAYS OR THE SOURCE ITSELF.">${editingLanding ? "CLOSE ⌃" : "EDIT →"}</button>
+              </div>
+              ${editingLanding ? renderLandingEditForm(i, l) : ""}`;
           }).join("") : "";
           return `
             <div class="inc-row">
@@ -5554,10 +5632,18 @@ const UI = (() => {
                 ${showActual ? `<div class="meta">RECEIVED ${Util.esc(Util.fmtMoney(actual, 2))}</div>` : ""}
               </div>
               <div>
+                ${/* A source that pays more than once has no single expected
+                      figure to tap: this row is a name, a cadence and a total
+                      across several different pay days, so an amount typed
+                      against it would have to mean all of them. It prints what
+                      the month actually comes to and the pay days below carry
+                      the editing. */""}
                 <div class="inc-amt">${
-                  (incExpEdit && incExpEdit.id === i.id)
-                    ? `<input class="wiz-amt" id="inc-exp-input" data-action="inc-exp-input" data-id="${Util.esc(i.id)}" inputmode="decimal" value="${Util.esc(incExpEdit.value)}" aria-label="EXPECTED AMOUNT">`
-                    : `<button class="link" style="padding:0;min-height:auto;text-decoration:none;border-bottom:1px solid rgba(26,58,140,0.4);font-size:15px;font-weight:400;letter-spacing:inherit;" data-action="inc-exp-edit" data-id="${Util.esc(i.id)}" data-learn="TAP TO CHANGE WHAT YOU EXPECT FROM THIS SOURCE. IT SAVES WHEN YOU PRESS ENTER OR TAP AWAY. IT ONLY MOVES THE EXPECTED FIGURE; IF THIS SOURCE IS ALREADY MARKED CLEARED, THE AMOUNT YOU ACTUALLY RECEIVED IS LEFT ALONE.">${Util.esc(Util.fmtMoney(expected, 0))}</button>`
+                  multi
+                    ? Util.esc(Util.fmtMoney(landings.reduce((a, l) => a + l.amount, 0), 0))
+                    : (incExpEdit && incExpEdit.id === i.id)
+                      ? `<input class="wiz-amt" id="inc-exp-input" data-action="inc-exp-input" data-id="${Util.esc(i.id)}" inputmode="decimal" value="${Util.esc(incExpEdit.value)}" aria-label="EXPECTED AMOUNT">`
+                      : `<button class="link" style="padding:0;min-height:auto;text-decoration:none;border-bottom:1px solid rgba(26,58,140,0.4);font-size:15px;font-weight:400;letter-spacing:inherit;" data-action="inc-exp-edit" data-id="${Util.esc(i.id)}" data-learn="TAP TO CHANGE WHAT YOU EXPECT FROM THIS SOURCE. IT SAVES WHEN YOU PRESS ENTER OR TAP AWAY. IT ONLY MOVES THE EXPECTED FIGURE; IF THIS SOURCE IS ALREADY MARKED CLEARED, THE AMOUNT YOU ACTUALLY RECEIVED IS LEFT ALONE.">${Util.esc(Util.fmtMoney(expected, 0))}</button>`
                 }</div>
                 ${BudgetEngine.titheEnabled(s) ? `<button class="link" style="padding:0;min-height:auto;display:block;font-size:11px;opacity:0.75;text-align:right;" data-action="goto-tithe-bill" data-learn="THIS SOURCE'S SHARE OF YOUR TITHE, ON WHAT IT ADDS UP TO IN A MONTH. TAP TO SEE IT ON THE BILLS TAB, WHERE THE RATE IS EDITABLE.">(TITHE: ${Util.esc(Util.fmtMoney(monthly * BudgetEngine.tithePercent(s) / 100, 2))})</button>` : ""}
               </div>
@@ -5565,11 +5651,17 @@ const UI = (() => {
                 ? `<button class="inc-chev ${open ? "open" : ""}${clearedCount === landings.length ? " all-clear" : ""}" data-action="inc-expand" data-id="${Util.esc(i.id)}" aria-expanded="${open ? "true" : "false"}" aria-label="${clearedCount} OF ${landings.length} PAY DAYS CLEARED · ${open ? "COLLAPSE" : "EXPAND"}" data-learn="THIS SOURCE PAYS MORE THAN ONCE A MONTH, SO ONE CHECKBOX COULDN'T SAY WHICH PAYCHECK HAD ARRIVED. THE COUNT IS HOW MANY OF THIS MONTH'S PAY DAYS HAVE LANDED; OPEN IT FOR A ROW PER PAY DAY, EACH WITH ITS OWN TICK.">${clearedCount}/${landings.length} <span class="arrow">⌄</span></button>`
                 : `<button class="txn-check ${entry ? "checked" : ""}" data-action="inc-toggle" data-id="${Util.esc(i.id)}" data-idx="0" aria-label="CLEARED" data-learn="MARK THIS INCOME AS RECEIVED FOR THIS MONTH. CHECKING IT RAISES SAFE TO SPEND BY THE AMOUNT MINUS YOUR TITHE PERCENTAGE. UNCHECKING UNDOES IT EXACTLY."></button>`}
             </div>
-            ${subRows}
-            <div style="margin-top:-4px;">
-              <button class="link" style="padding:0;min-height:auto;font-size:11px;letter-spacing:0.14em;" data-action="edit-item" data-kind="income" data-id="${Util.esc(i.id)}" data-learn="EDIT THIS INCOME SOURCE'S NAME, EXPECTED AMOUNT, OR DUE DAY. IT'S THE SAME RECORD SETTINGS EDITS, SO CHANGES SHOW IN BOTH PLACES.">EDIT →</button>
-            </div>
-            ${editStates["income_" + i.id] ? renderEditForm("income", i) : ""}`;
+            ${multi ? `
+              <div style="margin-top:-4px;">
+                <div class="meta" data-learn="THIS SOURCE PAYS MORE THAN ONCE THIS MONTH, SO THERE IS NO SINGLE AMOUNT OR PAY DAY TO EDIT UP HERE. OPEN IT AND EDIT THE PAY DAY YOU MEAN. THE NAME AND HOW OFTEN IT PAYS ARE A CHANGE TO ALL OF THEM, SO THEY LIVE IN SETTINGS.">EDIT EACH PAY DAY INSIDE · NAME &amp; CADENCE IN SETTINGS</div>
+              </div>
+            ` : `
+              <div style="margin-top:-4px;">
+                <button class="link" style="padding:0;min-height:auto;font-size:11px;letter-spacing:0.14em;" data-action="edit-item" data-kind="income" data-id="${Util.esc(i.id)}" data-learn="EDIT THIS INCOME SOURCE'S NAME, EXPECTED AMOUNT, OR DUE DAY. IT'S THE SAME RECORD SETTINGS EDITS, SO CHANGES SHOW IN BOTH PLACES.">EDIT →</button>
+              </div>
+              ${editStates["income_" + i.id] ? renderEditForm("income", i) : ""}
+            `}
+            ${subRows}`;
         }).join("")
       : `<div class="meta">NO INCOME SOURCES YET · ADD ONE BELOW</div>`;
 
@@ -5781,6 +5873,40 @@ const UI = (() => {
         const id = el.dataset.id;
         incExpanded[id] = !incExpanded[id];
         render();
+      });
+    });
+    // The per-pay-day editor. One open at a time, and opening one closes the
+    // parent's quick amount tap so the same figure isn't being typed twice.
+    root.querySelectorAll("[data-action=inc-landing-edit]").forEach(el => {
+      el.addEventListener("click", () => {
+        incEditKey = incEditKey === el.dataset.key ? null : el.dataset.key;
+        incExpEdit = null;
+        render();
+      });
+    });
+    root.querySelectorAll("[data-action=inc-landing-cancel]").forEach(el => {
+      el.addEventListener("click", () => { incEditKey = null; render(); });
+    });
+    root.querySelectorAll("[data-action=inc-landing-save]").forEach(el => {
+      el.addEventListener("click", () => {
+        const form = root.querySelector(`[data-landing-form][data-key="${el.dataset.key}"]`);
+        if (!form) return;
+        const val = f => {
+          const inp = form.querySelector(`[data-landing-field="${f}"]`);
+          return inp ? String(inp.value) : "";
+        };
+        const amtRaw = val("amount").replace(/[^0-9.]/g, "");
+        const dayRaw = val("day").replace(/[^0-9]/g, "");
+        saveIncomeLanding(s, el.dataset.key, {
+          amount: amtRaw === "" ? null : parseFloat(amtRaw),
+          day: dayRaw === "" ? null : parseInt(dayRaw, 10),
+          note: val("note")
+        });
+      });
+    });
+    root.querySelectorAll("[data-action=inc-landing-reset]").forEach(el => {
+      el.addEventListener("click", () => {
+        saveIncomeLanding(s, el.dataset.key, { amount: null, day: null, note: "" });
       });
     });
     // Each income row's "(TITHE: $X)" note links to the Bills tab, where the
@@ -6515,13 +6641,54 @@ const UI = (() => {
   // standing. Checking creates an entry tagged with that slot; unchecking
   // removes exactly the entry occupying it, whether it was ticked here, typed
   // into LOG INCOME, or imported.
+  /* One pay day's expected amount, the day it lands, and the note saying why.
+     All three in one record and one write, so a saved row can't end up with a
+     new figure against its old date. An empty field clears that override; a
+     wholly empty edit drops the key rather than leaving {} behind.
+
+     It never touches the income log. What a pay day was expected to bring and
+     what actually turned up are two different facts, and the tick owns the
+     second one — overwriting it here would silently restate money already
+     banked. */
+  async function saveIncomeLanding(s, key, fields) {
+    const month = s.currentMonth;
+    const found = BudgetEngine.landingForKey(s, key, month);
+    if (!found) return;
+    const all = { ...(s.incomeLandingEdits || {}) };
+    const forMonth = { ...(all[month] || {}) };
+    const next = {};
+    const amount = fields.amount;
+    if (amount != null && isFinite(amount) && amount >= 0 && amount !== found.landing.usualAmount) {
+      next.amount = Math.round(amount * 100) / 100;
+    }
+    // A day equal to the one the cadence already lands on is not a move, so it
+    // is stored as nothing — otherwise changing the source's pay day later
+    // would leave every landing pinned to where it used to be.
+    const last = BudgetEngine.daysInMonthOf(month);
+    const day = fields.day == null || !isFinite(fields.day)
+      ? null : Math.max(1, Math.min(last, Math.round(fields.day)));
+    if (day != null && day !== found.landing.usualDay) next.day = day;
+    const note = String(fields.note == null ? "" : fields.note).trim().toUpperCase();
+    if (note) next.note = note.slice(0, 60);
+    if (Object.keys(next).length) forMonth[key] = next;
+    else delete forMonth[key];
+    all[month] = forMonth;
+    try {
+      await DataService.update({ incomeLandingEdits: all });
+      incEditKey = null;
+      render();
+    } catch (e) { alert("COULDN'T SAVE; CHECK CONNECTION"); console.warn(e); render(); }
+  }
+
   async function toggleIncomeCleared(s, incomeId, landingIndex) {
     const src = (s.income || []).find(i => i.id === incomeId);
     if (!src) return;
     const log = s.incomeLog || [];
     const idx = Number.isFinite(landingIndex) ? landingIndex : 0;
+    // By index, not by position: landings come back in the order they land, and
+    // a pay day moved past its neighbour is no longer sitting at slots[idx].
     const slots = BudgetEngine.landingsForMonth(s, src, s.currentMonth);
-    const slot = slots[idx] || slots[0] || null;
+    const slot = slots.find(l => l.index === idx) || slots.find(l => l.index === 0) || null;
     const existing = slot ? slot.entry : null;
     try {
       if (existing) {
@@ -8853,6 +9020,42 @@ const UI = (() => {
       </div>`;
   }
 
+  /* The editor for ONE pay day of a source that pays more than once a month.
+     The mirror of renderOccEditForm on the bills side, and not renderEditForm
+     for the same reason: that one edits the source record — a name, a cadence,
+     one figure that applies to every pay day — and none of those are things
+     you can mean about a single Friday.
+
+     The amount here is what you EXPECT that pay day to bring. What actually
+     arrived is the income log entry behind the tick, and it is left alone. */
+  function renderLandingEditForm(inc, landing) {
+    const dirty = landing.overridden || landing.moved || !!landing.note;
+    return `
+      <div class="inline-form" data-landing-form data-key="${Util.esc(landing.key)}" style="margin-left:18px;">
+        <div class="sub-label">${Util.esc(Util.fmtDateShort(landing.date))} · ${Util.esc(inc.label)}</div>
+        <div class="field">
+          <label>EXPECTED THIS PAY DAY</label>
+          <input data-landing-field="amount" value="${Util.esc(landing.amount == null ? "" : landing.amount)}" inputmode="decimal" placeholder="${Util.esc(Util.fmtMoney(landing.usualAmount, 2))}">
+        </div>
+        <div class="field">
+          <label>DAY IT LANDS</label>
+          <input data-landing-field="day" value="${Util.esc(landing.day)}" inputmode="numeric" placeholder="${Util.esc(landing.usualDay)}">
+        </div>
+        <div class="field">
+          <label>NOTE</label>
+          <input data-landing-field="note" value="${Util.esc(landing.note || "")}" maxlength="60" placeholder="E.G. 32 HRS">
+        </div>
+        <div class="meta">THIS PAY DAY ONLY. THE OTHERS AND THE SOURCE'S USUAL ${Util.esc(Util.fmtMoney(landing.usualAmount, 0))} ARE UNCHANGED, AND SO IS ANYTHING ALREADY LOGGED AS RECEIVED.</div>
+        <div class="row-actions">
+          <button class="cta ghost" data-action="inc-landing-cancel">× CANCEL</button>
+          <button class="cta" data-action="inc-landing-save" data-key="${Util.esc(landing.key)}">→ SAVE</button>
+        </div>
+        ${dirty ? `
+          <button class="link" style="padding:0;min-height:auto;font-size:11px;letter-spacing:0.14em;margin-top:8px;" data-action="inc-landing-reset" data-key="${Util.esc(landing.key)}" data-learn="THROW AWAY WHAT WAS TYPED FOR THIS PAY DAY AND PUT IT BACK ON THE SOURCE'S USUAL AMOUNT AND ITS USUAL DAY. THE TICK AND ANYTHING ALREADY LOGGED AS RECEIVED ARE LEFT ALONE.">↺ BACK TO THE USUAL</button>
+        ` : ""}
+      </div>`;
+  }
+
   function renderAddForm(kind) {
     const f = addForms[kind];
     const isSpending = kind === "spending";
@@ -10131,6 +10334,8 @@ const UI = (() => {
       Object.keys(editStates).forEach(k => delete editStates[k]);
       occEditKey = null;
       billAmtEdit = null;
+      incEditKey = null;
+      incExpEdit = null;
       Object.keys(addForms).forEach(k => addForms[k] = null);
       Object.keys(formErrors).forEach(k => delete formErrors[k]);
       logForm.amount = ""; logForm.categoryId = null; logForm.categoryType = null;

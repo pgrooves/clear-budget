@@ -110,7 +110,7 @@ module.exports = function run() {
     const FREQ = ["weekly", "biweekly", "semimonthly", "monthly"];
     const DAYS = ["2026-01-31", "2026-02-28", "2026-03-08", "2026-06-30", "2026-08-06", "2026-10-31", "2026-12-15"];
 
-    let checked = 0, off = 0, worst = 0;
+    let checked = 0, off = 0, worst = 0, corrections = 0;
     for (let n = 0; n < 400; n++) {
       const today = pick(DAYS);
       setToday(today);
@@ -125,6 +125,36 @@ module.exports = function run() {
       for (let i = 0, k = int(0, 2); i < k; i++)
         s.debts.push({ id: "d" + i, label: "DEBT" + i, balance: int(500, 9000), minimumPayment: int(0, 250),
                        interestRate: int(0, 29), dueDateOfMonth: int(1, 31), cardId: null });
+      // Per-occurrence and per-pay-day corrections: a different amount, a
+      // different day, or both, on any given landing. These move dated events
+      // around inside the walk, which is exactly where a breakdown that is
+      // built separately from the walk would drift away from it.
+      s.billOccEdits = { [ym]: {} };
+      s.incomeLandingEdits = { [ym]: {} };
+      s.bills.forEach(b => B.billOccurrences(s, b, ym).forEach(o => {
+        if (rnd() >= 0.3) return;
+        const e = {};
+        if (rnd() < 0.6) e.amount = int(20, 900);
+        if (rnd() < 0.6) e.day = int(1, 31);
+        if (Object.keys(e).length) {
+          // Amount overrides live in billAmounts; day and note alongside.
+          if (e.amount != null) {
+            s.billAmounts[ym] = s.billAmounts[ym] || {};
+            s.billAmounts[ym][o.key] = e.amount;
+          }
+          if (e.day != null) s.billOccEdits[ym][o.key] = { day: e.day };
+          corrections++;
+        }
+      }));
+      s.income.forEach(i => B.landingsForMonth(s, i, ym).forEach(l => {
+        if (rnd() >= 0.3) return;
+        const e = {};
+        if (rnd() < 0.6) e.amount = int(200, 3000);
+        if (rnd() < 0.6) e.day = int(1, 31);
+        if (Object.keys(e).length) { s.incomeLandingEdits[ym][l.key] = e; corrections++; }
+      }));
+      // Logged AFTER the corrections, so an entry records what that landing is
+      // actually worth on the day it actually lands.
       s.income.forEach(i => B.landingsForMonth(s, i, ym).forEach(l => {
         if (rnd() < 0.4) s.incomeLog.push({ id: "L" + i.id + l.index, incomeId: i.id, amount: l.amount,
           date: l.date, month: ym, createdAt: 2000 + l.index, landingIndex: l.index });
@@ -138,6 +168,10 @@ module.exports = function run() {
     }
     t.is(`${checked} breakdowns across 400 households, none off by a cent`, off, 0);
     t.ok("worst discrepancy is zero", worst < 0.005, `worst ${Math.round(worst * 100) / 100}`);
+    // Without this the sweep could quietly stop generating corrections — a
+    // renamed state key, say — and go on passing while testing none of them.
+    t.ok("and the sweep actually corrected some landings", corrections > 200,
+      `${corrections} per-landing corrections generated`);
   }
 
   t.section("a stored month that is not a month cannot poison a date");

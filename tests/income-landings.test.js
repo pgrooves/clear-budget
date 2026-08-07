@@ -82,5 +82,108 @@ module.exports = function run() {
     t.is("on the 15th", slots[0].date, "2026-08-15");
   }
 
+  /* ---- Corrections to one pay day ----
+     Hourly work is a different figure every week and a pay date that moves
+     whenever one lands on a holiday, so each landing can carry its own amount,
+     its own day and its own note. */
+
+  t.section("Nothing set means nothing moved");
+  {
+    const slots = B.landingsForMonth(base(), biweekly, "2026-08");
+    t.is("no landing claims to have moved", slots.some(l => l.moved), false);
+    t.is("nor to be overridden", slots.some(l => l.overridden), false);
+    t.is("each keyed like a bill occurrence", slots.map(l => l.key).join(","), "inc1,inc1:1,inc1:2");
+    t.is("and each remembers the cadence it came from", slots[1].usualDay, 15);
+  }
+
+  t.section("One pay day can be worth what it is actually worth");
+  {
+    const s = base(); s.incomeLandingEdits = { "2026-08": { "inc1:1": { amount: 1320, note: "38 HRS" } } };
+    const slots = B.landingsForMonth(s, biweekly, "2026-08");
+    t.eq("the heavy fortnight brings more", slots[1].amount, 1320);
+    t.is("and is marked as an override", slots[1].overridden, true);
+    t.is("with the note it was given", slots[1].note, "38 HRS");
+    t.eq("the others are untouched", slots[0].amount, 1000);
+    t.is("and still remember the usual figure", slots[1].usualAmount, 1000);
+    const ev = B.horizonEvents(s).find(e => e.kind === "income" && e.date === "2026-08-29");
+    t.ok("the walk carries the dated landings", !!ev);
+  }
+
+  t.section("A pay day can be moved to the day it actually lands");
+  {
+    const s = base(); s.incomeLandingEdits = { "2026-08": { "inc1:2": { day: 27 } } };
+    const slots = B.landingsForMonth(s, biweekly, "2026-08");
+    const moved = slots.find(l => l.key === "inc1:2");
+    t.is("it lands on the new day", moved.date, "2026-08-27");
+    t.is("and says so", moved.moved, true);
+    t.is("while remembering where the cadence put it", moved.usualDay, 29);
+    const ev = B.horizonEvents(s).filter(e => e.kind === "income");
+    t.is("the walk pays it on the new day", ev.some(e => e.date === "2026-08-27"), true);
+    t.is("not the old one", ev.some(e => e.date === "2026-08-29"), false);
+  }
+
+  t.section("A moved pay day keeps its slot, so its tick follows it");
+  {
+    const s = base([entry({ id: "mid", landingIndex: 1 })]);
+    s.incomeLandingEdits = { "2026-08": { "inc1:1": { day: 18 } } };
+    const moved = B.landingsForMonth(s, biweekly, "2026-08").find(l => l.index === 1);
+    t.is("the entry came with it", moved.entry.id, "mid");
+    t.is("on the new date", moved.date, "2026-08-18");
+  }
+
+  t.section("A pay day moved past its neighbour still reads in date order");
+  {
+    // The 15th pushed out to the 30th, which is after the 29th.
+    const s = base(); s.incomeLandingEdits = { "2026-08": { "inc1:1": { day: 30 } } };
+    const slots = B.landingsForMonth(s, biweekly, "2026-08");
+    t.is("printed in the order they land",
+      slots.map(l => l.date).join(","), "2026-08-01,2026-08-29,2026-08-30");
+    t.is("with the keys still tied to the cadence, not the order",
+      slots.map(l => l.key).join(","), "inc1,inc1:2,inc1:1");
+    t.is("and a lookup by index still finds the right one",
+      slots.find(l => l.index === 1).date, "2026-08-30");
+  }
+
+  t.section("Untagged entries still fill by cadence order, not by moved date");
+  {
+    // The rule that keeps pre-existing data reading the way it always has.
+    const s = base([entry({ id: "x1", createdAt: 1 })]);
+    s.incomeLandingEdits = { "2026-08": { inc1: { day: 30 } } };
+    const slots = B.landingsForMonth(s, biweekly, "2026-08");
+    t.is("the earliest unclaimed slot is still landing zero",
+      slots.find(l => l.index === 0).entry.id, "x1");
+    t.is("even though it now lands last", slots[slots.length - 1].index, 0);
+  }
+
+  t.section("The smoothed monthly figure is deliberately left alone");
+  {
+    const s = base();
+    s.incomeLandingEdits = { "2026-08": { "inc1:1": { amount: 1320 } } };
+    // 1000 x 26/12. A month with a heavy fortnight is not a pay rise, and the
+    // budget must not swing with it — see the note on landingsForMonth.
+    t.eq("expected monthly income is unchanged", B.totalIncome(s), 1000 * 26 / 12);
+    t.eq("and so is the tithe it drives",
+      B.totalIncome(s) * 0.1, 1000 * 26 / 12 * 0.1);
+  }
+
+  t.section("Corrections belong to their month alone");
+  {
+    const s = base();
+    s.incomeLandingEdits = { "2026-08": { "inc1:1": { day: 20, amount: 1320, note: "38 HRS" } } };
+    const sept = B.landingsForMonth(s, biweekly, "2026-09");
+    t.is("September lands on its own cadence", sept.some(l => l.moved), false);
+    t.eq("at the usual figure", sept[1].amount, 1000);
+    t.is("with no note carried over", sept[1].note, "");
+  }
+
+  t.section("A landing key resolves back to its source");
+  {
+    const s = base();
+    t.is("the right source", B.landingForKey(s, "inc1:2", "2026-08").inc.id, "inc1");
+    t.is("the right landing", B.landingForKey(s, "inc1:2", "2026-08").landing.index, 2);
+    t.is("a bare id is landing zero", B.landingForKey(s, "inc1", "2026-08").landing.index, 0);
+    t.is("an unknown key is null", B.landingForKey(s, "nope:1", "2026-08"), null);
+  }
+
   return t.report();
 };
