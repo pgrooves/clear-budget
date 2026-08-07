@@ -951,7 +951,7 @@
 
 // Build version. Surfaced in Settings > HOUSEHOLD so a stale cache is diagnosable.
 // Bump every round.
-const APP_VERSION = "V59";
+const APP_VERSION = "V60";
 
 /* ============================================================
    FIREBASE INIT
@@ -1574,6 +1574,57 @@ const BudgetEngine = (() => {
     const occ = billOccurrences(s, bill, ym).find(o => o.key === raw);
     return occ ? { bill, occ } : null;
   }
+  /* Turn one typed figure into this month's amount for every date the item
+     lands on, as a patch to merge into whatever else is being saved.
+
+     It overwrites all of them, including any date already priced on its own.
+     The alternative — skip the ones that were priced individually — cannot
+     work: both kinds of override live in the same map with nothing to tell
+     them apart, so the second save through this form would find every date
+     already priced by the first and silently do nothing. Coarse tool
+     overwrites, fine tool goes after: type the month's usual figure here, then
+     open the date that was different.
+
+     Typing the standing figure back in clears the overrides instead of writing
+     them, so the month goes back to plain rather than carrying a set that
+     happens to agree with Settings today and would then quietly ignore a
+     change made in Settings tomorrow. */
+  function monthAmountPatch(s, kind, item, amount) {
+    if (!item) return {};
+    const month = s.currentMonth;
+    const clearing = !isFinite(amount) || amount < 0 || amount === (Number(item.amount) || 0);
+    const value = Math.round(amount * 100) / 100;
+    if (kind === "income") {
+      const all = { ...(s.incomeLandingEdits || {}) };
+      const forMonth = { ...(all[month] || {}) };
+      landingsForMonth(s, item, month).forEach(l => {
+        const had = forMonth[l.key] || null;
+        // The day and the note are not amounts and are not being edited here,
+        // so they survive both writing and clearing.
+        const rest = { ...(had || {}) };
+        delete rest.amount;
+        if (clearing) {
+          if (Object.keys(rest).length) forMonth[l.key] = rest;
+          else delete forMonth[l.key];
+        } else {
+          forMonth[l.key] = { ...rest, amount: value };
+        }
+      });
+      all[month] = forMonth;
+      return { incomeLandingEdits: all };
+    }
+    // Bills keep amounts in billAmounts and day/note in billOccEdits, so
+    // clearing here cannot lose a moved date or a note either.
+    const all = { ...(s.billAmounts || {}) };
+    const forMonth = { ...(all[month] || {}) };
+    billOccurrences(s, item, month).forEach(o => {
+      if (clearing) delete forMonth[o.key];
+      else forMonth[o.key] = value;
+    });
+    all[month] = forMonth;
+    return { billAmounts: all };
+  }
+
   function billsSubtotal(s) {
     return (s.bills || []).reduce(
       (a, b) => a + billOccurrences(s, b).reduce((x, o) => x + o.amount, 0), 0);
@@ -2786,7 +2837,7 @@ const BudgetEngine = (() => {
     titheLandings, titheLandingRecord, tithePaidIn,
     INCOME_FREQUENCIES, incomeFrequency, incomeMonthlyAmount, incomeByDate, incomeLandings,
     landingsForMonth, incomeLandingKey, landingForKey,
-    billsSubtotal, totalBills, totalDebtMins,
+    billsSubtotal, totalBills, totalDebtMins, monthAmountPatch,
     BILL_FREQUENCIES, billFrequency, billOccurrences, billOccurrenceKey, billOccurrenceFor,
     totalUnpaidCredit, safeToSpend, tightestPoint, spendingBudgetedTotal, totalBudgeted, extraForDebt,
     debtPaymentsByMonth, observedDebtPace, debtPace,
@@ -5663,7 +5714,10 @@ const UI = (() => {
                 <button class="link" style="padding:0;min-height:auto;font-size:11px;letter-spacing:0.14em;" data-action="edit-item" data-kind="income" data-id="${Util.esc(i.id)}" data-learn="EDIT THIS INCOME SOURCE'S NAME, EXPECTED AMOUNT, OR DUE DAY. IT'S THE SAME RECORD SETTINGS EDITS, SO CHANGES SHOW IN BOTH PLACES.">EDIT →</button>
               </div>
             `}
-            ${editStates["income_" + i.id] ? renderEditForm("income", i) : ""}
+            ${editStates["income_" + i.id]
+              ? renderEditForm("income", i, "month",
+                  multi ? null : (landings[0] ? landings[0].amount : null), logMonth)
+              : ""}
             ${subRows}`;
         }).join("")
       : `<div class="meta">NO INCOME SOURCES YET · ADD ONE BELOW</div>`;
@@ -5787,9 +5841,17 @@ const UI = (() => {
         </section>`;
   }
 
-  // Writes the whole income array back. s.income is an array, so this is a
-  // read-modify-write of the entire list; arrayUnion is for transaction
-  // appends only and would duplicate entries here.
+  /* Tapping the figure on the Income tab is an edit to THIS MONTH, the same as
+     tapping a bill's amount on the Bills tab has always been.
+
+     It used to write s.income[].amount — the standing figure — so a fortnight
+     of overtime typed here quietly became what every future month expected,
+     and nothing said so. The two gestures are identical on screen and now do
+     the identical thing: the figure in Settings stays where it is until it is
+     changed in Settings.
+
+     incomeLog is untouched either way, so a pay day already ticked keeps the
+     exact amount that was actually received. */
   async function commitIncomeExpected(s) {
     if (!incExpEdit) return;
     const id = incExpEdit.id;
@@ -5798,13 +5860,13 @@ const UI = (() => {
     const src = (s.income || []).find(x => x.id === id);
     if (!src) { render(); return; }
     const parsed = parseFloat(raw.replace(/[^0-9.\-]/g, ""));
-    const next = isFinite(parsed) ? Math.round(parsed * 100) / 100 : (Number(src.amount) || 0);
-    if (next === (Number(src.amount) || 0)) { render(); return; }
-    const arr = (s.income || []).map(x => x.id === id ? { ...x, amount: next } : x);
+    const month = s.currentMonth;
+    const landing = BudgetEngine.landingsForMonth(s, src, month)[0];
+    const now = landing ? landing.amount : (Number(src.amount) || 0);
+    const next = isFinite(parsed) ? Math.round(parsed * 100) / 100 : now;
+    if (next === now) { render(); return; }
     try {
-      // Only i.amount moves. incomeLog is untouched, so a source already marked
-      // cleared keeps the exact figure that was actually received.
-      await DataService.update({ income: arr });
+      await DataService.update(BudgetEngine.monthAmountPatch(s, "income", src, next));
     } catch (e) {
       formErrors.income = "COULDN'T SAVE; CHECK CONNECTION";
       console.warn(e);
@@ -7416,7 +7478,15 @@ const UI = (() => {
             <button class="link" style="padding:0;min-height:auto;font-size:11px;letter-spacing:0.14em;" data-action="edit-item" data-kind="${isSavings ? "savings" : "bill"}" data-id="${Util.esc(b.id)}" data-learn="EDIT THIS BILL'S NAME, USUAL AMOUNT, DUE DAY, OR HOW OFTEN IT LANDS. IT'S THE SAME RECORD SETTINGS EDITS, SO CHANGES SHOW IN BOTH PLACES.">EDIT →</button>
           </div>
         `}
-        ${editStates[(isSavings ? "savings" : "bill") + "_" + b.id] ? renderEditForm(isSavings ? "savings" : "bill", b) : ""}
+        ${/* Scoped to the month on screen: an amount typed here is August's,
+              not the bill's. A row that lands once opens on what August is
+              actually running at; one that lands several times opens on the
+              standing figure, since its dates can each be worth something
+              different and there is no single "this month" number to show. */""}
+        ${editStates[(isSavings ? "savings" : "bill") + "_" + b.id]
+          ? renderEditForm(isSavings ? "savings" : "bill", b, "month",
+              multi ? null : first.amount, month)
+          : ""}
         ${subRows}
         ${renderBillLinkPrompt(b)}`;
     };
@@ -8943,7 +9013,21 @@ const UI = (() => {
     return `<div class="list-item ${isLocked ? 'locked' : ''}">${mainCell}${amtCell}${actions}</div>${editForm}`;
   }
 
-  function renderEditForm(kind, item) {
+  /* The same form, from two places, meaning two different things about ONE
+     field — the amount.
+
+     Settings holds what a bill or a source normally is, and that figure stays
+     put until it is changed in Settings. The Bills and Income tabs are a view
+     of a particular month, so an amount typed there is about that month and
+     nothing else: September does not inherit August's heavy power bill or the
+     fortnight somebody worked overtime.
+
+     Nothing else splits this way, because nothing else needs to. A name, a
+     cadence and a due day are facts about the thing itself rather than about
+     August, so they write the record from wherever they are edited. */
+  function renderEditForm(kind, item, scope, monthAmount, month) {
+    const monthScoped = scope === "month" &&
+      (kind === "bill" || kind === "savings" || kind === "income");
     const isDebt = kind === "debt";
     const isSpending = kind === "spending";
     const isCard = kind === "card" || kind === "bank";
@@ -8959,7 +9043,8 @@ const UI = (() => {
       : ((kind === "bill" || kind === "savings") ? BudgetEngine.billFrequency(item).perMonth : 1);
     const eachTime = perMonth > 1;
     const amountLabel = isDebt ? "BALANCE"
-      : (isSpending ? "BUDGETED" : (eachTime ? "AMOUNT EACH TIME" : "AMOUNT"));
+      : (isSpending ? "BUDGETED"
+        : (eachTime ? "AMOUNT EACH TIME" : "AMOUNT") + (monthScoped ? " · THIS MONTH" : ""));
     if (isCard) {
       return `
         <div class="inline-form" data-edit-form data-kind="${kind}" data-id="${Util.esc(item.id)}">
@@ -8970,10 +9055,17 @@ const UI = (() => {
           </div>
         </div>`;
     }
+    // What the amount box starts on. From a tab that is what this month is
+    // actually running at, override included, so the field opens on the figure
+    // the row above it is printing rather than on a number from Settings that
+    // this month has already been told to ignore.
+    const amountValue = monthScoped && monthAmount != null
+      ? monthAmount : (item[amountField] == null ? "" : item[amountField]);
     return `
-      <div class="inline-form" data-edit-form data-kind="${kind}" data-id="${Util.esc(item.id)}">
+      <div class="inline-form" data-edit-form data-kind="${kind}" data-id="${Util.esc(item.id)}"${monthScoped ? ` data-edit-scope="month"` : ""}>
         <div class="field"><label>LABEL</label><input data-edit-field="label" value="${Util.esc(item.label||'')}"></div>
-        <div class="field"><label>${amountLabel}</label><input data-edit-field="${amountField}" value="${Util.esc(item[amountField]==null?'':item[amountField])}" inputmode="decimal"></div>
+        <div class="field"><label>${amountLabel}</label><input data-edit-field="${amountField}" value="${Util.esc(amountValue)}" inputmode="decimal"></div>
+        ${monthScoped ? `<div class="meta" data-learn="AMOUNTS TYPED ON THIS TAB BELONG TO THE MONTH YOU ARE LOOKING AT. NEXT MONTH GOES BACK TO THE FIGURE IN SETTINGS ON ITS OWN, WHICH IS WHAT YOU WANT FOR ANYTHING BILLED ON USAGE OR PAID BY THE HOUR. TO CHANGE THE FIGURE FOR GOOD, EDIT IT IN SETTINGS. THE NAME, THE DAY AND HOW OFTEN IT LANDS ARE NOT MONTHLY THINGS, SO THOSE SAVE FOR GOOD FROM HERE TOO.">AMOUNT IS FOR ${Util.esc(Util.fmtMonthLong(month) || "THIS MONTH")} ONLY · SETTINGS HOLDS THE ONE THAT STICKS</div>` : ""}
         ${hasDate ? `<div class="field"><label>${kind === "income" ? "PAY DAY" : "DUE DAY"}</label><input data-edit-field="dueDateOfMonth" value="${Util.esc(item.dueDateOfMonth||1)}" inputmode="numeric"></div>` : ""}
         ${kind === "income" || kind === "bill" || kind === "savings" ? `
           <div class="field"><label>HOW OFTEN</label></div>
@@ -10392,17 +10484,31 @@ const UI = (() => {
     if (!form) return;
     const values = {};
     form.querySelectorAll("[data-edit-field]").forEach(inp => { values[inp.dataset.editField] = inp.value; });
+    /* Where this form was opened from decides what its amount box means, and
+       only its amount box. From Settings it sets the standing figure. From the
+       Bills or Income tab it sets what THIS month runs at, and the standing
+       figure in Settings is left exactly where it was — so September opens on
+       the usual amount without anyone having to put it back.
+
+       Everything else in the form writes the record either way: a name, a
+       cadence and a due day are facts about the thing, not about August. */
+    const monthScoped = form.dataset.editScope === "month";
+    const typedAmount = parseFloat(String(values.amount == null ? "" : values.amount)
+      .replace(/[^0-9.]/g, ""));
     const patch = {};
     if (kind === "income") {
       const freqOk = BudgetEngine.INCOME_FREQUENCIES.some(f => f.id === values.frequency);
       const arr = (s.income||[]).map(i => i.id === id ? {
         ...i,
         label: (values.label||i.label).toUpperCase(),
-        amount: parseFloat(values.amount) || 0,
+        amount: monthScoped ? (Number(i.amount) || 0) : (parseFloat(values.amount) || 0),
         dueDateOfMonth: parseInt(values.dueDateOfMonth,10) || 1,
         frequency: freqOk ? values.frequency : BudgetEngine.incomeFrequency(i).id
       } : i);
       patch.income = arr;
+      if (monthScoped) {
+        Object.assign(patch, BudgetEngine.monthAmountPatch(s, "income", arr.find(i => i.id === id), typedAmount));
+      }
     } else if (kind === "bill" || kind === "savings") {
       // Same guard as income: an unrecognised cadence falls back to what the
       // bill already had rather than writing something the engine can't read.
@@ -10410,11 +10516,14 @@ const UI = (() => {
       const arr = (s.bills||[]).map(b => b.id === id ? {
         ...b,
         label: (values.label||b.label).toUpperCase(),
-        amount: parseFloat(values.amount) || 0,
+        amount: monthScoped ? (Number(b.amount) || 0) : (parseFloat(values.amount) || 0),
         dueDateOfMonth: parseInt(values.dueDateOfMonth,10) || 1,
         frequency: freqOk ? values.frequency : BudgetEngine.billFrequency(b).id
       } : b);
       patch.bills = arr;
+      if (monthScoped) {
+        Object.assign(patch, BudgetEngine.monthAmountPatch(s, "bill", arr.find(b => b.id === id), typedAmount));
+      }
     } else if (kind === "spending") {
       const arr = (s.spendingCategories||[]).map(c => c.id === id ? {
         ...c,

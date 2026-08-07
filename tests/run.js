@@ -15,6 +15,7 @@ const suites = [
   "./debt.test",
   "./debt-minimums.test",
   "./bills.test",
+  "./month-scope.test",
   "./pending.test",
   "./import-parse.test",
   "./anon-export.test"
